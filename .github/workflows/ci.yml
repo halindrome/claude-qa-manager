@@ -41,13 +41,10 @@ jobs:
       - name: install jq
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then brew install jq || true; else sudo apt-get install -y jq; fi
-      - name: run suite
-        run: |
-          if [ -f test/preflight.test.sh ]; then
-            bash test/preflight.test.sh
-          else
-            echo "suite not migrated yet — skipping"
-          fi
+      - name: preflight suite
+        run: bash test/preflight.test.sh
+      - name: init suite
+        run: bash test/init.test.sh
 
   plugin:
     name: plugin manifest validates
