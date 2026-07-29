@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  scrub:
+    name: no private identifiers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash test/no-private-identifiers.sh
+
+  shellcheck:
+    name: shell syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n every script
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          for f in **/*.sh; do
+            echo "checking $f"
+            bash -n "$f"
+          done
+
+  tests:
+    name: preflight suite (${{ matrix.os }})
+    # macOS ships bash 3.2 and GNU-vs-BSD sed/grep differ; both axes have bitten
+    # this code before, so both run.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install jq
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install jq || true; else sudo apt-get install -y jq; fi
+      - name: run suite
+        run: |
+          if [ -f test/preflight.test.sh ]; then
+            bash test/preflight.test.sh
+          else
+            echo "suite not migrated yet — skipping"
+          fi
+
+  plugin:
+    name: plugin manifest validates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: manifest is well-formed JSON with required keys
+        run: |
+          set -euo pipefail
+          for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json; do
+            jq empty "$f"
+            echo "$f: valid JSON"
+          done
+          jq -e '.name and .version and .description' .claude-plugin/plugin.json > /dev/null
+          echo "plugin.json: required keys present"

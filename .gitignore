@@ -1,0 +1,10 @@
+# Never commit credentials
+*token*
+*.pem
+.env
+.env.*
+!examples/*token*.example
+
+# Scratch
+*.tmp
+.DS_Store

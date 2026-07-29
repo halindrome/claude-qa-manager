@@ -1,0 +1,30 @@
+{
+  "_comment": "Monorepo whose components are reviewed as independent MRs. `scope` is the commit-message token used for fix commits: fix(<scope>): address QA round N.",
+  "targets": {
+    "api": {
+      "path": "apps/api",
+      "remote": "origin",
+      "scope": "api",
+      "security_stage": true,
+      "lens_tags": ["schema", "api-envelope"]
+    },
+    "webapp": {
+      "path": "apps/webapp",
+      "remote": "origin",
+      "scope": "webapp",
+      "security_stage": true,
+      "lens_tags": ["ui-styling"]
+    },
+    "monorepo": {
+      "path": ".",
+      "remote": "origin",
+      "scope": "monorepo",
+      "security_stage": false,
+      "lens_tags": []
+    }
+  },
+  "schema": {
+    "files": ["apps/api/db/template.sql"]
+  },
+  "protected_branches": ["main", "release"]
+}

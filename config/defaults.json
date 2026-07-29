@@ -1,0 +1,58 @@
+{
+  "_comment": "Shipped defaults. Resolution order, later wins, shallow-merged per top-level key: (1) this file, (2) ~/.config/claude-code/claude-qa-manager/config.json (user-level: credentials, policy), (3) <repo>/.claude/skills/qa-round/config.json (project-level: targets, schema files). A project should never need to restate credentials, and a user config should never need to know a repo's layout.",
+
+  "protected_branches": ["main", "master"],
+
+  "targets": {
+    "_comment": "Optional. Branches are derived at runtime from the MR/PR itself, so single-repo projects need NO targets at all. Declare targets only for a monorepo whose submodules are reviewed independently. See examples/monorepo-submodules.json.",
+    "default": {
+      "path": ".",
+      "remote": "origin",
+      "scope": "",
+      "security_stage": false,
+      "lens_tags": []
+    }
+  },
+
+  "schema": {
+    "_comment": "Paths that ARE the database schema -- the file(s) a provisioner reads to create a new tenant/instance. Empty by default: when empty the schema gate reports 'skipped:not-configured' and NEVER silently passes. Match on path only; do NOT add DDL content scanning (see docs/CASE-STUDIES.md #schema-drift).",
+    "files": [],
+    "runbook": ""
+  },
+
+  "contract": {
+    "_comment": "How a ticket id is recognised in an MR/PR title or body.",
+    "ticket_pattern": "[A-Z]+-[0-9]+",
+    "min_description_length": 200
+  },
+
+  "qa_agent": {
+    "_comment": "Optional separate identity for QA-attributed actions (round notes, approvals). Fix commits and pushes always use the developer's own credentials. When unresolvable, the plugin degrades gracefully: notes post under the dev identity and approval is skipped entirely.",
+    "token_env": "QA_AGENT_TOKEN",
+    "token_file": "~/.config/claude-qa-manager/qa-agent-token",
+    "expected_username": "",
+    "approval": {
+      "min_clean_round": 2,
+      "tiny_mr_relax_to_round_1": true,
+      "tiny_mr_max_lines_changed": 50,
+      "unapprove_on_dirty_reround": true,
+      "allow_deferred_findings_exit": true
+    }
+  },
+
+  "review": {
+    "_comment": "Panel width is capped at 6 -- the measured concurrency ceiling for agent grandchildren, which keeps the panel a single wave. Narrow a target's lens_tags rather than overriding the panel by hand, and never manage cost by downgrading the model: a cheaper reviewer is a weaker reviewer, which defeats the cycle.",
+    "core_lenses": ["contract-security", "regression-edges", "test-quality"],
+    "max_lenses": 6,
+    "tiny_diff_max_lines": 25,
+    "proportionality_strict_from_round": 3
+  },
+
+  "sast_gate": {
+    "_comment": "Behaviour when a security pipeline is still running on an approval-eligible round. Poll cadence is deliberately coarse to stay friendly to prompt caching.",
+    "wait_on_approval_round": true,
+    "poll_interval_seconds": 90,
+    "max_wait_seconds": 900,
+    "ask_user_before_wait": true
+  }
+}

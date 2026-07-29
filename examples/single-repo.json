@@ -1,0 +1,10 @@
+{
+  "_comment": "Typical single-repo project. Nothing is required -- this file can be omitted entirely and the plugin derives branches from the MR/PR. Shown here for the two things worth setting.",
+  "schema": {
+    "files": ["db/schema.sql"],
+    "runbook": "docs/runbooks/schema-change-rollout.md"
+  },
+  "qa_agent": {
+    "expected_username": "qa-bot"
+  }
+}

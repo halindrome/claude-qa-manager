@@ -1,0 +1,19 @@
+{
+  "name": "halindrome",
+  "owner": { "name": "Shane McCarron" },
+  "metadata": {
+    "description": "Claude Code plugins by Shane McCarron",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "claude-qa-manager",
+      "source": "./",
+      "description": "Structured multi-round QA for merge and pull requests, with a reviewer panel and a stop rule.",
+      "version": "0.1.0",
+      "author": { "name": "Shane McCarron" },
+      "category": "development",
+      "keywords": ["code-review", "qa", "gitlab", "github"]
+    }
+  ]
+}

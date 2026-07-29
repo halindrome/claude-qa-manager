@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# no-private-identifiers.sh — fail if internal identifiers or secret-shaped literals
+# appear anywhere in the tree.
+#
+# This repo was extracted from a private implementation. Git history is permanent, so the
+# scrub has to hold on EVERY commit, not just the first one. CI runs this on each push.
+#
+# MUST run under bash explicitly. The default interactive shell on macOS is zsh, which does
+# NOT word-split unquoted "$VAR" expansions -- a scan written for bash and run under zsh
+# silently collapses its file list into one bogus filename, greps nothing, and reports
+# all-clean. That exact bug produced a false all-clear while this repo was being prepared.
+# Everything below therefore uses arrays with "${arr[@]}", never bare word splitting.
+set -uo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
+
+# Patterns that must never appear. Split into two classes so failures explain themselves.
+private_identifiers=(
+  'redacted-1'
+  'redacted-2'
+  'redacted-3'
+  'redacted-4'
+  'halindrome\.com'
+)
+secret_shapes=(
+  'glpat-[A-Za-z0-9_-]{10,}'      # GitLab PAT
+  'gh[pousr]_[A-Za-z0-9]{20,}'    # GitHub token
+  'sk-[A-Za-z0-9]{20,}'           # OpenAI-style key
+  'AKIA[0-9A-Z]{16}'              # AWS access key id
+  '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+)
+
+# This file necessarily CONTAINS the patterns it searches for, so exclude it by name.
+excludes=(
+  --exclude-dir=.git
+  --exclude-dir=node_modules
+  --exclude="no-private-identifiers.sh"
+)
+
+fail=0
+
+scan() {
+  local label="$1"; shift
+  local -a patterns=("$@")
+  local p hits
+  for p in "${patterns[@]}"; do
+    # -I skips binary files; -n gives reviewable output.
+    if hits=$(grep -rniE "${excludes[@]}" -I -n -- "$p" . 2>/dev/null); then
+      printf '\n[%s] pattern matched: %s\n' "$label" "$p" >&2
+      printf '%s\n' "$hits" | head -20 >&2
+      fail=1
+    fi
+  done
+}
+
+scan "private identifier" "${private_identifiers[@]}"
+scan "possible secret"    "${secret_shapes[@]}"
+
+if [ "$fail" -ne 0 ]; then
+  cat >&2 <<'EOF'
+
+FAILED. This repo is public and its history is permanent.
+Replace the identifier with a configurable value or an example placeholder
+(see docs/CONFIGURING.md), or move the rationale to docs/CASE-STUDIES.md
+in anonymised form. Do not simply delete a rule's justification --
+see the note at the top of that file.
+EOF
+  exit 1
+fi
+
+echo "ok — no private identifiers or secret-shaped literals found"
