@@ -692,9 +692,15 @@ assertion=$(printf 'clean\n%s\n' "$assertion" | sort -u)
 # expected shape. The old grep required the line to start with `clean|`, so a
 # gate_state added out of that shape was invisible to the check that exists to
 # catch exactly that drift.
-consumer=$(awk '/case "\$\{SAST_GATE_STATE:-\}" in/{f=1;next} f&&/\)[[:space:]]*;;/{print;exit}' "$SKILL_MD" \
+# The consumer whitelist lives wherever the approval step is documented. It moved
+# from SKILL.md into references/ when the spine was split, so search the whole skill
+# tree rather than one hardcoded file -- otherwise a future reorganisation silently
+# disables the one check that catches producer/consumer drift.
+SKILL_TREE_DIR="$(dirname "$SKILL_MD")"
+consumer=$(cat "$SKILL_MD" "$SKILL_TREE_DIR"/references/*.md 2>/dev/null \
+  | awk '/case "\$\{SAST_GATE_STATE:-\}" in/{f=1;next} f&&/\)[[:space:]]*;;/{print;exit}' \
   | sed -E 's/\)[[:space:]]*;;.*//' | tr -d ' ' | tr '|' '\n' | grep . | sort -u)
-if [ -z "$consumer" ]; then bad "Step 3E case arm found in SKILL.md" "extraction returned nothing"
+if [ -z "$consumer" ]; then bad "SAST gate_state whitelist found in the skill tree" "extraction returned nothing in $SKILL_MD or its references/"
 elif [ "$producer" = "$consumer" ]; then ok "producer set == SKILL.md Step 3E whitelist"
 else bad "producer set == SKILL.md Step 3E whitelist" "$(diff <(echo "$producer") <(echo "$consumer") | tr '\n' ' ')"; fi
 if [ "$assertion" = "$producer" ]; then ok "producer set == preflight self-assertion"
