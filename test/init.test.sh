@@ -59,7 +59,7 @@ rm -rf "$d"
 
 # ---------------------------------------------------------------------------
 echo "[config: writes, merges, never clobbers]"
-d=$(mkrepo "https://gitlab.com/o/r.git"); cfg="$d/.claude/skills/qa-round/config.json"
+d=$(mkrepo "https://gitlab.com/o/r.git"); cfg="$d/.claude/skills/qa-cycle/config.json"
 ( cd "$d" && QA_INIT_SCHEMA_FILES="db/template.sql, db/extra.sql" QA_INIT_ASSUME_YES=1 \
     bash "$INIT" config </dev/null >/dev/null 2>&1 )
 eq "config file created"        "$( [ -f "$cfg" ] && echo yes || echo no )" "yes"
@@ -76,7 +76,7 @@ eq "  result is valid JSON"            "$(jq empty "$cfg" 2>&1; echo $?)" "0"
 rm -rf "$d"
 
 # A corrupt existing config must stop, not be silently overwritten.
-d=$(mkrepo "https://gitlab.com/o/r.git"); cfg="$d/.claude/skills/qa-round/config.json"
+d=$(mkrepo "https://gitlab.com/o/r.git"); cfg="$d/.claude/skills/qa-cycle/config.json"
 mkdir -p "$(dirname "$cfg")"; printf 'not json{' > "$cfg"
 ( cd "$d" && QA_INIT_SCHEMA_FILES="x.sql" QA_INIT_ASSUME_YES=1 bash "$INIT" config </dev/null >/dev/null 2>&1 )
 rc=$?
@@ -133,7 +133,7 @@ rm -rf "$d"
 
 # ---------------------------------------------------------------------------
 echo "[unconfigured schema gate is reported loudly]"
-d=$(mkrepo "https://gitlab.com/o/r.git"); cfg="$d/.claude/skills/qa-round/config.json"
+d=$(mkrepo "https://gitlab.com/o/r.git"); cfg="$d/.claude/skills/qa-cycle/config.json"
 mkdir -p "$(dirname "$cfg")"; echo '{"targets":{}}' > "$cfg"
 out=$( cd "$d" && bash "$INIT" check 2>&1 | strip )
 eq "warns when schema.files is empty" "$(grep -c 'skipped:not-configured' <<<"$out")" "1"

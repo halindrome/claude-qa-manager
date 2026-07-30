@@ -2,14 +2,14 @@
 # fetch-sast-findings.sh
 # -----------------------------------------------------------------------------
 # Compute NEW security findings for an MR vs the checked-in baselines and emit
-# a markdown report suitable for inclusion in the mr-qa reviewer prompt.
+# a markdown report suitable for inclusion in the qa-reviewer prompt.
 #
 # Reads the latest pipeline for the MR, downloads each security scanner job's
 # artifact, diffs it against the matching baseline file in the target's
 # working tree, and writes a per-scanner report to stdout (and optionally to
 # /tmp/mr-<MR>-sast-deltas.md when --output is passed).
 #
-# Used by: .claude/skills/mr-qa/SKILL.md Step 2.5 (security review pre-pass).
+# Used by: .claude/skills/qa-cycle/SKILL.md Step 2.5 (security review pre-pass).
 #
 # Requires: glab (authenticated), jq, unzip.
 #
@@ -127,7 +127,7 @@ if [ -z "$SECURITY_JOBS" ]; then
     running|pending|created|preparing|scheduled|waiting_for_resource)
       emit "## SAST review skipped"
       emit ""
-      emit "Pipeline #${PIPE_ID} is **${PIPE_STATUS}** and no security jobs have been created yet. Re-run \`/mr-qa\` once the security stage starts."
+      emit "Pipeline #${PIPE_ID} is **${PIPE_STATUS}** and no security jobs have been created yet. Re-run \`/qa-cycle\` once the security stage starts."
       exit 0 ;;
     *)
       emit "## SAST review skipped"
@@ -152,7 +152,7 @@ if [ -n "$UNFINISHED_SEC" ]; then
   emit ""
   emit "$UNFINISHED_SEC"
   emit ""
-  emit "These finish independently of the long-running test jobs — re-run \`/mr-qa\` once they complete (you do not need to wait for the whole pipeline)."
+  emit "These finish independently of the long-running test jobs — re-run \`/qa-cycle\` once they complete (you do not need to wait for the whole pipeline)."
   exit 0
 fi
 

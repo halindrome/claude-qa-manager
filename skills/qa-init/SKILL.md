@@ -1,6 +1,6 @@
 ---
 name: qa-init
-description: "Set up the current project to use claude-qa-manager. Detects the forge from the git remote, checks required tooling and authentication, writes the optional project config (targets for a monorepo, schema-gate paths), and walks the operator through storing a QA agent token. Use when someone asks to install, initialise, configure, or set up QA rounds in a repo, or when /qa-round reports missing configuration."
+description: "Set up the current project to use claude-qa-manager. Detects the forge from the git remote, checks required tooling and authentication, writes the optional project config (targets for a monorepo, schema-gate paths), and walks the operator through storing a QA agent token. Use when someone asks to install, initialise, configure, or set up QA rounds in a repo, or when /qa-cycle reports missing configuration."
 ---
 
 # Set up claude-qa-manager in this project
@@ -76,4 +76,4 @@ interactive, tell them to run it themselves rather than working around it.
 ## 4. Confirm
 
 Re-run `init.sh check` and report the result. Then tell them the entry point:
-`/qa-round <MR-or-PR-number>`, plus a target name if they configured monorepo targets.
+`/qa-cycle <MR-or-PR-number>`, plus a target name if they configured monorepo targets.

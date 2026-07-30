@@ -57,7 +57,7 @@ no matter how clean it is:
 
 - `SCHEMA_HUMAN_APPROVED=false` → record approval status
   `blocked: schema change needs a human GitLab approval first` and tell the
-  operator to obtain a human GitLab approval, then re-run `/mr-qa` so the QA
+  operator to obtain a human GitLab approval, then re-run `/qa-cycle` so the QA
   agent can add its second approval.
 - `SCHEMA_CHANGE_ACK` not `true` → record
   `blocked: schema change rollout not acknowledged`.

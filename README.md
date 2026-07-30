@@ -66,7 +66,7 @@ claude --plugin-dir /path/to/claude-qa-manager
 
 Zero configuration required for the common case: branches are derived at runtime from the
 MR/PR itself. Everything else is optional and lives in
-`.claude/skills/qa-round/config.json` in your project. See
+`.claude/skills/qa-cycle/config.json` in your project. See
 [docs/CONFIGURING.md](docs/CONFIGURING.md).
 
 ## License

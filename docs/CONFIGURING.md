@@ -21,7 +21,7 @@ a project can override one nested key without restating its block.
 |---|---|---|
 | shipped | `config/defaults.json` | policy defaults |
 | user | `~/.config/claude-qa-manager/config.json` | credentials, approval policy |
-| project | `<repo>/.claude/skills/qa-round/config.json` | targets, schema paths |
+| project | `<repo>/.claude/skills/qa-cycle/config.json` | targets, schema paths |
 
 The split is deliberate: a project should never restate credentials, and a user config
 should never need to know a repo's layout. The project file contains no secrets and

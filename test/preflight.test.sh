@@ -44,19 +44,19 @@ SKILL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_SRC="$(cd "$SKILL_SRC/.." && pwd)"
 PREFLIGHT_SRC="$REPO_SRC/lib/preflight.sh"
 DEFAULTS_SRC="$REPO_SRC/config/defaults.json"
-SKILL_MD="$REPO_SRC/skills/qa-round/SKILL.md"
+SKILL_MD="$REPO_SRC/skills/qa-cycle/SKILL.md"
 
 export GIT_SSH_COMMAND=false     # any ssh fetch dies instantly, never hits DNS
 export GIT_TERMINAL_PROMPT=0     # never block on credentials
 
 # Redirect preflight's scratch root into a throwaway dir. Without this the suite
-# writes ~30 dirs per run into /tmp/mr-qa-* — the SAME namespace live QA runs
+# writes ~30 dirs per run into /tmp/qa-cycle-* — the SAME namespace live QA runs
 # use — so it both littered and could not safely clean up (it cannot tell its own
 # dirs from a live round's). A trap that removed only the runs that emitted JSON
 # leaked every crash-path fixture. The seam removes the problem instead of
 # papering over it: one dir, removed wholesale, and no possible collision.
 SUITE_TMP=$(mktemp -d)
-export MR_QA_SCRATCH_ROOT="$SUITE_TMP"
+export QA_CYCLE_SCRATCH_ROOT="$SUITE_TMP"
 trap 'rm -rf "$SUITE_TMP"' EXIT
 
 PASS=0; FAIL=0
@@ -78,8 +78,8 @@ mkfixture() {
   local root; root=$(mktemp -d)
   local repo="$root/repo" bare="$root/remote.git" bin="$root/bin"
   local plugin="$root/plugin"
-  local proj_cfg="$repo/.claude/skills/qa-round/config.json"
-  mkdir -p "$repo/.claude/skills/qa-round" "$bin" "$plugin/lib" "$plugin/config"
+  local proj_cfg="$repo/.claude/skills/qa-cycle/config.json"
+  mkdir -p "$repo/.claude/skills/qa-cycle" "$bin" "$plugin/lib" "$plugin/config"
 
   git init -q --bare "$bare"
   git init -q -b "$tgt_branch" "$repo"
@@ -661,7 +661,7 @@ else
   else bad "  no unknown tags in the shipped registry" "found: $bad_tags"; fi
 fi
 
-echo "[lens enum <-> mr-qa-manager catalog agreement]"
+echo "[lens enum <-> qa-manager catalog agreement]"
 # The !73 precedent: a fix added two SAST gate_states to the producer but not its
 # consumer, hard-exiting a routine clean round. Same producer/consumer shape here
 # — preflight's enum is the producer, the manager's catalog is the consumer.
@@ -671,11 +671,11 @@ if [ -f "$MANAGER_MD" ]; then
     | sed -E 's/^\^\((.*)\)\$$/\1/' | tr '|' '\n' | sort -u)
   catalog=$(grep -oE '^- \*\*[a-z-]+\*\*' "$MANAGER_MD" | sed -E 's/^- \*\*([a-z-]+)\*\*/\1/' | sort -u)
   if [ -z "$enum" ]; then bad "lens enum extracted from preflight" "regex found nothing — update the test"
-  elif [ -z "$catalog" ]; then bad "lens catalog extracted from mr-qa-manager.md" "found nothing — update the test"
-  elif [ "$enum" = "$catalog" ]; then ok "preflight lens enum == mr-qa-manager catalog"
-  else bad "preflight lens enum == mr-qa-manager catalog" "$(diff <(echo "$enum") <(echo "$catalog") | tr '\n' ' ')"; fi
+  elif [ -z "$catalog" ]; then bad "lens catalog extracted from qa-manager.md" "found nothing — update the test"
+  elif [ "$enum" = "$catalog" ]; then ok "preflight lens enum == qa-manager catalog"
+  else bad "preflight lens enum == qa-manager catalog" "$(diff <(echo "$enum") <(echo "$catalog") | tr '\n' ' ')"; fi
 else
-  bad "mr-qa-manager.md present" "not found at $MANAGER_MD"
+  bad "qa-manager.md present" "not found at $MANAGER_MD"
 fi
 
 # ---------------------------------------------------------------------------
@@ -724,21 +724,21 @@ fi
 rm -rf "$r"
 
 echo "[hermetic — the suite writes nothing into the shared /tmp namespace]"
-# Regression lock for the leak: with MR_QA_SCRATCH_ROOT honoured, every scratch
+# Regression lock for the leak: with QA_CYCLE_SCRATCH_ROOT honoured, every scratch
 # dir lands under $SUITE_TMP. If a change ever hardcodes /tmp again, the count
 # below goes to 0 and this fails.
-n_here=$(ls -d "$SUITE_TMP"/mr-qa-* 2>/dev/null | grep -c . || true)
+n_here=$(ls -d "$SUITE_TMP"/qa-cycle-* 2>/dev/null | grep -c . || true)
 if [ "${n_here:-0}" -gt 0 ]; then ok "scratch dirs land under the suite's own tmp root ($n_here)"
-else bad "scratch dirs land under the suite's own tmp root" "found none under $SUITE_TMP — is MR_QA_SCRATCH_ROOT still honoured?"; fi
+else bad "scratch dirs land under the suite's own tmp root" "found none under $SUITE_TMP — is QA_CYCLE_SCRATCH_ROOT still honoured?"; fi
 
 echo "[scratch-root that cannot be created -> exit 5, not a silent 0]"
-# Locks the mkdir guard: an unwritable/uncreatable MR_QA_SCRATCH_ROOT must be one
+# Locks the mkdir guard: an unwritable/uncreatable QA_CYCLE_SCRATCH_ROOT must be one
 # clear internal failure, never a silent exit 0 that leaves downstream steps
 # tripping over a missing preflight.json. Point the seam at a path whose parent
 # is a FILE, so mkdir -p cannot succeed.
 r=$(mkfixture "feature/x" "main")
 blocker=$(mktemp); : > "$blocker"    # a regular file
-out=$(MR_QA_SCRATCH_ROOT="$blocker/cannot" run_preflight "$r" 73 mono); rc=$?
+out=$(QA_CYCLE_SCRATCH_ROOT="$blocker/cannot" run_preflight "$r" 73 mono); rc=$?
 eq "uncreatable scratch root -> exit 5" "$rc" "5"
 eq "  emitted no JSON to stdout"        "$([ -z "$out" ] && echo empty || echo non-empty)" "empty"
 rm -f "$blocker"; rm -rf "$r"

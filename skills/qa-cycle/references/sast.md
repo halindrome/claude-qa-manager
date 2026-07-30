@@ -119,7 +119,7 @@ Determine **approval-eligibility for this round** using the same rule as Step 3E
   > Options (default-first):
   > - **"Wait up to `<MAX_WAIT/60>` min (Recommended)"** — poll every `POLL_INTERVAL` seconds until the pipeline lands or the wait ceiling hits.
   > - **"Proceed without SAST"** — continue with the skipped stub. Set `SAST_GATE_STATE="skipped:pipeline-running"`; Step 3E approval comment will note `SAST: skipped:pipeline-running`.
-  > - **"Defer this round"** — STOP the skill with a hint: *"Re-run `/mr-qa <MR> <target>` once the pipeline lands."* Do NOT post a partial round note; nothing has been committed yet to the MR.
+  > - **"Defer this round"** — STOP the skill with a hint: *"Re-run `/qa-cycle <MR> <target>` once the pipeline lands."* Do NOT post a partial round note; nothing has been committed yet to the MR.
 
   When `ASK_BEFORE_WAIT=false`, skip the prompt and start the poll loop directly.
 

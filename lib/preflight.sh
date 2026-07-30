@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# preflight.sh — deterministic pre-QA resolution for /mr-qa.
+# preflight.sh — deterministic pre-QA resolution for /qa-cycle.
 #
-# Collapses the entire mechanical preamble that the /mr-qa skill previously
+# Collapses the entire mechanical preamble that the /qa-cycle skill previously
 # walked the model through one LLM turn at a time (Step 0 arg/target/base-branch
 # resolution, Step 0.25 QA-token verify, Step 0.4 scratch dir, Step 0.7 approval
 # seed, Step 2 branch sync, Step 2.5 SAST driver,
@@ -96,7 +96,7 @@ REPO_ROOT="$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)
 # reads it, which keeps the (many) existing `.targets[$t]…` queries unchanged.
 CONFIG_DEFAULTS="$PLUGIN_ROOT/config/defaults.json"
 CONFIG_USER="${XDG_CONFIG_HOME:-$HOME/.config}/claude-qa-manager/config.json"
-CONFIG_PROJECT="$REPO_ROOT/.claude/skills/qa-round/config.json"
+CONFIG_PROJECT="$REPO_ROOT/.claude/skills/qa-cycle/config.json"
 
 [ -f "$CONFIG_DEFAULTS" ] || die_usage "shipped defaults missing at $CONFIG_DEFAULTS (broken install)"
 
@@ -285,17 +285,17 @@ else
   QA_SCRATCH_HASH=$(printf '%s' "$QA_SCRATCH_INPUT" | sha256sum     | awk '{print $1}' | cut -c1-12)
 fi
 # Scratch root is a seam, not a hardcoded path: the test suite points
-# MR_QA_SCRATCH_ROOT at a throwaway dir so it never writes into the /tmp
+# QA_CYCLE_SCRATCH_ROOT at a throwaway dir so it never writes into the /tmp
 # namespace that live QA runs share (and so it cannot delete a live run's scratch
 # while cleaning up after itself). Unset -> /tmp, i.e. production is unchanged.
-QA_SCRATCH_ROOT="${MR_QA_SCRATCH_ROOT:-/tmp}"
-QA_SCRATCH="${QA_SCRATCH_ROOT}/mr-qa-${QA_SCRATCH_HASH}-${MR_NUMBER}"
+QA_SCRATCH_ROOT="${QA_CYCLE_SCRATCH_ROOT:-/tmp}"
+QA_SCRATCH="${QA_SCRATCH_ROOT}/qa-cycle-${QA_SCRATCH_HASH}-${MR_NUMBER}"
 # Check the mkdir: under `set -uo pipefail` (no `set -e`) an unchecked failure
 # here would let the script sail on and emit JSON to stdout while EVERY
 # $QA_SCRATCH/* write and the final tee silently failed — the orchestrator would
 # then trip over a missing preflight.json/contract input instead of one clear
 # error. An unwritable scratch root is our precondition, so exit 5 (internal).
-mkdir -p "$QA_SCRATCH" || die_internal "could not create scratch dir '$QA_SCRATCH' (is MR_QA_SCRATCH_ROOT writable?)"
+mkdir -p "$QA_SCRATCH" || die_internal "could not create scratch dir '$QA_SCRATCH' (is QA_CYCLE_SCRATCH_ROOT writable?)"
 [ -w "$QA_SCRATCH" ] || die_internal "scratch dir '$QA_SCRATCH' is not writable"
 
 # ---------------------------------------------------------------------------
@@ -626,7 +626,7 @@ fi
     echo ""
     echo "This is not a clean result — it is an absent one. If this project has a"
     echo "schema file that a provisioner reads to create a new instance, set"
-    echo "schema.files in .claude/skills/qa-round/config.json so that changes to it"
+    echo "schema.files in .claude/skills/qa-cycle/config.json so that changes to it"
     echo "require human approval. See docs/CONFIGURING.md."
   elif [ "$SCHEMA_DETECTED" = "true" ]; then
     echo "A configured schema file changed:"; printf '%s\n' "${SCHEMA_FILES:-<none>}"
@@ -744,7 +744,7 @@ DESC_LEN=${#MR_DESC}
 # Round number -> $ROUND, and the proportionality mandate -> proportionality.md
 # ---------------------------------------------------------------------------
 # ROUND is derived from the MR's own posted notes (the max "## QA Round N"
-# heading, + 1) rather than tracked in the shell, because every /mr-qa
+# heading, + 1) rather than tracked in the shell, because every /qa-cycle
 # invocation is a fresh process: the orchestrator was re-deriving this by hand
 # from `glab api .../notes` on each run, which is exactly the mechanical work
 # preflight exists to remove. Falls back to 1 when no note is found, which is
@@ -929,7 +929,7 @@ fi
 # re-deriving the manager-vs-sequential choice by model judgment each round:
 #   "sequential" — tiny diff: a single reviewer (Step 3A) beats the overhead of
 #                  spawning the manager + 3-lens panel.
-#   "manager"    — non-trivial diff: delegate the round to the mr-qa-manager
+#   "manager"    — non-trivial diff: delegate the round to the qa-manager
 #                  subagent (Step 3A.1), which fans out the enforced lens panel.
 # NOTE: this cannot detect at the shell level whether the *runtime* allows Agent
 # nesting (manager -> lens grandchildren). If a manager/lens spawn is refused at
@@ -940,7 +940,7 @@ REVIEW_MODE="manager"
 
 # ---------------------------------------------------------------------------
 # Deterministic LENS selection. The manager reads this array and spawns exactly
-# these mr-qa-reviewer lenses — lens choice is data, not model judgment, the same
+# these qa-reviewer lenses — lens choice is data, not model judgment, the same
 # principle as review_mode. Three CORE lenses always run; conditional lenses are
 # added from the target's lens_tags plus the live schema signal. Rationale for
 # each rule is in base-branches.json's _lens_comment.

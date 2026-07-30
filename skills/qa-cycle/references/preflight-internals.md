@@ -218,12 +218,12 @@ if command -v shasum >/dev/null 2>&1; then
 else
   QA_SCRATCH_HASH=$(printf '%s' "$QA_SCRATCH_INPUT" | sha256sum     | awk '{print $1}' | cut -c1-12)
 fi
-QA_SCRATCH="/tmp/mr-qa-${QA_SCRATCH_HASH}-${MR_NUMBER}"
+QA_SCRATCH="/tmp/qa-cycle-${QA_SCRATCH_HASH}-${MR_NUMBER}"
 mkdir -p "$QA_SCRATCH"
 ```
 
 - `GITLAB_PROJECT` is resolved at the top of this block (was previously deferred to Step 2.5). Step 2.5 reuses this same variable without recomputing it.
-- `QA_SCRATCH` is per-invocation. A subsequent `/mr-qa` run on the same MR from the same `cwd` reuses the same dir — that's intentional, so the contract file and earlier round outputs are still discoverable on `--resume`-style flows.
+- `QA_SCRATCH` is per-invocation. A subsequent `/qa-cycle` run on the same MR from the same `cwd` reuses the same dir — that's intentional, so the contract file and earlier round outputs are still discoverable on `--resume`-style flows.
 - Treat the directory as ephemeral: nothing depends on its contents persisting beyond the invocation.
 
 Canonical filenames inside `$QA_SCRATCH` (all literal):
@@ -241,7 +241,7 @@ Canonical filenames inside `$QA_SCRATCH` (all literal):
 ## Step 0.7 — Seed MR_APPROVED from GitLab
 
 `MR_APPROVED` defaults to `false` on every fresh shell, so on a re-invocation
-of `/mr-qa` after a prior round that auto-approved, the skill would otherwise
+of `/qa-cycle` after a prior round that auto-approved, the skill would otherwise
 think the MR is unapproved and never trigger the dirty-reround unapprove flow
 (Step 3B.6). Seed it from GitLab here so the state survives across
 invocations.
@@ -284,7 +284,7 @@ fi
 ```
 
 This makes the dirty-reround unapprove gate in Step 3B.6 actually fire when
-a prior `/mr-qa` invocation (or even an out-of-band approval by the QA agent
+a prior `/qa-cycle` invocation (or even an out-of-band approval by the QA agent
 via the GitLab UI) left the MR in an approved state.
 
 ---

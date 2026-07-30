@@ -3,7 +3,7 @@
 #
 # Subcommands:
 #   check    report what is present/missing; changes NOTHING (default when piped)
-#   config   write/update the project config at .claude/skills/qa-round/config.json
+#   config   write/update the project config at .claude/skills/qa-cycle/config.json
 #   token    store and VERIFY a QA agent token, user-level, never in the repo
 #   all      check, then config, then token   (default when interactive)
 #
@@ -35,7 +35,7 @@ die()  { printf '%sinit: %s%s\n' "$c_red" "$1" "$c_rst" >&2; exit 1; }
 REPO_ROOT="$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)"
 [ -n "$REPO_ROOT" ] || REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$REPO_ROOT" ] || die "not inside a git repository (cwd: $(pwd))"
-PROJECT_CONFIG="$REPO_ROOT/.claude/skills/qa-round/config.json"
+PROJECT_CONFIG="$REPO_ROOT/.claude/skills/qa-cycle/config.json"
 
 detect_forge() {
   local url; url="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"

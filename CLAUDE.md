@@ -79,7 +79,7 @@ reviewer, which defeats the cycle. Narrow `lens_tags` or the panel width instead
 ## Layout
 
     .claude-plugin/    plugin.json + marketplace.json
-    skills/qa-round/   SKILL.md (the spine) + references/ (read on demand)
+    skills/qa-cycle/   SKILL.md (the spine) + references/ (read on demand)
     skills/qa-init/    thin setup skill; delegates to lib/init.sh
     agents/            qa-manager (orchestrates a round), qa-reviewer (one lens)
     lib/               preflight.sh, init.sh, second-opinion + SAST helpers
@@ -90,11 +90,11 @@ reviewer, which defeats the cycle. Narrow `lens_tags` or the panel width instead
 
 Config resolves in three layers, later winning, shallow-merged per top-level key:
 shipped `config/defaults.json` → user `~/.config/claude-qa-manager/config.json` →
-project `<repo>/.claude/skills/qa-round/config.json`.
+project `<repo>/.claude/skills/qa-cycle/config.json`.
 
 ## Watch the token cost
 
-`skills/qa-round/SKILL.md` is the spine and is deliberately small. It was 41.9k tokens
+`skills/qa-cycle/SKILL.md` is the spine and is deliberately small. It was 41.9k tokens
 on-invoke; it is now ~15.1k. Check with `plugin details` after editing it, and treat a rise
 above ~15k as a regression to justify or undo. Depth belongs in `references/`, which costs
 nothing until read.

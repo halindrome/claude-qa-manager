@@ -47,7 +47,7 @@ if [ -z "${ROUND_HAS_CRITICAL_OR_MAJOR:-}" ]; then
 fi
 
 # A deferred-findings approval (Step 3E) is approved WITH critical/major findings
-# open, by deliberate human decision. Re-running /mr-qa then re-finds those same
+# open, by deliberate human decision. Re-running /qa-cycle then re-finds those same
 # findings, which would trip the guard below and silently revoke the approval —
 # posting a note calling them "new" when they are the very findings the operator
 # deferred. That undoes the exit on the next run, so the guard must fire only on

@@ -29,8 +29,8 @@ complete *before* the first push rather than fixed in a later commit.
 | `test/init.test.sh` | 21 passed / 0 failed |
 | `test/no-private-identifiers.sh` | clean (and verified non-vacuous) |
 | `claude plugin validate .` | passes |
-| Inventory | Skills (2) `qa-init`, `qa-round`; Agents (2) `qa-manager`, `qa-reviewer` |
-| `/qa-round` on-invoke cost | ~15.1k tokens (was ~41.9k) |
+| Inventory | Skills (2) `qa-init`, `qa-cycle`; Agents (2) `qa-manager`, `qa-reviewer` |
+| `/qa-cycle` on-invoke cost | ~15.1k tokens (was ~41.9k) |
 | Always-on cost | ~682 tokens for the whole plugin |
 
 ### Commits
@@ -56,6 +56,8 @@ complete *before* the first push rather than fixed in a later commit.
 | **Schema paths configurable, defaulting to empty**, gate reports `skipped:not-configured` | In the origin repo the gate was inert but *looked* like it ran. |
 | Case studies **anonymised, not deleted** | Every number retained; only identifiers dropped. They are the empirical backbone of the design and make it more credible, not less. |
 | Spine + `references/` split | The 42k on-invoke cost was indefensible; ~15k of it described work preflight already performs. |
+| Skill named **`qa-cycle`**, not `qa-round` | One invocation drives the whole cycle: Step 3D loops into round N+1, Step 3E approves, Step 4 prints "QA Cycle Complete". `round` is the unit *inside* the skill, not the skill. Renamed together with the project config path (`.claude/skills/qa-cycle/config.json`), the scratch prefix (`/tmp/qa-cycle-*`) and the test seam (`QA_CYCLE_SCRATCH_ROOT`). |
+| **No aliases** — `/qa-cycle` only | The forge is detected from the git remote, so `/mr-qa` vs `/pr-qa` encodes nothing the plugin does not already know. `/pr-qa` would also collide with the older sibling skill still installed at `~/.config/claude-code/skills/pr-qa/`. Two extra always-on skill descriptions bought nothing. |
 
 ---
 
@@ -74,8 +76,7 @@ The one substantial piece of work remaining.
    536 lines because GitLab artifacts and GitHub code-scanning are genuinely different;
    keep two implementations behind one interface.)
 3. **Port the sibling's GitHub SAST path** to `lib/fetch-sast-github.sh`.
-4. **Aliases.** Keep `/mr-qa` and `/pr-qa` as thin aliases onto `qa-round` so existing
-   muscle memory works.
+4. ~~**Aliases.**~~ Dropped — see the decisions table. `/qa-cycle` is the only entry point.
 5. The sibling still lives at `~/.config/claude-code/skills/pr-qa/` — source material for
    the GitHub paths. **It has no `preflight.sh`**; it is the older design.
 
@@ -113,7 +114,7 @@ The one substantial piece of work remaining.
 ## Known gaps and honest caveats
 
 - **The round has never been executed end-to-end from this repo.** Preflight, init and the
-  manifest are tested; a full `/qa-round` against a live MR using *this* plugin has not been
+  manifest are tested; a full `/qa-cycle` against a live MR using *this* plugin has not been
   run. That is the highest-value next validation after Phase 3 — and the most likely place
   for a latent path or config bug to surface.
 - **`review_mode`, lens selection and proportionality tiers are inherited unchanged** from
