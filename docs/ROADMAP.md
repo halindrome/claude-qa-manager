@@ -19,18 +19,18 @@ capability. Folding it in is Phase 3 below.
 
 ## Current state — working, local only
 
-Five commits on `main` in `~/Sources/claude-qa-manager`. **Never pushed.** That was
+Eight commits on `main` in `~/Sources/claude-qa-manager`. **Never pushed.** That was
 deliberate: the repo is public-destined and git history is permanent, so the scrub had to be
 complete *before* the first push rather than fixed in a later commit.
 
 | Check | Result |
 |---|---|
-| `test/preflight.test.sh` | 151 passed / 0 failed |
+| `test/preflight.test.sh` | 160 passed / 0 failed |
 | `test/init.test.sh` | 21 passed / 0 failed |
 | `test/no-private-identifiers.sh` | clean (and verified non-vacuous) |
 | `claude plugin validate .` | passes |
 | Inventory | Skills (2) `qa-init`, `qa-cycle`; Agents (2) `qa-manager`, `qa-reviewer` |
-| `/qa-cycle` on-invoke cost | ~15.1k tokens (was ~41.9k) |
+| `/qa-cycle` on-invoke cost | ~15.6k tokens (was ~41.9k; ~15.1k before the forge seam) |
 | Always-on cost | ~682 tokens for the whole plugin |
 
 ### Commits
@@ -40,6 +40,9 @@ complete *before* the first push rather than fixed in a later commit.
 3. `19e4272` skill + both agents; suite goes fully green
 4. `50c2b8b` `init` — environment check, project config, verified token setup
 5. `1f1e636` spine split — 41.9k → 15.1k on-invoke
+6. `21210e6` CLAUDE.md + this file, as a session handoff
+7. `3994af0` rename `qa-round` → `qa-cycle`; aliases dropped
+8. the forge seam (Phase 3) — see `git log` for the hash
 
 ---
 
@@ -63,34 +66,61 @@ complete *before* the first push rather than fixed in a later commit.
 
 ## What is left
 
-### Phase 3 — forge adapter and absorbing pr-qa  *(next; approved)*
+### Phase 3 — forge adapter and absorbing pr-qa  *(DONE — code complete, unexercised)*
 
-The one substantial piece of work remaining.
-
-1. **Extract a forge seam.** Everything forge-specific behind `lib/forge-gitlab.sh` /
-   `lib/forge-github.sh`, selected from the git remote (`lib/init.sh` already has
-   `detect_forge`; reuse it rather than writing a second detector). Surface needed:
-   view MR/PR, list notes/comments, post a note, approve/unapprove, resolve auth identity.
-2. **Collapse the second-opinion shims.** `lib/do-reviewer.sh` differs from the sibling's
-   copy by only **18 lines** — a genuine shared core. (`fetch-sast-findings.sh` differs by
-   536 lines because GitLab artifacts and GitHub code-scanning are genuinely different;
-   keep two implementations behind one interface.)
-3. **Port the sibling's GitHub SAST path** to `lib/fetch-sast-github.sh`.
+1. ✅ **Forge seam extracted.** `lib/forge.sh` (dispatcher + shared URL parsing) with
+   `lib/forge-gitlab.sh` / `lib/forge-github.sh` behind it. Contract: `forge_cli`,
+   `forge_auth_user`, `forge_project_slug`, `forge_project_enc`, `forge_view_mr`,
+   `forge_approvers`, `forge_notes`, `forge_post_note`, `forge_approve`,
+   `forge_unapprove`. **The normalized shape is GitLab's**, so the GitLab backend is a
+   near-passthrough and GitHub carries the whole mapping.
+2. ✅ **Second-opinion shims collapsed** — `--mr` and `--pr` are the same flag in both
+   `do-reviewer.sh` and `qwen-reviewer.sh`. That was ~all of the sibling's 18-line delta.
+3. ✅ **GitHub SAST ported** to `lib/fetch-sast-github.sh`; the GitLab one is now
+   `lib/fetch-sast-gitlab.sh`. Preflight picks `lib/fetch-sast-${forge}.sh`. They share an
+   interface and an **output contract** (the classifier phrases), not an implementation.
 4. ~~**Aliases.**~~ Dropped — see the decisions table. `/qa-cycle` is the only entry point.
 5. The sibling still lives at `~/.config/claude-code/skills/pr-qa/` — source material for
    the GitHub paths. **It has no `preflight.sh`**; it is the older design.
+
+**Things the port changed on purpose, not by accident:**
+
+- The sibling's GitHub SAST helper emitted its "checks still running" warning as a
+  subsection **after** the `## NEW SAST findings` heading, so preflight's classifier
+  scored a still-running scan as `clean` — and Step 3E writes that into a permanent
+  approval comment. Every "did not run" state is now decided and exited **before** the
+  findings heading.
+- `forge_approvers` (GitLab) reads `/approvals` first and `/approval_state` second.
+  `approval.md` had always documented that `/approval_state` lags after a human approves,
+  but preflight's seeding used only the lagging endpoint.
+- GitHub keeps the full review history, so `forge_approvers` reduces to each reviewer's
+  **latest** state — otherwise a withdrawn approval still reads as an approval.
+- New `forge` config key + `QA_FORGE` env override, because host sniffing cannot see a
+  self-hosted GitLab or a GitHub Enterprise instance. Unresolvable is **exit 2**, never a
+  silent default to GitLab.
+
+**JSON keys renamed** (`gitlab_project` → `project`, `gitlab_project_enc` → `project_enc`)
+and `forge` / `forge_cli` added.
 
 ### Smaller, independent items
 
 - **`docs/INSTALL.md`** — not written. `README.md` currently carries install steps inline
   and does **not** link to it, so this is optional rather than a dangling link.
 - **Trim `Step 3A.1`** in the spine. It is the largest kept block; its "why a manager
-  subagent" rationale and cost caveats belong in `references/design-notes.md`. This is what
-  would take 15.1k under the 15k target that was set and narrowly missed.
+  subagent" rationale and cost caveats belong in `references/design-notes.md`. The forge
+  seam pushed on-invoke from ~15.1k to **~15.6k** (a `forge` row in the field table, the
+  seam-sourcing in the post-note block), so the ~15k target is now missed by more than it
+  was. This is the identified way back under it.
 - **`config/schema.json`** — a JSON Schema for project config, validated on load. Planned,
   not built.
-- **`lib/gemma-reviewer.sh`** was NOT migrated (present in the source tree). Decide whether
-  it is still wanted.
+- **`lib/gemma-reviewer.sh`** was NOT migrated (493 lines, present in the source tree) —
+  and **both shipped second-opinion helpers are shims over it**, so `--reviewer=do` and
+  `--reviewer=qwen-local` cannot work as shipped. They fail loudly ("gemma-reviewer.sh not
+  found or not executable"), not silently, but they are documented in
+  `references/sequential-and-multimodel.md` as if they work. Either migrate
+  `gemma-reviewer.sh` (it holds the actual chat-completions logic both shims delegate to)
+  or delete both shims and the docs that reference them. **Do not ship 0.1.0 with this
+  unresolved** — it is a documented feature that is guaranteed to fail on first use.
 - **The two second-opinion READMEs were not migrated** (`qwen-reviewer.README.md`,
   `gemma-reviewer.README.md` in the source tree). Nothing links to them, so there is no
   dangling reference — but `--reviewer=qwen-local` is documented in
@@ -115,8 +145,16 @@ The one substantial piece of work remaining.
 
 - **The round has never been executed end-to-end from this repo.** Preflight, init and the
   manifest are tested; a full `/qa-cycle` against a live MR using *this* plugin has not been
-  run. That is the highest-value next validation after Phase 3 — and the most likely place
-  for a latent path or config bug to surface.
+  run. Now that Phase 3 has landed this is *the* outstanding validation, and the most likely
+  place for a latent path or config bug to surface.
+- **The GitHub path has never touched a real GitHub PR.** `forge-github.sh` and
+  `fetch-sast-github.sh` are exercised only against the suite's `gh` stub, which emits
+  GitHub's native shape so the normalization is genuinely under test — but a stub cannot
+  catch an endpoint that moved, a scope a token lacks, or a field GitHub renamed. Treat
+  every GitHub-specific claim in this file as **code-complete, not verified**. The GitLab
+  path at least inherits several hundred real review rounds; the GitHub path inherits the
+  sibling's mileage only where the logic was ported unchanged, and several pieces were
+  deliberately not (see Phase 3's "changed on purpose").
 - **`review_mode`, lens selection and proportionality tiers are inherited unchanged** from
   an implementation tuned against one organisation's repos. The thresholds (`round >= 3`
   escalation, severity caps, 6-lens ceiling) are reasoned from a small number of real

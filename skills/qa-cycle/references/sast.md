@@ -59,22 +59,38 @@ This avoids two failure modes the gate was never meant to cover:
 - Targets with no security CI at all (the helper would have eventually said "no security stage detected" anyway, but only after the pipeline finished — meanwhile the gate would have prompted the user to wait pointlessly).
 - A workspace/monorepo MR that only bumps submodule pointers, which has nothing to scan.
 
-For targets where `security_stage: true`, run the SAST/SCA delta helper to compute NEW security findings introduced by this MR vs the checked-in baselines. The helper auto-detects which scanners ran in the MR's latest pipeline (per the shared `.gitlab-ci-security.yml` template), downloads each scanner's artifact, and diffs against the baseline files in the working tree.
+For targets where `security_stage: true`, run the SAST/SCA delta helper to compute NEW security findings introduced by this MR vs the checked-in baselines.
+
+**There is one helper per forge**, selected by `preflight.json`'s `forge` field. They share
+an *interface* and an *output contract*, not an implementation — because the two forges
+expose security results in genuinely different ways:
+
+| `forge` | Helper | How it computes findings |
+|---|---|---|
+| `gitlab` | `lib/fetch-sast-gitlab.sh` | Detects which scanners ran in the MR's latest pipeline, downloads each scanner's artifact, and diffs against the baseline files in the working tree — a true NEW-vs-baseline delta. |
+| `github` | `lib/fetch-sast-github.sh` | Reads open code-scanning alerts for the PR head ref (plus Dependabot, advisory). GitHub exposes no per-job baseline, so this is an absolute **snapshot of the head ref, not a delta** — weigh each finding as intentional or a regression. |
 
 ```bash
-# $GITLAB_PROJECT already set in Step 0.4 (resolved from the submodule's git
-# remote so the helper can hit the right project regardless of how the target
-# is named in the resolved config — e.g. "mobile" target → example-org/example-repo).
+# $PROJECT already set in Step 0.4 (resolved from the target's git remote so the
+# helper hits the right project regardless of how the target is named in config).
 # $SAST_REPORT was already set at the top of Step 2.5.
+# $FORGE is preflight.json's `forge` field.
 
-bash ${CLAUDE_PLUGIN_ROOT}/lib/fetch-sast-findings.sh \
-  --project "$GITLAB_PROJECT" \
+bash ${CLAUDE_PLUGIN_ROOT}/lib/fetch-sast-${FORGE}.sh \
+  --project "$PROJECT" \
   --mr "$MR_NUMBER" \
   --target-path "<target-path>" \
   --output "$SAST_REPORT"
 ```
 
 The helper writes its full report to `$SAST_REPORT` (and to stdout). It always exits 0 on normal completion regardless of finding count; non-zero only on tool/API failure.
+
+**Do not reword the classifier phrases in one helper only.** preflight's Step 2.5 classifies
+both helpers' output by the same headings (`## SAST review skipped` + `No security stage
+detected` / `No pipeline associated with MR` / `Security scans are still in progress`, or
+`## NEW SAST findings`). A phrase changed on one side drops that forge to
+`skipped:unknown` — it fails safe, but the forge silently loses its security gate.
+`test/preflight.test.sh` pins every phrase against *both* helpers for this reason.
 
 **Behavior (only reachable when `security_stage: true`):**
 - Pipeline still running/pending → helper writes a "SAST review skipped" stub that carries a `**<status>**` token (either `Pipeline #<N> is **<status>** and no security jobs have been created yet` or `Security scans are still in progress (overall pipeline #<N>: **<status>**)`). Both are matched by the running-marker regex `\*\*(running|pending|created|preparing|scheduled|waiting_for_resource)\*\*`. See the gate below. (The no-security-stage stub deliberately carries NO `**status**` token, so the same regex excludes it.)
@@ -130,8 +146,8 @@ Determine **approval-eligibility for this round** using the same rule as Step 3E
   while [ "$WAITED" -lt "$MAX_WAIT" ]; do
     sleep "$POLL_INTERVAL"
     WAITED=$((WAITED + POLL_INTERVAL))
-    bash ${CLAUDE_PLUGIN_ROOT}/lib/fetch-sast-findings.sh \
-      --project "$GITLAB_PROJECT" \
+    bash ${CLAUDE_PLUGIN_ROOT}/lib/fetch-sast-${FORGE}.sh \
+      --project "$PROJECT" \
       --mr "$MR_NUMBER" \
       --target-path "<target-path>" \
       --output "$SAST_REPORT"

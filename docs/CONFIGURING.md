@@ -27,6 +27,23 @@ The split is deliberate: a project should never restate credentials, and a user 
 should never need to know a repo's layout. The project file contains no secrets and
 belongs in version control.
 
+## `forge` — only needed when the hostname does not say
+
+The forge is detected from the `origin` remote: a URL containing `gitlab` selects the
+GitLab backend, `github` selects GitHub. That covers gitlab.com and github.com with no
+configuration at all.
+
+It does **not** cover a self-hosted GitLab at `git.example.com` or a GitHub Enterprise
+instance — neither hostname contains either string. Rather than guess (a GitHub repo
+driven through `glab` fails ten steps later in ways that look like an auth problem),
+preflight stops with exit 2 and asks you to say which it is:
+
+```json
+{ "forge": "gitlab" }
+```
+
+`QA_FORGE=gitlab|github` in the environment overrides the config key for a single run.
+
 ## `schema.files` — the one setting worth stopping for
 
 ```json

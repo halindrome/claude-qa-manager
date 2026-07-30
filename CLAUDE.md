@@ -10,7 +10,7 @@ already made (with reasons) so they are not relitigated.
 ## Run everything before you claim anything
 
 ```bash
-bash test/preflight.test.sh          # 151 passed / 0 failed
+bash test/preflight.test.sh          # 160 passed / 0 failed
 bash test/init.test.sh               #  21 passed / 0 failed
 bash test/no-private-identifiers.sh  # must print ok
 claude plugin validate .
@@ -82,7 +82,7 @@ reviewer, which defeats the cycle. Narrow `lens_tags` or the panel width instead
     skills/qa-cycle/   SKILL.md (the spine) + references/ (read on demand)
     skills/qa-init/    thin setup skill; delegates to lib/init.sh
     agents/            qa-manager (orchestrates a round), qa-reviewer (one lens)
-    lib/               preflight.sh, init.sh, second-opinion + SAST helpers
+    lib/               preflight.sh, init.sh, forge seam, second-opinion + SAST helpers
     config/            defaults.json (shipped layer)
     examples/          project-config templates users copy
     test/              two suites + the scrub guard

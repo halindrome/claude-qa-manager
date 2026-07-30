@@ -50,7 +50,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/lib/preflight.sh <MR_NUMBER> <TARGET>
 It emits one JSON object to `$QA_SCRATCH/preflight.json` (and stdout) and
 performs, deterministically, the mechanics that used to be Steps **0** (target +
 base-branch resolution, MR inspection, ownership), **0.25** (QA-token resolve +
-verify), **0.4** (`GITLAB_PROJECT`/`_ENC` + scratch dir), **0.7** (seed
+verify), **0.4** (`PROJECT`/`_ENC` + scratch dir), **0.7** (seed
 `MR_APPROVED`), **2** (branch sync), **2.5** (the SAST driver — writes `sast.md`,
 computes `sast.gate_state`), and **3A.0.1** (schema scan — writes
 `schema-change.md`). Read `preflight.json` and hydrate the skill's variables from
@@ -73,7 +73,8 @@ it:
 | `docs_only` | Step 0.5 docs-only exemption |
 | `round` | the round number for Step 3 — derived from the MR's posted `## QA Round N` notes (max + 1). Do NOT re-derive it by hand, and do not track it in the shell: every invocation is a fresh process, so a hand-tracked round silently resets to 1 and re-fires the round-1-only prompts on a late round. |
 | `proportionality_path` | the `## Proportionality` section injected verbatim into every lens prompt (Step 3A / the manager). Never empty; preflight escalates its contents at `round >= 3`. |
-| `gitlab_project`,`gitlab_project_enc`,`qa_scratch` | as named |
+| `forge` (`gitlab`\|`github`), `forge_cli` (`glab`\|`gh`) | which backend `lib/forge.sh` dispatches to, and which CLI it drives. Everything that touches the forge goes through `forge_*` — never call `glab`/`gh` directly, or the step works on one forge only. |
+| `project`,`project_enc`,`qa_scratch` | as named |
 
 > **`scope` vs `diff_scope` — do not merge these two keys.** Top-level `scope` is
 > the **registry string**: the commit-message token preflight resolved from config
@@ -133,9 +134,10 @@ Policy detail: `references/preflight-internals.md`.
 Before any QA round runs, resolve a **contract** for this MR — the criteria the
 reviewer will verify against. Four decision branches:
 
-1. **Formal JIRA link on the MR.** Run `glab mr view <MR_NUMBER> --output json`
-   and inspect the MR body / GitLab link mechanism for a JIRA URL or related-issue
-   field. If one is present, extract the ticket ID (e.g., `PROJ-1234`) and call
+1. **Formal JIRA link on the MR.** Read the MR/PR through the forge seam
+   (`forge_view_mr <target-path> <MR_NUMBER>`) and inspect `.description` for a JIRA
+   URL or related-issue field. The seam normalizes GitLab and GitHub to one shape,
+   so this branch does not need to know which forge it is on. If one is present, extract the ticket ID (e.g., `PROJ-1234`) and call
    `mcp__jira__jira_get` on it. Capture `summary`, `description`, and any
    acceptance-criteria custom fields. Record `contract_source=jira:<TICKET>`.
 
@@ -320,7 +322,7 @@ and its lenses read the files themselves — do not paste blobs):
 target_abs=<target-abs>  mr=<MR_NUMBER>  round=<N>
 feature_branch=<feature-branch>  target_branch=<target-branch>  diff_range=<remote>/<target-branch>..HEAD
 lenses=<preflight.json .lenses array, verbatim — the panel to spawn>
-gitlab_project=<gitlab_project>  gitlab_project_enc=<gitlab_project_enc>  qa_scratch=<QA_SCRATCH>
+forge=<forge>  project=<project>  project_enc=<project_enc>  qa_scratch=<QA_SCRATCH>
 contract_path=<QA_SCRATCH>/contract.md  sast_path=<SAST_REPORT>  schema_change_path=<QA_SCRATCH>/schema-change.md
 tool_mandate_path=<QA_SCRATCH>/tool-mandate.md
 proportionality_path=<QA_SCRATCH>/proportionality.md
@@ -592,13 +594,22 @@ empty section).>
 > ⚠ Posted with dev credentials — QA agent token unavailable.
 EOF
 cd <target-path>
-if [ "$QA_TOKEN_OK" = "true" ]; then
-  # Post as the QA agent so the comment is attributed to it.
-  qa_glab mr note <MR_NUMBER> -m "$(cat "$QA_SCRATCH/note-round<N>.md")"
+# All forge writes go through the seam — it dispatches to glab or gh from
+# preflight.json's `forge`. Never call glab/gh directly here: a hardcoded `glab`
+# posts nothing on a GitHub PR, and the round note is what the NEXT round's
+# number is derived from, so a silently unposted note resets the cycle to 1.
+. "${CLAUDE_PLUGIN_ROOT}/lib/forge.sh"
+forge_init "$(git remote get-url "$REMOTE")" "${CLAUDE_PLUGIN_ROOT}/lib"
+
+# Pass the QA token when it verified, an empty token to fall back to the dev
+# identity. The warning line above already explains the fallback in the comment.
+if forge_post_note "$PROJECT" <MR_NUMBER> "$QA_SCRATCH/note-round<N>.md" \
+     "$([ "$QA_TOKEN_OK" = "true" ] && printf '%s' "$QA_TOKEN")"; then
+  echo "round note posted"
 else
-  # Fall back to the dev token. The warning line above already explains
-  # why the comment is being posted under the dev identity.
-  glab mr note <MR_NUMBER> -m "$(cat "$QA_SCRATCH/note-round<N>.md")"
+  # A failed post is NOT a posted note. Say so and stop rather than continuing
+  # to Step 3D, which would offer round N+1 that preflight cannot derive.
+  echo "ERROR: round note was NOT posted; do not proceed to the next round" >&2
 fi
 ```
 

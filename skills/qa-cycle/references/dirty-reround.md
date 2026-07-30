@@ -81,17 +81,22 @@ if [ "$QA_TOKEN_OK" = "true" ] \
    && [ "$ROUND_HAS_NEW_CRITICAL_OR_MAJOR" = "true" ] \
    && [ "$UNAPPROVE_ON_DIRTY" = "true" ]; then
   cd <target-path>
-  if qa_glab mr unapprove <MR_NUMBER>; then
+  # Through the seam. On GitHub there is no "unapprove": forge_unapprove
+  # DISMISSES the QA identity's own latest approving review, which is the same
+  # outcome. Nothing to dismiss counts as success — there is no approval left to
+  # revoke, which is the state this block wants.
+  printf '%s\n' "⚠ Approval revoked: round <N> found critical/major findings beyond those previously deferred." \
+    > "$QA_SCRATCH/revoke-note.md"
+  if forge_unapprove "$PROJECT" <MR_NUMBER> "$QA_TOKEN"; then
     # F-09: exit-check the revocation comment too, matching Step 3E's pattern.
-    if qa_glab mr note <MR_NUMBER> \
-        -m "⚠ Approval revoked: round <N> found critical/major findings beyond those previously deferred."; then
+    if forge_post_note "$PROJECT" <MR_NUMBER> "$QA_SCRATCH/revoke-note.md" "$QA_TOKEN" >/dev/null; then
       MR_APPROVED=false
     else
-      echo "warn: revocation note POST failed but unapprove succeeded — MR is un-approved on GitLab but has no audit comment for this round." >&2
+      echo "warn: revocation note POST failed but unapprove succeeded — the MR/PR is un-approved on the forge but has no audit comment for this round." >&2
       MR_APPROVED=false
     fi
   else
-    echo "warn: qa_glab mr unapprove failed; leaving MR_APPROVED=true and proceeding." >&2
+    echo "warn: forge_unapprove failed; leaving MR_APPROVED=true and proceeding." >&2
   fi
 fi
 ```

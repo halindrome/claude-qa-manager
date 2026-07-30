@@ -178,15 +178,30 @@ Before any QA round runs, resolve credentials for **QA-attributed GitLab actions
 
    Note: the `sed -nE 's/.*Logged in to [^ ]+ as ([^ ]+).*/\1/p' | head -1` extraction is the same form Step 0 uses for the dev token, so the two probes stay symmetric and portable across BSD/macOS and GNU userspaces. On mismatch, auth failure, or empty `QA_TOKEN`, set `QA_TOKEN_OK=false` and continue — the downstream paths in Step 3C and Step 3E both branch on `QA_TOKEN_OK`.
 
-4. **Helper convention.** When `QA_TOKEN_OK=true`, the rest of this skill treats this shell function as the way to invoke QA-attributed `glab` calls:
+4. **Helper convention — the forge seam, not a `qa_glab` wrapper.** Every `forge_*`
+   function takes the QA token as its LAST argument and applies it internally as an
+   env-var prefix (`GITLAB_TOKEN=`/`GH_TOKEN=`), so there is no per-call wrapper to
+   define and no token ever appears in a process listing:
 
    ```bash
-   qa_glab() { GITLAB_TOKEN="$QA_TOKEN" glab "$@"; }
+   . "${CLAUDE_PLUGIN_ROOT}/lib/forge.sh"
+   forge_init "$(git remote get-url "$REMOTE")" "${CLAUDE_PLUGIN_ROOT}/lib"
+
+   forge_post_note "$PROJECT" "$MR_NUMBER" "$note_file" "$QA_TOKEN"   # QA identity
+   forge_post_note "$PROJECT" "$MR_NUMBER" "$note_file" ""            # dev identity
    ```
 
-   When `QA_TOKEN_OK=false`, fall back to plain `glab` for the comment-posting paths and **skip approval entirely** (see Step 3E).
+   When `QA_TOKEN_OK=false`, pass an empty token for the comment-posting paths (that
+   falls back to the CLI's own credentials) and **skip approval entirely** (Step 3E).
 
-5. **Identity scope.** `IS_OWN_BRANCH` detection in Step 0 stays anchored to the **dev token's** logged-in user, not the QA agent. The QA agent is never the MR author — do not use `qa_glab` for the auth/identity probe in Step 0.
+   The earlier design was a `qa_glab() { GITLAB_TOKEN=$QA_TOKEN glab "$@"; }` wrapper.
+   It only ever worked on GitLab, and every call site that used it was a site that had
+   to be found and rewritten when GitHub support landed. The seam exists so the next
+   forge costs one file, not one edit per call site.
+
+5. **Identity scope.** `IS_OWN_BRANCH` detection in Step 0 stays anchored to the **dev
+   token's** logged-in user, not the QA agent — call `forge_auth_user` with NO token
+   there. The QA agent is never the MR author.
 
 ---
 
@@ -197,12 +212,12 @@ Every `/tmp/...` path the skill writes (contract file, reviewer outputs, SAST re
 Define `QA_SCRATCH` once at this step and reference it from every downstream step:
 
 ```bash
-# Resolve GITLAB_PROJECT here (early) so the scratch-dir hash below includes
+# Resolve PROJECT here (early) so the scratch-dir hash below includes
 # the project disambiguator. Step 2.5 references the same variable without
 # recomputation. (Prior versions resolved this only in Step 2.5, which left
 # the hash input collapsing to an empty string — defeating cross-project
 # disambiguation that Step 0.4 promises.)
-GITLAB_PROJECT=$(cd <target-path> && git remote get-url <remote> \
+PROJECT=$(cd <target-path> && git remote get-url <remote> \
   | sed -E 's,^.*[/:]([^/]+/[^/]+)\.git$,\1,')
 
 # Pick whichever sha256 tool the platform provides (macOS/BSD: shasum -a 256;
@@ -212,7 +227,7 @@ GITLAB_PROJECT=$(cd <target-path> && git remote get-url <remote> \
 # command name including any embedded spaces, e.g. literal "shasum -a 256",
 # which fails with "command not found" and silently produces an empty hash —
 # defeating the entire purpose of the scratch-dir namespacing).
-QA_SCRATCH_INPUT=$(printf '%s|%s|%s' "$(pwd)" "$GITLAB_PROJECT" "$MR_NUMBER")
+QA_SCRATCH_INPUT=$(printf '%s|%s|%s' "$(pwd)" "$PROJECT" "$MR_NUMBER")
 if command -v shasum >/dev/null 2>&1; then
   QA_SCRATCH_HASH=$(printf '%s' "$QA_SCRATCH_INPUT" | shasum -a 256 | awk '{print $1}' | cut -c1-12)
 else
@@ -222,7 +237,7 @@ QA_SCRATCH="/tmp/qa-cycle-${QA_SCRATCH_HASH}-${MR_NUMBER}"
 mkdir -p "$QA_SCRATCH"
 ```
 
-- `GITLAB_PROJECT` is resolved at the top of this block (was previously deferred to Step 2.5). Step 2.5 reuses this same variable without recomputing it.
+- `PROJECT` is resolved at the top of this block (was previously deferred to Step 2.5). Step 2.5 reuses this same variable without recomputing it.
 - `QA_SCRATCH` is per-invocation. A subsequent `/qa-cycle` run on the same MR from the same `cwd` reuses the same dir — that's intentional, so the contract file and earlier round outputs are still discoverable on `--resume`-style flows.
 - Treat the directory as ephemeral: nothing depends on its contents persisting beyond the invocation.
 
@@ -252,14 +267,14 @@ the QA agent identity:
 ```bash
 # URL-encode the project path for the GitLab API (e.g. example-org/example-repo
 # → example-org%2Fexample-repo).
-GITLAB_PROJECT_ENC=$(printf '%s' "$GITLAB_PROJECT" | sed 's,/,%2F,g')
+PROJECT_ENC=$(printf '%s' "$PROJECT" | sed 's,/,%2F,g')
 
 # Pull every approver username the API surfaces under approval_state. Use
 # multiple jq paths with `// empty` so we tolerate the different shapes
 # GitLab returns across versions/MR rule configurations:
 #   - .rules[].approved_by[].username        (per-rule approvers)
 #   - .approved_by[].user.username           (top-level approvers list)
-APPROVED_BY=$(qa_glab api "projects/${GITLAB_PROJECT_ENC}/merge_requests/${MR_NUMBER}/approval_state" 2>/dev/null \
+APPROVED_BY=$(qa_glab api "projects/${PROJECT_ENC}/merge_requests/${MR_NUMBER}/approval_state" 2>/dev/null \
   | jq -r '
       [ (.rules[]?.approved_by[]?.username // empty),
         (.approved_by[]?.user.username // empty) ]

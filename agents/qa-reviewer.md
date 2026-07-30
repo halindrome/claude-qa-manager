@@ -74,7 +74,8 @@ Every finding carries all four axes:
 ## Investigation Workflow
 
 1. **Read the JIRA ticket contract** passed in your prompt. Extract the acceptance criteria — these are your verification targets, not advisory context.
-2. **Understand the change narrative.** Run `git log origin/<base-branch>..HEAD --oneline` and `git diff origin/<base-branch>..HEAD --stat`. Use `glab mr view <MR_NUMBER>` for the MR description.
+2. **Understand the change narrative.** Run `git log origin/<base-branch>..HEAD --oneline` and `git diff origin/<base-branch>..HEAD --stat`. For the MR/PR description use the forge seam, which works on both forges:
+   `. "${CLAUDE_PLUGIN_ROOT}/lib/forge.sh" && forge_init "$(git remote get-url <remote>)" "${CLAUDE_PLUGIN_ROOT}/lib" && forge_view_mr . <MR_NUMBER> | jq -r .description`
 3. **Read changed files in full.** Do not just look at diffs — read complete files to understand surrounding context, callers, and invariants. (If your prompt carries a **Code navigation** mandate, use those tools per it.)
 4. **Verify each acceptance criterion against the current branch state.** For each criterion, determine `satisfied | partially-satisfied | not-satisfied | not-applicable` and collect evidence.
 5. **Act as devil's advocate on changed code.** For each change ask: empty / null / huge inputs; mid-flight network failure; navigation / cancellation; concurrent state races; downstream compatibility of modified function signatures or data shapes.

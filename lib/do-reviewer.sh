@@ -43,7 +43,7 @@ MODEL_OVERRIDE=""
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: do-reviewer.sh --mr <N> --target <name> --round <N> \
+Usage: do-reviewer.sh --mr|--pr <N> --target <name> --round <N> \
            --contract-file <path> [--skip-contract] --output <path> \
            [--endpoint URL] [--model NAME]
 
@@ -69,7 +69,10 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --mr) MR="$2"; shift 2 ;;
+    # --pr is the same flag: this shim was forked into a GitHub copy that
+    # differed from the GitLab one by 18 lines, almost all of them MR<->PR
+    # wording. Accepting both spellings is the whole of that merge.
+    --mr|--pr) MR="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
     --round) ROUND="$2"; shift 2 ;;
     --contract-file) CONTRACT_FILE="$2"; shift 2 ;;

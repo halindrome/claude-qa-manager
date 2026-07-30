@@ -125,7 +125,9 @@ Emit a dedicated `## Schema Change` section in your report:
 3. Read each functionally significant changed file in full — not just the diff. Understand
    surrounding context, callers, and invariants. Skip mechanical one-liner additions
    (e.g. `standalone: false`) unless you spot something wrong.
-4. Run `glab mr view <MR_NUMBER>` for the MR description and any existing comments.
+4. Read the MR/PR description via the forge seam (`forge_view_mr . <MR_NUMBER> | jq -r .description`)
+   and any existing comments via `forge_notes "$PROJECT" <MR_NUMBER>`. Do not call `glab`/`gh`
+   directly — the seam dispatches on the remote and works for both forges.
 5. Act as devil's advocate: for each change ask — what happens when input is
    empty/null/huge? What if a network call fails mid-flight? What if the user
    navigates away? Are downstream callers of modified functions still compatible?
@@ -141,7 +143,7 @@ Emit a dedicated `## Schema Change` section in your report:
 ## MR context
 
 Title: <MR title>
-Key changes: <paste bullet summary of what the MR does, from glab mr view output>
+Key changes: <paste bullet summary of what the MR does, from forge_view_mr output>
 
 ## Report format — return findings in exactly this structure
 
@@ -199,7 +201,8 @@ diff AND each changed file's contents from the MR's **source branch ref**, not
 from the local working-tree `HEAD`. Always pass `MR_SOURCE_BRANCH=<feature-branch>`
 (as shown below) so the review matches the MR even when the submodule working
 tree is checked out on another branch. If omitted, the shim resolves the source
-branch via `glab mr view`, falling back to local `HEAD` with a warning. (This
+branch via the forge seam's `forge_view_mr`, falling back to local `HEAD` with
+a warning. (This
 guards the historical failure mode where a stray working-tree checkout caused
 the second-opinion reviewer to review an unrelated changeset.)
 

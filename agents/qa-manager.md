@@ -25,7 +25,7 @@ You are given, as literal values or scratch-file paths:
 `target_abs`, `mr`, `round`, `feature_branch`, `target_branch`, `diff_range`,
 `lenses` (JSON array of lens names from preflight, 3-6 entries — the panel to
 spawn; see the Lens catalog in step 1),
-`gitlab_project`, `gitlab_project_enc`, `qa_scratch`, `contract_path`,
+`forge`, `project`, `project_enc`, `qa_scratch`, `contract_path`,
 `sast_path`, `schema_change_path`, `tool_mandate_path`, `proportionality_path`,
 `schema_change_detected`,
 `skip_contract_verification`, `DOUBLE`, `TRIPLE`, `reviewer_override`,
@@ -199,19 +199,26 @@ contradiction in `blocking_summary` rather than sitting on the report.
 When you do post, resolve the QA token **env-var first, then file** — the same
 order preflight uses. Do NOT hardcode the token path: the token may be supplied
 purely via the environment, in which case reading only the file yields an empty
-`GITLAB_TOKEN`, `glab` silently falls back to the developer's credentials, and the
+token, the forge CLI silently falls back to the developer's credentials, and the
 round note posts under the **wrong identity**.
+
+Post through the **forge seam**, never `glab`/`gh` directly — `forge_init`
+dispatches on the remote, so the same call works for a merge request and a pull
+request. A hardcoded `glab` here posts nothing on GitHub, and since the next
+round's number is derived from the posted notes, that silently resets the cycle.
 
 ```bash
 ( cd <target_abs> \
+  && . "${CLAUDE_PLUGIN_ROOT}/lib/forge.sh" \
+  && forge_init "$(git remote get-url <remote>)" "${CLAUDE_PLUGIN_ROOT}/lib" \
   && QA_TOKEN="${<qa_token_env>:-}" \
   && [ -n "$QA_TOKEN" ] || QA_TOKEN="$(tr -d '[:space:]' < <qa_token_file> 2>/dev/null)" \
   && [ -n "$QA_TOKEN" ] \
-  && GITLAB_TOKEN="$QA_TOKEN" glab mr note <mr> -m "$(cat <qa_scratch>/note-round<round>.md)" )
+  && forge_post_note "<project>" <mr> "<qa_scratch>/note-round<round>.md" "$QA_TOKEN" )
 ```
 
-Use the env-var-prefix form shown (`GITLAB_TOKEN=... glab ...`) — never pass the
-token as an argument, where it would be visible in a process listing. If neither
+The seam passes the token as an env-var PREFIX internally — never pass a token as
+a command argument, where it would be visible in a process listing. If neither
 source yields a token, do not post: set `note_posted=false` and let the caller
 handle it.
 

@@ -25,18 +25,33 @@ approval:
    does NOT satisfy this requirement.
 
    ```bash
-   # Use the /approvals endpoint — it reflects approvals more reliably than
-   # /approval_state, which has been observed to lag (return an empty
-   # approved_by) immediately after a human approves.
-   HUMAN_APPROVERS=$(qa_glab api \
-     "projects/${GITLAB_PROJECT_ENC}/merge_requests/${MR_NUMBER}/approvals" 2>/dev/null \
-     | jq -r --arg author "$MR_AUTHOR" --arg qa "$expected_username" \
-         '[.approved_by[]?.user.username | select(. != $author and . != $qa)] | length')
-   if [ "${HUMAN_APPROVERS:-0}" -ge 1 ]; then SCHEMA_HUMAN_APPROVED=true; else SCHEMA_HUMAN_APPROVED=false; fi
+   # Go through the forge seam — it works on both forges and already prefers
+   # GitLab's /approvals endpoint over /approval_state, which has been observed
+   # to lag (returning an empty approved_by) for seconds after a human approves.
+   # A lagging read here reports "no human has approved" on an MR a human just
+   # approved, which is the whole gate failing open.
+   . "${CLAUDE_PLUGIN_ROOT}/lib/forge.sh"
+   forge_init "$(git remote get-url "$REMOTE")" "${CLAUDE_PLUGIN_ROOT}/lib"
+
+   APPROVERS=$(forge_approvers "$PROJECT" "$MR_NUMBER" "$QA_TOKEN") || {
+     # A FAILED probe is not "nobody approved". Treat it as unknown and STOP —
+     # this gate exists to require a human, so an unreadable answer must never
+     # resolve to "proceed".
+     echo "could not read approvals; schema gate cannot be satisfied this round" >&2
+     SCHEMA_HUMAN_APPROVED=unknown
+   }
+   if [ "${SCHEMA_HUMAN_APPROVED:-}" != "unknown" ]; then
+     HUMAN_APPROVERS=$(printf '%s\n' "$APPROVERS" | awk 'NF' \
+       | grep -vxF -- "$MR_AUTHOR" | grep -vxF -- "$expected_username" | wc -l | tr -d ' ')
+     if [ "${HUMAN_APPROVERS:-0}" -ge 1 ]; then SCHEMA_HUMAN_APPROVED=true; else SCHEMA_HUMAN_APPROVED=false; fi
+   fi
    ```
 
-   (`MR_AUTHOR` is the MR author captured in Step 0; `expected_username` and the
-   `qa_glab` helper come from Step 0.25; `GITLAB_PROJECT_ENC` from Step 0.7.)
+   (`MR_AUTHOR` is the MR author captured in Step 0; `expected_username` and
+   `QA_TOKEN` come from Step 0.25; `PROJECT` and `REMOTE` from `preflight.json`.
+   `-x`/`-F` on both greps: the username is a whole literal, not a substring or a
+   regex — without them a bot name containing a `.` matches usernames it should
+   not, and a name that is a substring of another gets miscounted.)
 
 2. **The rollout/base-file checklist is acknowledged.** Present an
    `AskUserQuestion`:
@@ -118,10 +133,10 @@ path for non-schema MRs.
       done
     } > "$QA_SCRATCH/deferred-round<N>.md"
 
-    # Capture the note URL. `glab mr note` prints it on success; fall back to the
-    # MR URL rather than interpolating an empty string into the approval comment.
-    DEFERRED_NOTE_URL=$(qa_glab mr note <MR_NUMBER> \
-      -m "$(cat "$QA_SCRATCH/deferred-round<N>.md")" 2>/dev/null \
+    # Capture the note URL — both CLIs print it on success. Through the seam, so
+    # this works on a PR as well as an MR.
+    DEFERRED_NOTE_URL=$(forge_post_note "$PROJECT" <MR_NUMBER> \
+      "$QA_SCRATCH/deferred-round<N>.md" "$QA_TOKEN" 2>/dev/null \
       | grep -oE 'https://[^[:space:]]+' | head -1)
     if [ -z "$DEFERRED_NOTE_URL" ]; then
       echo "error: could not post or resolve the deferred-findings note. Refusing to approve." >&2
@@ -222,15 +237,16 @@ if [ "$SAST_GATE_STATE" != "clean" ]; then
   APPROVE_NOTE="$APPROVE_NOTE (SAST: ${SAST_GATE_STATE})."
 fi
 
-if qa_glab mr approve <MR_NUMBER>; then
-  if qa_glab mr note <MR_NUMBER> -m "$APPROVE_NOTE"; then
+printf '%s\n' "$APPROVE_NOTE" > "$QA_SCRATCH/approve-note.md"
+if forge_approve "$PROJECT" <MR_NUMBER> "$QA_TOKEN"; then
+  if forge_post_note "$PROJECT" <MR_NUMBER> "$QA_SCRATCH/approve-note.md" "$QA_TOKEN" >/dev/null; then
     MR_APPROVED=true
   else
-    echo "warn: mr approve succeeded but approval-comment POST failed; MR is approved on GitLab but the audit comment was not recorded." >&2
+    echo "warn: approve succeeded but the approval-comment POST failed; the MR/PR is approved on the forge but the audit comment was not recorded." >&2
     MR_APPROVED=true
   fi
 else
-  echo "warn: qa_glab mr approve failed; leaving MR_APPROVED=$MR_APPROVED unchanged." >&2
+  echo "warn: forge_approve failed; leaving MR_APPROVED=$MR_APPROVED unchanged." >&2
 fi
 ```
 

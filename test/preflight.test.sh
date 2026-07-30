@@ -57,6 +57,12 @@ export GIT_TERMINAL_PROMPT=0     # never block on credentials
 # papering over it: one dir, removed wholesale, and no possible collision.
 SUITE_TMP=$(mktemp -d)
 export QA_CYCLE_SCRATCH_ROOT="$SUITE_TMP"
+
+# A fixture's "remote" is a local bare repo, so it has no host for forge_detect
+# to sniff. QA_FORGE is the production escape hatch for exactly that blind spot
+# (self-hosted GitLab / GitHub Enterprise), used here for the same reason.
+# The URL-parser block below unsets it where it asserts the sniffing itself.
+export QA_FORGE=gitlab
 trap 'rm -rf "$SUITE_TMP"' EXIT
 
 PASS=0; FAIL=0
@@ -88,6 +94,11 @@ mkfixture() {
 
   cp "$PREFLIGHT_SRC" "$plugin/lib/preflight.sh"
   cp "$DEFAULTS_SRC"  "$plugin/config/defaults.json"
+  # The REAL forge seam, not a stub: preflight reaches the forge only through
+  # these, so stubbing them would re-implement production logic in the test —
+  # the exact failure documented in this file's header. The `glab` binary on
+  # $PATH is what gets stubbed instead, one layer lower.
+  cp "$REPO_SRC/lib/forge.sh" "$REPO_SRC/lib/forge-gitlab.sh" "$REPO_SRC/lib/forge-github.sh" "$plugin/lib/"
 
   # Project layer only. Credentials/policy would normally arrive from the user
   # layer; the fixture puts everything here so a case can rewrite one file.
@@ -111,7 +122,7 @@ JSON
   # Stub SAST helper. Bodies below are compared against the real helper's emit()
   # strings by the [stub fidelity] block — if the real helper's wording changes,
   # that block fails and these stubs must be updated.
-  cat > "$plugin/lib/fetch-sast-findings.sh" <<'SH'
+  cat > "$plugin/lib/fetch-sast-gitlab.sh" <<'SH'
 #!/usr/bin/env bash
 out=""; while [ $# -gt 0 ]; do [ "$1" = "--output" ] && out="$2"; shift; done
 [ -n "${SAST_STUB_EXIT:-}" ] && [ "$SAST_STUB_EXIT" != "0" ] && { echo "stub helper failure" >&2; exit "$SAST_STUB_EXIT"; }
@@ -153,6 +164,35 @@ esac
 exit 0
 SH
   chmod +x "$bin/glab"
+
+  # gh stub — the GitHub counterpart, emitting GITHUB's native shape so that
+  # forge-github.sh's normalization is what the assertions actually exercise.
+  # Stubbing the normalized shape here instead would re-implement the mapping in
+  # the test and assert against the copy: 41/41 green while the real mapping is
+  # broken. That is the failure this file's header exists to warn about.
+  #   GH_STUB_USER      -> the authenticated login (ownership)
+  #   GH_STUB_APPROVER  -> a login to place in the reviews list (MR_APPROVED seed)
+  #   GH_STUB_NOTES     -> raw JSON array for the issue-comments endpoint
+  #   GH_STUB_NOTES_EXIT-> non-zero to make the notes probe FAIL
+  cat > "$bin/gh" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *"api user"*)     printf '%s' "\${GH_STUB_USER:-devuser}" ;;
+  *"pr view"*)      jq -nc --arg s "$src_branch" --arg t "$tgt_branch" \
+                      --arg title "\${GH_STUB_TITLE:-t}" --arg body "\${GH_STUB_DESC:-d}" \
+                      '{title:\$title,author:{login:"devuser"},headRefName:\$s,baseRefName:\$t,state:"OPEN",isDraft:false,changedFiles:1,statusCheckRollup:[{conclusion:"SUCCESS"}],body:\$body}' ;;
+  *"/reviews"*)     if [ -n "\${GH_STUB_APPROVER:-}" ]; then
+                      jq -nc --arg u "\$GH_STUB_APPROVER" '[{user:{login:\$u},state:"APPROVED",submitted_at:"2026-01-01T00:00:00Z"}]'
+                    else echo '[]'; fi ;;
+  *"/comments"*)    if [ -n "\${GH_STUB_NOTES_EXIT:-}" ] && [ "\${GH_STUB_NOTES_EXIT}" != "0" ]; then
+                      echo "stub notes failure" >&2; exit "\${GH_STUB_NOTES_EXIT}"
+                    fi
+                    printf '%s' "\${GH_STUB_NOTES:-[]}" ;;
+  *)                echo '{}' ;;
+esac
+exit 0
+SH
+  chmod +x "$bin/gh"
   printf '%s\n' "$root"
 }
 
@@ -260,15 +300,19 @@ eq "no .review_mode + approval knob 500 -> falls back -> sequential" "$(jq -r '.
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------
-echo "[remote-URL parser — via the REAL script's emitted .gitlab_project]"
-# Drives preflight's own parser. Hosts are .invalid and GIT_SSH_COMMAND=false, so
-# the fetch dies instantly with no DNS; preflight still emits preflight.json on
-# the exit-4 path, so .gitlab_project remains assertable.
+echo "[remote-URL parser — via the REAL script's emitted .project]"
+# Drives forge_project_slug through preflight. Hosts are .invalid and
+# GIT_SSH_COMMAND=false, so the fetch dies instantly with no DNS; preflight still
+# emits preflight.json on the exit-4 path, so .project remains assertable.
+#
+# QA_FORGE stays set here on purpose: these cases test the PARSER, and most of
+# these hosts are .invalid with no forge name to sniff. Detection itself is
+# asserted separately in the block below, with QA_FORGE unset.
 url_case() {
   local r; r=$(mkfixture "feature/x" "main")
   git -C "$r/repo" remote set-url origin "$2"
   local out; out=$(run_preflight "$r" 73 mono); note_scratch "$out"
-  eq "$1" "$(jq -r '.gitlab_project // "<none>"' <<<"$out")" "$3"
+  eq "$1" "$(jq -r '.project // "<none>"' <<<"$out")" "$3"
   rm -rf "$r"
 }
 url_case "scp-style + .git"   'git@host.invalid:grp/proj.git'       'grp/proj'
@@ -281,6 +325,37 @@ url_case "ssh:// with path"   'ssh://git@host.invalid/a/b/proj.git' 'a/b/proj'
 # the whole URL through as the "project" — the old parser's actual failure mode.
 r=$(mkfixture "feature/x" "main"); git -C "$r/repo" remote set-url origin 'notaurl'
 run_preflight "$r" 73 mono >/dev/null; eq "unparseable remote -> exit 2" "$?" "2"; rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+echo "[forge selection — QA_FORGE overrides, URL sniffing is the fallback]"
+# The suite exports QA_FORGE=gitlab globally (a fixture remote is a local path
+# with no host). Unset it here so these cases exercise the real precedence:
+#   QA_FORGE > .forge config key > URL sniffing.
+#
+# An UNRESOLVABLE forge must be exit 2 with a named cause, never a silent
+# default to GitLab: a GitHub repo quietly reviewed through glab would fail in
+# ways that look like an auth problem, ten steps later.
+forge_case() {
+  local label="$1" url="$2" want="$3" cfg="${4:-.}"
+  local r; r=$(mkfixture "feature/x" "main" "$cfg")
+  git -C "$r/repo" remote set-url origin "$url"
+  local out; out=$(QA_FORGE="" run_preflight "$r" 73 mono); local rc=$?
+  note_scratch "$out"
+  if [ "$want" = "exit2" ]; then eq "$label" "$rc" "2"
+  else eq "$label" "$(jq -r '.forge // "<none>"' <<<"$out")" "$want"; fi
+  rm -rf "$r"
+}
+forge_case "gitlab.com URL -> gitlab" 'git@gitlab.com:grp/proj.git'   'gitlab'
+forge_case "github.com URL -> github" 'git@github.com:grp/proj.git'   'github'
+forge_case "self-hosted host, no config -> exit 2" 'git@git.example.invalid:grp/proj.git' 'exit2'
+forge_case "self-hosted host + .forge config -> gitlab" \
+  'git@git.example.invalid:grp/proj.git' 'gitlab' '.forge = "gitlab"'
+# Config must not beat an explicit env value.
+r=$(mkfixture "feature/x" "main" '.forge = "gitlab"')
+git -C "$r/repo" remote set-url origin 'git@git.example.invalid:grp/proj.git'
+out=$(QA_FORGE=github run_preflight "$r" 73 mono); note_scratch "$out"
+eq "QA_FORGE beats the .forge config key" "$(jq -r '.forge // "<none>"' <<<"$out")" "github"
+rm -rf "$r"
 
 # ---------------------------------------------------------------------------
 echo "[SAST classifier — every helper exit-0 path]"
@@ -321,16 +396,23 @@ rm -rf "$r"
 echo "[stub fidelity — the stubs above must match the REAL helper's wording]"
 # The SAST cases are only meaningful if the stub bodies say what the real helper
 # says. Pin each classifier sentence to the real script.
-HELPER="$REPO_SRC/lib/fetch-sast-findings.sh"
-if [ -f "$HELPER" ]; then
-  for phrase in "No pipeline associated with MR" "No security stage detected" \
-                "Security scans are still in progress" "## NEW SAST findings"; do
-    if grep -qF -- "$phrase" "$HELPER"; then ok "real helper emits: $phrase"
-    else bad "real helper emits: $phrase" "not found in $HELPER — stubs are stale, SAST cases prove nothing"; fi
-  done
-else
-  bad "fetch-sast-findings.sh present" "not found at $HELPER"
-fi
+#
+# BOTH helpers, not just the GitLab one. preflight's classifier is shared, so a
+# phrase reworded on one side only silently drops that forge into
+# skipped:unknown — a whole forge losing its security gate with every test still
+# green. Checking one helper is what would let that ship.
+for helper_forge in gitlab github; do
+  HELPER="$REPO_SRC/lib/fetch-sast-${helper_forge}.sh"
+  if [ -f "$HELPER" ]; then
+    for phrase in "No pipeline associated with MR" "No security stage detected" \
+                  "Security scans are still in progress" "## NEW SAST findings"; do
+      if grep -qF -- "$phrase" "$HELPER"; then ok "$helper_forge helper emits: $phrase"
+      else bad "$helper_forge helper emits: $phrase" "not found in $HELPER — stubs are stale, SAST cases prove nothing"; fi
+    done
+  else
+    bad "fetch-sast-${helper_forge}.sh present" "not found at $HELPER"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 echo "[schema-change scan — the CONFIGURED schema file(s)]"

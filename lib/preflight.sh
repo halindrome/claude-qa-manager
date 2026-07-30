@@ -67,9 +67,12 @@ TARGET="${2:-}"
 [ -n "$MR_NUMBER" ] || die_usage "missing MR number (usage: preflight.sh <MR> <TARGET>)"
 [ -n "$TARGET" ]    || die_usage "missing target (usage: preflight.sh <MR> <TARGET>)"
 
-for t in git jq glab awk; do
+for t in git jq awk; do
   command -v "$t" >/dev/null 2>&1 || die_usage "required tool '$t' not on PATH"
 done
+# The forge CLI (glab/gh) is checked further down, once the remote has told us
+# which forge this is — demanding both here would make a GitHub repo fail on a
+# missing glab.
 
 # This script ships inside the plugin, NOT inside the repo under review, so its
 # own location says nothing about where the work is. Derive the repo root from git.
@@ -236,12 +239,40 @@ if [ -z "$RESOLVED_BASE" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Step 0.3 — resolve the forge and the project slug from the remote
+#
+# Ordered BEFORE the dev identity and the MR fetch because both go through the
+# forge seam, and before the scratch dir because the hash input includes the
+# project (the disambiguator — two targets can share an MR number).
+# ---------------------------------------------------------------------------
+FORGE_REMOTE_URL=$(cd "$TARGET_ABS" && git remote get-url "$REMOTE" 2>/dev/null)
+# shellcheck source=forge.sh
+. "$PLUGIN_ROOT/lib/forge.sh" || die_internal "could not load lib/forge.sh"
+# Explicit config beats URL sniffing — a self-hosted GitLab or a GitHub
+# Enterprise host contains neither "gitlab" nor "github". An env value already
+# in QA_FORGE wins over the config key, so a one-off run can override a repo.
+QA_FORGE="${QA_FORGE:-$(jq -r '.forge // ""' "$BB")}"
+export QA_FORGE
+forge_init "$FORGE_REMOTE_URL" "$PLUGIN_ROOT/lib" \
+  || die_usage "could not determine the forge for remote '$REMOTE' (url '$FORGE_REMOTE_URL'); set \"forge\": \"gitlab\"|\"github\" in your project config"
+
+FORGE_CLI=$(forge_cli)
+command -v "$FORGE_CLI" >/dev/null 2>&1 \
+  || die_usage "required tool '$FORGE_CLI' not on PATH (needed for $FORGE)"
+
+FORGE_PROJECT=$(forge_project_slug "$FORGE_REMOTE_URL") \
+  || die_usage "could not resolve a <group>/<project> path from remote '$REMOTE' url '$FORGE_REMOTE_URL'"
+FORGE_PROJECT_ENC=$(forge_project_enc "$FORGE_PROJECT")
+
+# ---------------------------------------------------------------------------
 # Step 0 — dev identity + MR inspection (dev token)
 # ---------------------------------------------------------------------------
-DEV_USER=$(glab auth status 2>&1 | sed -nE 's/.*Logged in to [^ ]+ as ([^ ]+).*/\1/p' | head -1)
+# An unresolvable dev identity is NOT fatal: it only feeds is_own_branch, and
+# the safe answer there is false (report-only), which the empty string gives.
+DEV_USER=$(forge_auth_user || true)
 
-MR_JSON=$(cd "$TARGET_ABS" && glab mr view "$MR_NUMBER" --output json 2>/dev/null) || \
-  die_usage "glab mr view $MR_NUMBER failed in $TARGET_ABS"
+MR_JSON=$(forge_view_mr "$TARGET_ABS" "$MR_NUMBER") || \
+  die_usage "could not read $FORGE request $MR_NUMBER in $TARGET_ABS (via $FORGE_CLI)"
 MR_TITLE=$(printf '%s' "$MR_JSON"      | jq -r '.title // ""')
 MR_AUTHOR=$(printf '%s' "$MR_JSON"     | jq -r '.author.username // ""')
 SOURCE_BRANCH=$(printf '%s' "$MR_JSON" | jq -r '.source_branch // ""')
@@ -256,29 +287,12 @@ IS_OWN_BRANCH=false
 [ -n "$DEV_USER" ] && [ "$DEV_USER" = "$MR_AUTHOR" ] && IS_OWN_BRANCH=true
 
 # ---------------------------------------------------------------------------
-# Step 0.4 — GITLAB_PROJECT + scratch dir (resolved BEFORE the hash, matching
-# the skill's fix: the hash input must include the project disambiguator)
+# Step 0.4 — scratch dir. FORGE_PROJECT is resolved in Step 0.3 above (it has to
+# be: the hash input includes the project disambiguator, and the forge seam
+# needs it earlier still). The URL parsing itself now lives in
+# forge_project_slug — one implementation, shared by both backends.
 # ---------------------------------------------------------------------------
-# Resolve <group>[/<subgroup>...]/<project> from the remote URL. The previous
-# one-shot sed (`s,^.*[/:]([^/]+/[^/]+)\.git$,\1,`) had two defects: it required
-# a literal `.git` suffix (a non-matching URL passed through UNCHANGED, so the
-# full URL silently became the "project" and every later glab api call 404'd),
-# and its fixed two-segment capture truncated nested subgroups (a/b/c -> b/c).
-# Strip the parts instead of trying to capture the whole shape at once.
-GITLAB_REMOTE_URL=$(cd "$TARGET_ABS" && git remote get-url "$REMOTE" 2>/dev/null)
-GITLAB_PROJECT="${GITLAB_REMOTE_URL%.git}"            # optional .git suffix
-GITLAB_PROJECT="${GITLAB_PROJECT%/}"                  # optional trailing slash
-GITLAB_PROJECT=$(printf '%s' "$GITLAB_PROJECT" | sed -E '
-  s,^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+/,,;   # scheme://host/       -> ""
-  s,^[^/]*:,,;                             # user@host: | sshalias: -> ""  (scp-style / SSH alias)
-')
-GITLAB_PROJECT="${GITLAB_PROJECT#/}"                  # leading slash from ssh://host/…
-if [ -z "$GITLAB_PROJECT" ] || ! printf '%s' "$GITLAB_PROJECT" | grep -q '/'; then
-  die_usage "could not resolve a <group>/<project> path from remote '$REMOTE' url '$GITLAB_REMOTE_URL'"
-fi
-GITLAB_PROJECT_ENC=$(printf '%s' "$GITLAB_PROJECT" | sed 's,/,%2F,g')
-
-QA_SCRATCH_INPUT=$(printf '%s|%s|%s' "$TARGET_ABS" "$GITLAB_PROJECT" "$MR_NUMBER")
+QA_SCRATCH_INPUT=$(printf '%s|%s|%s' "$TARGET_ABS" "$FORGE_PROJECT" "$MR_NUMBER")
 if command -v shasum >/dev/null 2>&1; then
   QA_SCRATCH_HASH=$(printf '%s' "$QA_SCRATCH_INPUT" | shasum -a 256 | awk '{print $1}' | cut -c1-12)
 else
@@ -310,19 +324,16 @@ fi
 QA_TOKEN_OK=false
 QA_AUTH_USER=""
 if [ -n "$QA_TOKEN" ]; then
-  QA_AUTH_USER=$(GITLAB_TOKEN="$QA_TOKEN" glab auth status 2>&1 \
-    | sed -nE 's/.*Logged in to [^ ]+ as ([^ ]+).*/\1/p' | head -1)
-  if [ "$QA_AUTH_USER" = "$EXPECTED_QA_USER" ]; then QA_TOKEN_OK=true; fi
+  QA_AUTH_USER=$(forge_auth_user "$QA_TOKEN" || true)
+  if [ -n "$QA_AUTH_USER" ] && [ "$QA_AUTH_USER" = "$EXPECTED_QA_USER" ]; then QA_TOKEN_OK=true; fi
 fi
-qa_glab() { GITLAB_TOKEN="$QA_TOKEN" glab "$@"; }
 
 # ---------------------------------------------------------------------------
-# Step 0.7 — seed MR_APPROVED from GitLab (QA identity; only if token verified)
+# Step 0.7 — seed MR_APPROVED from the forge (QA identity; only if token verified)
 # ---------------------------------------------------------------------------
 MR_APPROVED=false
 if [ "$QA_TOKEN_OK" = "true" ]; then
-  APPROVED_BY=$(qa_glab api "projects/${GITLAB_PROJECT_ENC}/merge_requests/${MR_NUMBER}/approval_state" 2>/dev/null \
-    | jq -r '[ (.rules[]?.approved_by[]?.username // empty), (.approved_by[]?.user.username // empty) ] | .[]' 2>/dev/null | sort -u)
+  APPROVED_BY=$(forge_approvers "$FORGE_PROJECT" "$MR_NUMBER" "$QA_TOKEN" || true)
   # -F: the username is a literal, not a regex. Without it a name containing a
   # regex metachar (e.g. a `.`, common in bot usernames) matches usernames it
   # should not — a username differing only at that metachar would count as an approval by the QA agent.
@@ -681,8 +692,13 @@ elif [ "$SYNC_FAILED" = "true" ]; then
   SAST_GATE_STATE="skipped:helper-failed"
 else
   SAST_HELPER_ERR=""
-  if SAST_HELPER_ERR=$(bash "$PLUGIN_ROOT/lib/fetch-sast-findings.sh" \
-        --project "$GITLAB_PROJECT" --mr "$MR_NUMBER" \
+  # One helper per forge, not one helper with a forge branch: GitLab reads
+  # security-report artifacts off a pipeline job, GitHub reads code-scanning
+  # alerts off an API — genuinely different mechanisms, sharing only the output
+  # contract (the headings this block classifies below).
+  SAST_HELPER="$PLUGIN_ROOT/lib/fetch-sast-${FORGE}.sh"
+  if SAST_HELPER_ERR=$(bash "$SAST_HELPER" \
+        --project "$FORGE_PROJECT" --mr "$MR_NUMBER" \
         --target-path "$TARGET_PATH" --output "$SAST_REPORT" 2>&1 >/dev/null); then
     # Classify POSITIVELY off the helper's own headings. Never default to
     # "clean": `clean` asserts a real SAST delta was computed against a finished
@@ -746,7 +762,7 @@ DESC_LEN=${#MR_DESC}
 # ROUND is derived from the MR's own posted notes (the max "## QA Round N"
 # heading, + 1) rather than tracked in the shell, because every /qa-cycle
 # invocation is a fresh process: the orchestrator was re-deriving this by hand
-# from `glab api .../notes` on each run, which is exactly the mechanical work
+# from the forge’s notes API on each run, which is exactly the mechanical work
 # preflight exists to remove. Falls back to 1 when no note is found, which is
 # also the correct answer for a first round.
 #
@@ -762,16 +778,16 @@ DESC_LEN=${#MR_DESC}
 # status and warn; ROUND still falls back to 1 (there is nothing better to fall back
 # to), but the caller can now see that the number is untrustworthy.
 ROUND=1
-if [ -n "${GITLAB_PROJECT_ENC:-}" ]; then
+if [ -n "${FORGE_PROJECT:-}" ]; then
   _NOTES_RC=0
   if [ "$QA_TOKEN_OK" = "true" ]; then
-    _NOTES_JSON=$(qa_glab api "projects/${GITLAB_PROJECT_ENC}/merge_requests/${MR_NUMBER}/notes?per_page=100" 2>/dev/null) || _NOTES_RC=$?
+    _NOTES_JSON=$(forge_notes "$FORGE_PROJECT" "$MR_NUMBER" "$QA_TOKEN") || _NOTES_RC=$?
   else
-    _NOTES_JSON=$(glab api "projects/${GITLAB_PROJECT_ENC}/merge_requests/${MR_NUMBER}/notes?per_page=100" 2>/dev/null) || _NOTES_RC=$?
+    _NOTES_JSON=$(forge_notes "$FORGE_PROJECT" "$MR_NUMBER") || _NOTES_RC=$?
   fi
   if [ "$_NOTES_RC" -ne 0 ]; then
     WARNINGS+=("round_probe_failed:exit=${_NOTES_RC}")
-    echo "warn: could not read MR notes (glab exit ${_NOTES_RC}); round falls back to 1 and may be wrong." >&2
+    echo "warn: could not read MR notes (${FORGE_CLI} exit ${_NOTES_RC}); round falls back to 1 and may be wrong." >&2
   else
     _MAX_ROUND=$(printf '%s' "$_NOTES_JSON" | jq -r '.[]?.body // empty' 2>/dev/null \
       | grep -oE '^## QA Round [0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)
@@ -980,7 +996,8 @@ PREFLIGHT_JSON=$(jq -n \
   --arg remote "$REMOTE" --arg scope "$SCOPE" \
   --arg base_branch "$RESOLVED_BASE" --arg base_branch_source "$RESOLVED_SOURCE" \
   --argjson security_stage "$SECURITY_STAGE" \
-  --arg gitlab_project "$GITLAB_PROJECT" --arg gitlab_project_enc "$GITLAB_PROJECT_ENC" \
+  --arg forge "$FORGE" --arg forge_cli "$FORGE_CLI" \
+  --arg project "$FORGE_PROJECT" --arg project_enc "$FORGE_PROJECT_ENC" \
   --arg qa_scratch "$QA_SCRATCH" \
   --arg mr_title "$MR_TITLE" --arg mr_author "$MR_AUTHOR" \
   --arg source_branch "$SOURCE_BRANCH" --arg target_branch "$TARGET_BRANCH" \
@@ -1015,7 +1032,8 @@ PREFLIGHT_JSON=$(jq -n \
     remote: $remote, scope: $scope,
     base_branch: $base_branch, base_branch_source: $base_branch_source,
     security_stage: $security_stage,
-    gitlab_project: $gitlab_project, gitlab_project_enc: $gitlab_project_enc,
+    forge: $forge, forge_cli: $forge_cli,
+    project: $project, project_enc: $project_enc,
     qa_scratch: $qa_scratch,
     mr_title: $mr_title, mr_author: $mr_author,
     source_branch: $source_branch, target_branch: $target_branch,
