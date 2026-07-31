@@ -188,11 +188,15 @@ writes fix that, and they are not optional.
 #    dies, so five completed reviews are not lost with the sixth.
 printf '%s' '<that lens's findings JSON>' > "$qa_scratch/lens-<lens-name>.json"
 
-# 2. Rewrite the one-line status file: mr|target|round|phase|done|total|epoch_start
-#    Keep every field; only `phase` and `done` change. Preserve epoch_start
-#    verbatim from the existing line — it is what elapsed time is measured from.
-printf '%s|%s|%s|lenses|%s|%s|%s\n' "$mr" "$target" "$round" "$done" "$total" "$start" \
-  > "$status_path"
+# 2. Rewrite the one-line status file:
+#      mr|target|round|phase|done|total|epoch_start|target_abs
+#    Only `phase` and `done` change. Preserve epoch_start AND target_abs verbatim
+#    from the existing line: epoch_start is what elapsed time is measured from,
+#    and target_abs is what scopes this round to its project. Drop target_abs and
+#    a statusline can no longer tell two concurrent cycles apart, so each shows
+#    the other's progress.
+printf '%s|%s|%s|lenses|%s|%s|%s|%s\n' \
+  "$mr" "$target" "$round" "$done" "$total" "$start" "$target_abs" > "$status_path"
 ```
 
 Set `phase` to `lenses` while the panel runs, then `merging`, `rendering`,

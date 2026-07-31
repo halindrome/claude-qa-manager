@@ -386,23 +386,34 @@ eq "  and reaches the brief"      "$(grep -c '^status_path=' "$(jq -r '.manager_
 # The fragment: silent when idle, alive vs stalled, silent when done.
 FRAG="$REPO_SRC/lib/statusline-fragment.sh"
 sroot=$(mktemp -d)
-eq "no round -> prints nothing"   "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" | wc -c | tr -d ' ')" "0"
+eq "no round -> prints nothing"   "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | wc -c | tr -d ' ')" "0"
 mkdir -p "$sroot/qa-cycle-abc-706"
-printf '706|rest-api|1|lenses|3|6|%s\n' "$(( $(date +%s) - 240 ))" > "$sroot/qa-cycle-abc-706/status"
-eq "fresh round -> lens progress" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG")" "QA !706 rest-api r1 ◆3/6 4m"
+printf '706|rest-api|1|lenses|3|6|%s|/repo/a/apps/rest-api\n' "$(( $(date +%s) - 240 ))" > "$sroot/qa-cycle-abc-706/status"
+eq "fresh round -> lens progress" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a)" "QA !706 rest-api r1 ◆3/6 4m"
+
+# THE two-concurrent-rounds bug: the scratch root is shared machine-wide, so
+# "newest wins" made each session render the OTHER project's round.
+mkdir -p "$sroot/qa-cycle-def-99"
+printf '99|webapp|2|lenses|5|6|%s|/repo/b\n' "$(( $(date +%s) - 60 ))" > "$sroot/qa-cycle-def-99/status"
+eq "project A sees only its round"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a)" "QA !706 rest-api r1 ◆3/6 4m"
+eq "project B sees only its round"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/b)" "QA !99 webapp r2 ◆5/6 1m"
+eq "unrelated project sees neither" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/c | wc -c | tr -d ' ')" "0"
+# A session opened INSIDE the submodule under review still matches.
+eq "session inside the target"      "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a/apps/rest-api)" "QA !706 rest-api r1 ◆3/6 4m"
+rm -rf "$sroot/qa-cycle-def-99"
 # THE case this exists for: a crashed panel leaves the file behind, so existence
 # cannot mean "running". Age of the last write is what separates them.
 # 10 minutes old: past STALL_AFTER (180s) but well inside FORGET_AFTER (4h). An
 # ancient mtime would exercise the forget path instead and silently pass.
 old=$(date -v-10M +%Y%m%d%H%M 2>/dev/null || date -d '10 minutes ago' +%Y%m%d%H%M)
 touch -t "$old" "$sroot/qa-cycle-abc-706/status"
-eq "stale write -> reported stalled" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" | grep -c 'stalled')" "1"
+eq "stale write -> reported stalled" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | grep -c 'stalled')" "1"
 # ...and an abandoned dir eventually goes quiet rather than nagging forever.
 touch -t 200001010000 "$sroot/qa-cycle-abc-706/status"
-eq "  abandoned dir -> silent"       "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" | wc -c | tr -d ' ')" "0"
+eq "  abandoned dir -> silent"       "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | wc -c | tr -d ' ')" "0"
 # A finished round stops writing; it must go quiet, not read as stalled forever.
-printf '706|rest-api|1|done|6|6|%s\n' "$(date +%s)" > "$sroot/qa-cycle-abc-706/status"
-eq "phase=done -> prints nothing"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" | wc -c | tr -d ' ')" "0"
+printf '706|rest-api|1|done|6|6|%s|/repo/a/apps/rest-api\n' "$(date +%s)" > "$sroot/qa-cycle-abc-706/status"
+eq "phase=done -> prints nothing"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | wc -c | tr -d ' ')" "0"
 rm -rf "$sroot" "$r"
 
 # ---------------------------------------------------------------------------

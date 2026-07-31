@@ -1237,7 +1237,14 @@ LENSES_JSON=$(printf '%s\n' "${LENSES[@]}" | jq -R . | jq -s .)
 # Round progress -> $QA_SCRATCH/status
 # ---------------------------------------------------------------------------
 # One line, pipe-delimited, rewritten by the manager as each lens returns:
-#   <mr>|<target>|<round>|<phase>|<lenses_done>|<lenses_total>|<epoch_start>
+#   <mr>|<target>|<round>|<phase>|<lenses_done>|<lenses_total>|<epoch_start>|<target_abs>
+#
+# target_abs is the LAST field and is what scopes a round to a project. The
+# scratch directory name is a hash and cannot be reversed, so without this a
+# renderer can only pick "the most recently written round" — and two concurrent
+# cycles in different repos then each display the other's progress, alternating
+# as they write. Carrying the path in the line keeps the match to one cheap
+# string comparison instead of a jq read per candidate.
 #
 # WHY THIS EXISTS. A round spends the overwhelming majority of its wall clock in
 # the lens panel, and the panel used to write NOTHING until the manager rendered
@@ -1251,8 +1258,9 @@ LENSES_JSON=$(printf '%s\n' "${LENSES[@]}" | jq -R . | jq -s .)
 # Deliberately pre-formatted and single-line: a statusline renderer reads it on
 # every repaint, so it must cost one read and no parsing of preflight.json.
 STATUS_FILE="$QA_SCRATCH/status"
-printf '%s|%s|%s|preflight|0|%s|%s\n' \
+printf '%s|%s|%s|preflight|0|%s|%s|%s\n' \
   "$MR_NUMBER" "$TARGET" "$ROUND" "$(printf '%s' "$LENSES_JSON" | jq -r 'length')" "$(date +%s)" \
+  "$TARGET_ABS" \
   > "$STATUS_FILE"
 
 # ---------------------------------------------------------------------------
