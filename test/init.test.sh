@@ -171,6 +171,17 @@ JSON
 out=$( cd "$d" && bash "$INIT" check 2>&1 | strip )
 eq "target with tests reported ok"    "$(grep -c "tests for 'a': make test" <<<"$out")" "1"
 eq "sibling without tests warned"     "$(grep -c "tests for 'b': NONE FOUND" <<<"$out")" "1"
+# A configured override must be what gets REPORTED. Showing the detected command
+# while a different one will actually run is a check that reassures about
+# something it never examined -- and detection finds *a* entry point, not a safe
+# one (a real `make test` began with `make restart` and ended with `make down`).
+cat > "$d/.claude/skills/qa-cycle/config.json" <<'JSON'
+{"targets":{"a":{"path":"apps/a","verify":{"command":"perl autotest.pl -S"}},"b":{"path":"apps/b"}}}
+JSON
+out=$( cd "$d" && bash "$INIT" check 2>&1 | strip )
+eq "per-target override is reported"  "$(grep -c "tests for 'a': perl autotest.pl -S" <<<"$out")" "1"
+eq "  detected command not shown"     "$(grep -c "tests for 'a': make test" <<<"$out")" "0"
+eq "  sibling still detected/warned"  "$(grep -c "tests for 'b': NONE FOUND" <<<"$out")" "1"
 rm -rf "$d"
 
 # ---------------------------------------------------------------------------

@@ -149,12 +149,25 @@ check_verify() {
     fi
     [ -d "$abs" ] || { warn "target '$t': path '$path' does not exist"; continue; }
 
-    out=$(bash "$det" "$abs" 2>/dev/null)
+    # A configured override wins over detection, so report what will ACTUALLY run.
+    # Reporting the detected command while a different one is configured is the
+    # kind of "check" that reassures about something it never examined.
+    local ov=""
+    if [ -f "$PROJECT_CONFIG" ]; then
+      ov=$(jq -r --arg t "$t" '.targets[$t].verify.command // .verify.command // ""' "$PROJECT_CONFIG" 2>/dev/null)
+    fi
+    if [ -n "$ov" ]; then
+      out=$(jq -n --arg c "$ov" '{state:"configured", command:$c, source:"project config"}')
+    else
+      out=$(bash "$det" "$abs" 2>/dev/null)
+    fi
     state=$(jq -r '.state' <<<"$out" 2>/dev/null || echo "none-found")
     cmd=$(jq -r '.command' <<<"$out" 2>/dev/null)
     src=$(jq -r '.source'  <<<"$out" 2>/dev/null)
     local label="tests"; [ "$t" = "." ] || label="tests for '$t'"
-    if [ "$state" = "detected" ]; then
+    if [ "$state" = "configured" ]; then
+      ok "$label: $cmd  (from $src)"
+    elif [ "$state" = "detected" ]; then
       ok "$label: $cmd  (from $src)"
     else
       warn "$label: NONE FOUND — QA fixes in this target cannot be verified before they are committed"

@@ -265,10 +265,21 @@ TARGET_IS_SUBMODULE=false
 # this plugin's config would drift from it and then certify a command the project
 # abandoned. `verify.command` exists as an override for when detection is wrong,
 # and is empty by default.
-VERIFY_OVERRIDE=$(jq -r '.verify.command // ""' "$BB")
+# Precedence: this target's own override, then the project-wide one, then
+# detection. Per-target matters in a monorepo whose parts differ: one submodule's
+# detected `npm test` can be exactly right while a sibling's detected `make test`
+# tears the whole dev environment down (`make restart` … `make down`), and a
+# single project-wide override would have to break the working one to fix the
+# broken one.
+VERIFY_OVERRIDE=$(jq -r --arg t "$TARGET" '.targets[$t].verify.command // ""' "$BB")
+VERIFY_SRC="config targets.$TARGET.verify.command"
+if [ -z "$VERIFY_OVERRIDE" ]; then
+  VERIFY_OVERRIDE=$(jq -r '.verify.command // ""' "$BB")
+  VERIFY_SRC="config verify.command"
+fi
 if [ -n "$VERIFY_OVERRIDE" ]; then
-  VERIFY_JSON=$(jq -n --arg c "$VERIFY_OVERRIDE" \
-    '{state:"configured", command:$c, source:"config verify.command", build_command:"", build_source:""}')
+  VERIFY_JSON=$(jq -n --arg c "$VERIFY_OVERRIDE" --arg s "$VERIFY_SRC" \
+    '{state:"configured", command:$c, source:$s, build_command:"", build_source:""}')
 else
   VERIFY_JSON=$(bash "$PLUGIN_ROOT/lib/detect-verify.sh" "$TARGET_ABS" 2>/dev/null || true)
   # A detector that crashed must not read as "this project has no tests" — that

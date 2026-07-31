@@ -604,6 +604,13 @@ jq '. + {verify:{command:"bazel test //..."}}' "$cfg" > "$cfg.t" && mv "$cfg.t" 
 out=$(run_preflight "$r" 73 mono); note_scratch "$out"
 eq "  config override wins"            "$(jq -r '.verify.command' <<<"$out")" "bazel test //..."
 eq "  and is labelled configured"      "$(jq -r '.verify.state' <<<"$out")" "configured"
+# Per-target beats project-wide. In a monorepo one submodule's detected command can
+# be right while a sibling's also tears the dev environment down, so a single
+# project-wide override would have to break the working one to fix the broken one.
+jq '.targets.mono.verify = {"command":"perl autotest.pl -S"}' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  per-target beats project-wide"   "$(jq -r '.verify.command' <<<"$out")" "perl autotest.pl -S"
+eq "  and names which key won"         "$(jq -r '.verify.source' <<<"$out")" "config targets.mono.verify.command"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------

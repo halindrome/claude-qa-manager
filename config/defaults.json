@@ -46,7 +46,7 @@
   },
 
   "verify": {
-    "_comment": "How a fix is verified before it is committed. Normally EMPTY: the target's own test/build entry point is DISCOVERED from its Makefile, package.json, tox.ini, go.mod, etc. Any decent project already declares how it is tested, and restating that here duplicates it -- the copy then drifts and the gate certifies a command the project stopped using. Set `command` only when detection is wrong. When nothing is discoverable the gate reports state 'none-found' and the round note must say the fixes went unverified; it NEVER reports a pass.",
+    "_comment": "How a fix is verified before it is committed. Normally EMPTY: the target's own test/build entry point is DISCOVERED from its Makefile, package.json, tox.ini, go.mod, etc. Any decent project already declares how it is tested, and restating that here duplicates it -- the copy then drifts and the gate certifies a command the project stopped using. Set `command` only when detection is wrong, and prefer the PER-TARGET form `targets.<name>.verify.command`, which wins over this one: in a monorepo the parts differ, and one submodule's detected `npm test` can be correct while a sibling's detected `make test` also tears the dev environment down. Detection finds A test entry point, not necessarily a SAFE one -- it checks that a target exists, not what its recipe does. When nothing is discoverable the gate reports state 'none-found' and the round note must say the fixes went unverified; it NEVER reports a pass.",
     "command": ""
   },
 
