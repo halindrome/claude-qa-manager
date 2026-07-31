@@ -38,7 +38,19 @@
 set -uo pipefail
 
 SCRATCH_ROOT="${QA_CYCLE_SCRATCH_ROOT:-/tmp}"
-STALL_AFTER="${QA_STATUS_STALL_SECONDS:-180}"   # seconds with no write => stalled
+# Stall thresholds are PHASE-AWARE, and that is not a nicety. The status file is
+# rewritten when a lens RETURNS, and a lens legitimately runs for 5-15 minutes, so
+# a single short threshold reports a perfectly healthy fan-out as stalled. Measured
+# on a real round: six lenses, first return well past three minutes. A warning that
+# fires during normal operation is worse than none -- it trains you to ignore it.
+# The fan-out tolerance is a property of the PROJECT, not of this tool: a lens on a
+# large monorepo diff ran 8-20 minutes, while a small service may finish in seconds
+# and there a 20-minute fuse hides a wedge for 20 minutes. preflight resolves it
+# from config and puts it in field 9 of the status line, because this script cannot
+# merge config layers on every repaint. Precedence: env > the round's own value >
+# built-in default.
+STALL_AFTER="${QA_STATUS_STALL_SECONDS:-180}"   # merge/render/post: bounded work
+LENS_STALL_DEFAULT=1200
 FORGET_AFTER="${QA_STATUS_FORGET_SECONDS:-14400}"  # 4h: an abandoned dir goes quiet
 
 CWD="${1:-$PWD}"
@@ -74,8 +86,11 @@ for f in "$SCRATCH_ROOT"/qa-cycle-*/status; do
 done
 [ -n "$newest" ] || exit 0
 
-IFS='|' read -r mr target round phase done total start target_abs < "$newest" || exit 0
+IFS='|' read -r mr target round phase done total start target_abs lens_stall < "$newest" || exit 0
 [ -n "${mr:-}" ] || exit 0
+
+case "${lens_stall:-}" in ''|*[!0-9]*) lens_stall="$LENS_STALL_DEFAULT" ;; esac
+LENS_STALL_AFTER="${QA_STATUS_LENS_STALL_SECONDS:-$lens_stall}"
 
 now=$(date +%s)
 age=$(( now - newest_mtime ))
@@ -97,7 +112,9 @@ case "${phase:-}" in
   *) frag="$frag ${phase}" ;;
 esac
 
-if [ "$age" -gt "$STALL_AFTER" ]; then
+stall_limit="$STALL_AFTER"
+[ "${phase:-}" = "lenses" ] && stall_limit="$LENS_STALL_AFTER"
+if [ "$age" -gt "$stall_limit" ]; then
   printf '%s ⚠stalled %dm\n' "$frag" "$(( age / 60 ))"
 else
   printf '%s %s\n' "$frag" "$el"

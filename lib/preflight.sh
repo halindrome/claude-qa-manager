@@ -1095,7 +1095,19 @@ if [ "$CMM_AVAILABLE" = "true" ] || [ "$CTX_AVAILABLE" = "true" ]; then
       echo "  reuse anything already captured this session."
     fi
     echo
-    echo "Fall back to Read/grep only if a specific tool call genuinely fails."
+    # Without this, a lens calls search_graph, gets "no such tool" because MCP
+    # tools are DEFERRED until fetched, and silently falls back to reading files.
+    # Observed: three of six lenses on one round lost CMM this way while the other
+    # three, which happened to fetch first, kept it. The mandate named the tools
+    # but never said how to obtain them.
+    echo "**These tools may be DEFERRED** — not yet in your schema, so calling one"
+    echo "directly can fail with \"no such tool\". That is NOT evidence the tool is"
+    echo "unavailable. Load them FIRST with a single ToolSearch call, e.g."
+    echo "\`ToolSearch(query=\"select:search_graph,get_code_snippet,trace_path,get_architecture,search_code\")\`,"
+    echo "and only then use them. Batch every tool you expect to need into ONE call."
+    echo
+    echo "Fall back to Read/grep only after a tool call fails on a tool you have"
+    echo "actually loaded."
   } > "$MANDATE_FILE"
 fi
 
@@ -1257,10 +1269,17 @@ LENSES_JSON=$(printf '%s\n' "${LENSES[@]}" | jq -R . | jq -s .)
 #
 # Deliberately pre-formatted and single-line: a statusline renderer reads it on
 # every repaint, so it must cost one read and no parsing of preflight.json.
+# Field 9 is the project's own stall tolerance, resolved HERE because the renderer
+# cannot afford to merge three config layers on every statusline repaint. Same
+# division of labour as commit_subject and the manager brief: preflight resolves,
+# the consumer displays.
+LENS_STALL_SECONDS=$(jq -r '.progress.lens_stall_seconds // 1200' "$BB")
+case "$LENS_STALL_SECONDS" in ''|*[!0-9]*) LENS_STALL_SECONDS=1200 ;; esac
+
 STATUS_FILE="$QA_SCRATCH/status"
-printf '%s|%s|%s|preflight|0|%s|%s|%s\n' \
+printf '%s|%s|%s|preflight|0|%s|%s|%s|%s\n' \
   "$MR_NUMBER" "$TARGET" "$ROUND" "$(printf '%s' "$LENSES_JSON" | jq -r 'length')" "$(date +%s)" \
-  "$TARGET_ABS" \
+  "$TARGET_ABS" "$LENS_STALL_SECONDS" \
   > "$STATUS_FILE"
 
 # ---------------------------------------------------------------------------

@@ -181,6 +181,11 @@ signal at all. A caller watching from outside cannot tell six working lenses fro
 manager that died twenty minutes ago: both look like an unchanged directory. Two
 writes fix that, and they are not optional.
 
+Use **Bash** for both writes below — a plain `>` redirect. Do NOT use the `Write`
+tool: it refuses to overwrite a file it has not read this session, so the first
+attempt fails and you pay an error plus a Read plus a retry, every time, on a file
+you rewrite six or more times a round.
+
 **As each lens returns**, before you do anything else with its result:
 
 ```bash
@@ -189,15 +194,36 @@ writes fix that, and they are not optional.
 printf '%s' '<that lens's findings JSON>' > "$qa_scratch/lens-<lens-name>.json"
 
 # 2. Rewrite the one-line status file:
-#      mr|target|round|phase|done|total|epoch_start|target_abs
-#    Only `phase` and `done` change. Preserve epoch_start AND target_abs verbatim
-#    from the existing line: epoch_start is what elapsed time is measured from,
-#    and target_abs is what scopes this round to its project. Drop target_abs and
-#    a statusline can no longer tell two concurrent cycles apart, so each shows
-#    the other's progress.
-printf '%s|%s|%s|lenses|%s|%s|%s|%s\n' \
-  "$mr" "$target" "$round" "$done" "$total" "$start" "$target_abs" > "$status_path"
+#      mr|target|round|phase|done|total|epoch_start|target_abs|lens_stall_seconds
+#    ONLY `phase` and `done` change. Copy every other field through verbatim from
+#    the line already there — epoch_start is what elapsed time is measured from,
+#    target_abs is what scopes the round to its project (drop it and two
+#    concurrent cycles each display the other's progress), and lens_stall_seconds
+#    is this project's tolerance for a quiet fan-out, resolved by preflight from
+#    config. Re-deriving any of them here would put a second, drifting copy of
+#    that resolution in the wrong place.
+printf '%s|%s|%s|lenses|%s|%s|%s|%s|%s\n' \
+  "$mr" "$target" "$round" "$done" "$total" "$start" "$target_abs" "$lens_stall" \
+  > "$status_path"
 ```
+
+**When you fan out**, alongside setting `phase=lenses`, stamp the fan-out time —
+it is the start of the longest silence in the round, and without it that gap
+cannot be measured afterwards:
+
+```bash
+date +%s > "$qa_scratch/fanout"
+```
+
+**When the round is finished** (after the note is rendered/posted, phase `done`):
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/lib/record-timing.sh" "$qa_scratch"
+```
+
+That appends this round's observed timing to a per-project history so a future
+stall threshold can be derived from what YOUR project actually does instead of a
+constant someone guessed. It only observes; nothing reads it yet.
 
 Set `phase` to `lenses` while the panel runs, then `merging`, `rendering`,
 `posting`, and finally `done`. **Rewrite it at every transition**, even when

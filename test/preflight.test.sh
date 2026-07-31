@@ -403,11 +403,35 @@ eq "session inside the target"      "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRA
 rm -rf "$sroot/qa-cycle-def-99"
 # THE case this exists for: a crashed panel leaves the file behind, so existence
 # cannot mean "running". Age of the last write is what separates them.
-# 10 minutes old: past STALL_AFTER (180s) but well inside FORGET_AFTER (4h). An
-# ancient mtime would exercise the forget path instead and silently pass.
+# A lens legitimately runs 5-15 min, so 10 minutes of quiet DURING fan-out is
+# healthy and must not warn. A single short threshold reported a working panel as
+# stalled -- observed on a real round, twice.
 old=$(date -v-10M +%Y%m%d%H%M 2>/dev/null || date -d '10 minutes ago' +%Y%m%d%H%M)
 touch -t "$old" "$sroot/qa-cycle-abc-706/status"
-eq "stale write -> reported stalled" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | grep -c 'stalled')" "1"
+eq "10m quiet in lens phase is OK" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | grep -c 'stalled')" "0"
+# ...but that tolerance belongs to the PROJECT. A fast repo sets it low, and the
+# same 10 minutes of silence is then a wedge worth reporting. Field 9 carries it.
+printf '706|rest-api|1|lenses|3|6|%s|/repo/a/apps/rest-api|60\n' "$(( $(date +%s) - 900 ))" > "$sroot/qa-cycle-abc-706/status"
+touch -t "$old" "$sroot/qa-cycle-abc-706/status"
+eq "  low project tolerance -> stall" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | grep -c 'stalled')" "1"
+eq "  env overrides the project"      "$(QA_STATUS_LENS_STALL_SECONDS=99999 QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | grep -c 'stalled')" "0"
+# A round predating field 9 must not become un-stallable (empty -> built-in 1200).
+printf '706|rest-api|1|lenses|3|6|%s|/repo/a/apps/rest-api\n' "$(( $(date +%s) - 3600 ))" > "$sroot/qa-cycle-abc-706/status"
+oldest=$(date -v-50M +%Y%m%d%H%M 2>/dev/null || date -d '50 minutes ago' +%Y%m%d%H%M)
+touch -t "$oldest" "$sroot/qa-cycle-abc-706/status"
+eq "  missing field 9 -> default fuse" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | grep -c 'stalled')" "1"
+# restore the healthy line for the checks that follow
+printf '706|rest-api|1|lenses|3|6|%s|/repo/a/apps/rest-api|1200\n' "$(( $(date +%s) - 240 ))" > "$sroot/qa-cycle-abc-706/status"
+touch -t "$old" "$sroot/qa-cycle-abc-706/status"
+# ...but the same silence in a phase that does not block on subagents is a stall.
+printf '706|rest-api|1|merging|6|6|%s|/repo/a/apps/rest-api\n' "$(( $(date +%s) - 900 ))" > "$sroot/qa-cycle-abc-706/status"
+touch -t "$old" "$sroot/qa-cycle-abc-706/status"
+eq "10m quiet while merging -> stall" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | grep -c 'stalled')" "1"
+# And a genuinely wedged fan-out still surfaces, just on a longer fuse.
+printf '706|rest-api|1|lenses|3|6|%s|/repo/a/apps/rest-api\n' "$(( $(date +%s) - 3000 ))" > "$sroot/qa-cycle-abc-706/status"
+oldr=$(date -v-40M +%Y%m%d%H%M 2>/dev/null || date -d '40 minutes ago' +%Y%m%d%H%M)
+touch -t "$oldr" "$sroot/qa-cycle-abc-706/status"
+eq "40m quiet in lens phase -> stall" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | grep -c 'stalled')" "1"
 # ...and an abandoned dir eventually goes quiet rather than nagging forever.
 touch -t 200001010000 "$sroot/qa-cycle-abc-706/status"
 eq "  abandoned dir -> silent"       "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | wc -c | tr -d ' ')" "0"
@@ -415,6 +439,42 @@ eq "  abandoned dir -> silent"       "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FR
 printf '706|rest-api|1|done|6|6|%s|/repo/a/apps/rest-api\n' "$(date +%s)" > "$sroot/qa-cycle-abc-706/status"
 eq "phase=done -> prints nothing"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | wc -c | tr -d ' ')" "0"
 rm -rf "$sroot" "$r"
+
+# ---------------------------------------------------------------------------
+echo "[timing history — records the max SILENCE, not the average duration]"
+REC="$REPO_SRC/lib/record-timing.sh"
+tdir=$(mktemp -d); thome=$(mktemp -d)
+mkscratch() { # $1=dir, $2=fanout epoch, rest: lens mtimes as epochs
+  local s="$1" fo="$2"; shift 2
+  mkdir -p "$s"; echo "$fo" > "$s/fanout"
+  printf '706|rest-api|1|done|%s|6|%s|/repo/a|1200\n' "$#" "$fo" > "$s/status"
+  local i=0
+  for t in "$@"; do
+    i=$((i+1)); echo '{}' > "$s/lens-$i.json"
+    touch -t "$(date -r "$t" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$t" +%Y%m%d%H%M.%S)" "$s/lens-$i.json"
+  done
+  touch -t "$(date -r "$(( ${!#} + 30 ))" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$(( ${!#} + 30 ))" +%Y%m%d%H%M.%S)" "$s/status"
+}
+base=$(( $(date +%s) - 4000 ))
+# One long silence then a burst — the real shape observed on a live round. The
+# statistic must be the 600s gap, NOT the ~150s mean spacing of the five returns.
+mkscratch "$tdir/r1" "$base" $((base+600)) $((base+650)) $((base+700)) $((base+750)) $((base+800))
+HOME="$thome" bash "$REC" "$tdir/r1" >/dev/null 2>&1
+row=$(cat "$thome"/.config/claude-qa-manager/timings/*.tsv 2>/dev/null | tail -1)
+eq "max gap is the long silence" "$(awk -F'\t' '{print $6}' <<<"$row")" "600"
+eq "  lens count recorded"       "$(awk -F'\t' '{print $5}' <<<"$row")" "5"
+eq "  project path recorded"     "$(awk -F'\t' '{print $2}' <<<"$row")" "/repo/a"
+eq "  history is outside the repo" "$( [ -d "$thome/.config/claude-qa-manager/timings" ] && echo yes || echo no )" "yes"
+# A second round appends rather than replacing — a distribution needs every sample.
+mkscratch "$tdir/r2" "$base" $((base+120))
+HOME="$thome" bash "$REC" "$tdir/r2" >/dev/null 2>&1
+eq "rounds accumulate"           "$(cat "$thome"/.config/claude-qa-manager/timings/*.tsv | wc -l | tr -d ' ')" "2"
+# No fan-out stamp => the biggest silence is unmeasurable, so record NOTHING rather
+# than a row that quietly omits it.
+mkdir -p "$tdir/r3"; printf '706|x|1|done|6|6|%s|/repo/a|1200\n' "$base" > "$tdir/r3/status"
+HOME="$thome" bash "$REC" "$tdir/r3" >/dev/null 2>&1
+eq "no fanout stamp -> no row"   "$(cat "$thome"/.config/claude-qa-manager/timings/*.tsv | wc -l | tr -d ' ')" "2"
+rm -rf "$tdir" "$thome"
 
 # ---------------------------------------------------------------------------
 echo "[self-inflicted findings — blame attribution, not line arithmetic]"

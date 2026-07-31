@@ -40,6 +40,11 @@
     }
   },
 
+  "progress": {
+    "_comment": "How long the lens fan-out may go quiet before a renderer calls it stalled. The status file is rewritten when a lens RETURNS, so the legitimate silence between writes is however long your slowest lens takes -- which is a property of YOUR repo and diff, not of this tool. A 595-line diff on a large monorepo ran 8-20 minutes per lens; a small service may finish in seconds, and there a 20-minute fuse means a genuinely wedged round goes unnoticed for 20 minutes. Tune it down for a fast project, up for a slow one. Only the fan-out needs this: the manager's own merge/render/post phases are bounded work and use a short fixed threshold. QA_STATUS_LENS_STALL_SECONDS overrides it without touching config.",
+    "lens_stall_seconds": 1200
+  },
+
   "verify": {
     "_comment": "How a fix is verified before it is committed. Normally EMPTY: the target's own test/build entry point is DISCOVERED from its Makefile, package.json, tox.ini, go.mod, etc. Any decent project already declares how it is tested, and restating that here duplicates it -- the copy then drifts and the gate certifies a command the project stopped using. Set `command` only when detection is wrong. When nothing is discoverable the gate reports state 'none-found' and the round note must say the fixes went unverified; it NEVER reports a pass.",
     "command": ""
