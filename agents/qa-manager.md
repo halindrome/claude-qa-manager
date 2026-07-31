@@ -156,13 +156,22 @@ withheld from them, but `Bash` is not, so enforcement cannot rest on the tool li
 Record the tree **before** you fan out and verify it **after** every lens returns:
 
 ```bash
-git -C "<target_abs>" status --porcelain > "$qa_scratch/tree-before.txt"
+snap() { git -C "<target_abs>" rev-parse HEAD; git -C "<target_abs>" rev-parse --abbrev-ref HEAD
+         git -C "<target_abs>" status --porcelain; }
+snap > "$qa_scratch/tree-before.txt"
 #   ... fan out, collect all lenses ...
-git -C "<target_abs>" status --porcelain > "$qa_scratch/tree-after.txt"
+snap > "$qa_scratch/tree-after.txt"
 diff "$qa_scratch/tree-before.txt" "$qa_scratch/tree-after.txt"
 ```
 
-If they differ, a lens wrote to the shared tree. Set `tree_mutated: true` in your
+**HEAD and the branch name are in the snapshot, not just the porcelain status.**
+Porcelain alone catches a lens editing a file, but a *clean branch switch* leaves it
+byte-identical — so a second QA round checking out its own branch in the same
+working tree would pass this check while your panel silently reviewed the other
+MR's code. preflight refuses that case up front, but the snapshot must not depend
+on that being the only way HEAD can move underneath a running panel.
+
+If they differ, the tree changed under the review. Set `tree_mutated: true` in your
 verdict, name the changed paths in `blocking_summary`, and say in the round note that
 this round's findings may describe mutated code rather than the merge request. **Do
 not restore the tree yourself** — you cannot tell a lens's leftover stub from the

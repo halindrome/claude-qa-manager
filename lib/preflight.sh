@@ -395,6 +395,48 @@ mkdir -p "$QA_SCRATCH" || die_internal "could not create scratch dir '$QA_SCRATC
 [ -w "$QA_SCRATCH" ] || die_internal "scratch dir '$QA_SCRATCH' is not writable"
 
 # ---------------------------------------------------------------------------
+# Refuse a second concurrent round on the SAME target
+# ---------------------------------------------------------------------------
+# Every round CHECKS OUT the MR's source branch, merges, and pushes, all inside
+# $TARGET_ABS. Two rounds on one target therefore share one working tree, and the
+# failure is silent and severe: round A checks out branch-A; round B checks out
+# branch-B in the same directory seconds later; A's six lenses then read B's
+# files and file findings about the wrong merge request, and A's fix commit lands
+# on B's branch and gets pushed there.
+#
+# Nothing catches it downstream. The scratch key is a hash of
+# (target_abs|project|mr), so each round gets its own directory and BELIEVES it is
+# isolated — the isolation is in the bookkeeping, not in the thing that matters.
+# The manager's tree bracket does not catch it either: it diffs `git status
+# --porcelain`, and a clean branch switch leaves that output identical.
+#
+# The gate is deliberately narrow: it keys on target_abs, a real filesystem path,
+# not on the target's NAME. So the two legitimate ways to run rounds in parallel
+# both pass through untouched — different targets (a monorepo's submodules have
+# separate working trees), and WORKTREE ISOLATION, where each session's copy of
+# the same target resolves to a different path. Worktree isolation is the general
+# answer for reviewing several MRs on one component at once; this only refuses the
+# case where two rounds would genuinely drive one tree.
+#
+# A round is considered live only while its status file keeps being written.
+# Abandoned scratch from a killed session ages out on its own mtime rather than
+# leaving a lock behind that someone has to know to delete.
+if [ "${QA_ALLOW_CONCURRENT:-}" != "1" ]; then
+  for _sf in "$QA_SCRATCH_ROOT"/qa-cycle-*/status; do
+    [ -f "$_sf" ] || continue
+    [ "$(dirname "$_sf")" = "$QA_SCRATCH" ] && continue        # our own round
+    IFS='|' read -r _omr _otg _ord _oph _odn _ott _ost _ota _ols < "$_sf" || continue
+    [ "${_ota:-}" = "$TARGET_ABS" ] || continue                 # different target: fine
+    [ "${_oph:-}" = "done" ] && continue                        # finished
+    _omt=$(stat -f %m "$_sf" 2>/dev/null || stat -c %Y "$_sf" 2>/dev/null) || continue
+    case "${_ols:-}" in ''|*[!0-9]*) _ols=1200 ;; esac
+    if [ $(( $(date +%s) - _omt )) -lt $(( _ols * 2 )) ]; then
+      die_usage "another QA round is live on this target: MR $_omr, round ${_ord:-?}, phase ${_oph:-?} ($(dirname "$_sf")). Both would check out and push branches in the SAME working tree ($TARGET_ABS), so each would end up reviewing the other's code and committing to the other's branch. To review several MRs at once, give each session its own worktree (worktree isolation) — that is the supported way and this gate does not block it, since each worktree is a different path. Otherwise wait for the other round, or pick a different target. QA_ALLOW_CONCURRENT=1 bypasses this only if you are certain the rounds cannot touch the same tree."
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
 # Step 0.25 — QA agent token resolve + verify (env-var-prefix form is mandatory)
 # ---------------------------------------------------------------------------
 QA_TOKEN=""

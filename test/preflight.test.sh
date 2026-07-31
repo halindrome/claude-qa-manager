@@ -374,6 +374,39 @@ eq "XDG root settings.local.json counts"  "$(jq -r '.tooling.ctx_available' <<<"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------
+echo "[concurrent rounds on ONE working tree are refused]"
+# Two rounds on one target share a tree: A checks out branch-A, B checks out
+# branch-B in the same directory, and A's lenses then review B's code while A's fix
+# commit lands on B's branch. Nothing downstream catches it — each round has its
+# own scratch dir and believes it is isolated.
+r=$(mkfixture "feature/x" "main")
+tabs=$(jq -r '.target_abs' <<<"$(run_preflight "$r" 73 mono)")
+sroot2=$(mktemp -d); mkdir -p "$sroot2/qa-cycle-other-99"
+printf '99|mono|1|lenses|2|6|%s|%s|1200\n' "$(date +%s)" "$tabs" > "$sroot2/qa-cycle-other-99/status"
+out=$(QA_CYCLE_SCRATCH_ROOT="$sroot2" run_preflight "$r" 73 mono 2>&1); rc=$?
+eq "live round on same tree -> exit 2" "$rc" "2"
+# The guard keys on the PATH, so the two legitimate ways to parallelise still work:
+# a different target, and worktree isolation (same target, different checkout).
+printf '99|mono|1|lenses|2|6|%s|/somewhere/else/worktree|1200\n' "$(date +%s)" > "$sroot2/qa-cycle-other-99/status"
+QA_CYCLE_SCRATCH_ROOT="$sroot2" run_preflight "$r" 73 mono >/dev/null 2>&1
+eq "different path -> allowed"         "$?" "0"
+# A finished round must not hold the tree hostage...
+printf '99|mono|1|done|6|6|%s|%s|1200\n' "$(date +%s)" "$tabs" > "$sroot2/qa-cycle-other-99/status"
+QA_CYCLE_SCRATCH_ROOT="$sroot2" run_preflight "$r" 73 mono >/dev/null 2>&1
+eq "finished round -> allowed"         "$?" "0"
+# ...nor must an abandoned one leave a lock nobody knows to delete.
+printf '99|mono|1|lenses|2|6|%s|%s|60\n' "$(date +%s)" "$tabs" > "$sroot2/qa-cycle-other-99/status"
+oldl=$(date -v-10M +%Y%m%d%H%M 2>/dev/null || date -d '10 minutes ago' +%Y%m%d%H%M)
+touch -t "$oldl" "$sroot2/qa-cycle-other-99/status"
+QA_CYCLE_SCRATCH_ROOT="$sroot2" run_preflight "$r" 73 mono >/dev/null 2>&1
+eq "stale round ages out -> allowed"   "$?" "0"
+# The escape hatch exists, but is not the default.
+printf '99|mono|1|lenses|2|6|%s|%s|1200\n' "$(date +%s)" "$tabs" > "$sroot2/qa-cycle-other-99/status"
+QA_ALLOW_CONCURRENT=1 QA_CYCLE_SCRATCH_ROOT="$sroot2" run_preflight "$r" 73 mono >/dev/null 2>&1
+eq "QA_ALLOW_CONCURRENT bypasses"      "$?" "0"
+rm -rf "$sroot2" "$r"
+
+# ---------------------------------------------------------------------------
 echo "[round progress — a stalled panel must not look like a working one]"
 r=$(mkfixture "feature/x" "main"); out=$(run_preflight "$r" 73 mono); note_scratch "$out"
 st=$(jq -r '.status_path' <<<"$out")
