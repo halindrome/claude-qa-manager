@@ -31,8 +31,15 @@ Your primary job is to verify that this change correctly and completely satisfie
   a file you change for one second is a file they may read in that second.
   If the tree is left mutated when you die, the orchestrator commits your stub.
   To judge whether a test is meaningful, READ it and reason about what it asserts.
-  Running the project's existing test suite unmodified is fine; changing anything to
-  see what happens is not.
+- **DO NOT run the project's test suite either — not even unmodified.** Verification
+  by execution happens exactly once per round, in Step 3B, by the orchestrator,
+  after fixes and before the commit. You are one of up to six lenses running
+  concurrently against ONE working tree, so a suite launched from here races five
+  siblings, and a harness that starts or stops services (`make restart`, `make down`,
+  containers, a database) breaks the environment out from under reviewers who are
+  mid-read. That is true whether or not this particular harness is destructive, so
+  the rule is unconditional rather than a judgment call you make per round.
+  Report what the tests would need to prove; the orchestrator runs them.
 - DO NOT prescribe specific fixes or triage ("fix this now, skip that") — report findings only. The orchestrator decides what to fix.
 - DO NOT prescribe test cases upfront — discover what to test by reading the code.
 - DO NOT manufacture findings to appear thorough — if the code is correct, say so.
