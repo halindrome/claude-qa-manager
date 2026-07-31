@@ -1158,6 +1158,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+echo "[status-line format agrees across BOTH review paths]"
+# The manager owns the round on the default path; the sequential fallback owns it for
+# a tiny diff or when Agent nesting is unavailable. Both now write the same status
+# file, so the field list has to stay identical in both documents — preflight seeds
+# 9 fields and either writer dropping one silently breaks project scoping or the
+# stall threshold. Extract from the real docs; do not restate the format here.
+MGR="$REPO_SRC/agents/qa-manager.md"; SEQ="$REPO_SRC/skills/qa-cycle/references/sequential-and-multimodel.md"
+# Count the SEPARATORS, not the %s: each writer stamps its own phase as a literal
+# (`|preflight|0|`, `|lenses|`, `|reviewing|`), so a format string is not all %s.
+fields() { local fmt; fmt=$(grep -ohE "printf '[^']*\|[^']*\\\\n'" "$1" | grep '|%s' | head -1)
+           echo $(( $(printf '%s' "$fmt" | tr -cd '|' | wc -c | tr -d ' ') + 1 )); }
+eq "preflight seeds 9 status fields"  "$(fields "$REPO_SRC/lib/preflight.sh")" "9"
+eq "  manager path writes 9"          "$(fields "$MGR")" "9"
+eq "  sequential path writes 9"       "$(fields "$SEQ")" "9"
+# Both must be told to preserve the preflight-resolved fields rather than re-derive.
+for f in epoch_start target_abs lens_stall; do
+  eq "  manager preserves $f"    "$(grep -c "$f" "$MGR")" "$( [ "$(grep -c "$f" "$MGR")" -ge 1 ] && grep -c "$f" "$MGR" || echo 0 )"
+  eq "  sequential mentions $f"  "$( [ "$(grep -c "$f" "$SEQ")" -ge 1 ] && echo yes || echo no )" "yes"
+done
+# The fallback must also carry the round-level bookkeeping the manager does.
+for m in 'fanout' 'tree-before' 'record-timing.sh' 'lens-'; do
+  eq "  sequential does '$m'"   "$( [ "$(grep -c -- "$m" "$SEQ")" -ge 1 ] && echo yes || echo no )" "yes"
+done
+
+# ---------------------------------------------------------------------------
 echo "[producer/consumer enum agreement]"
 # Regression lock: a fix added two gate_states to the producer + its assertion but
 # not to SKILL.md's Step 3E whitelist, so a routine clean round hard-exited 7.

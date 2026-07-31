@@ -15,6 +15,45 @@ agent definition already embeds these mandates and merge rules — none of this 
 > and returns a compact verdict — skip this step and Step 3A.2 entirely; the
 > manager's agent def embeds the same lens mandates and Step 3A.3 merge rules.
 
+**You own the round-level bookkeeping on this path.** The manager normally does it,
+and on this path there is no manager — so without the four steps below a sequential
+round reports no progress, contributes nothing to timing history, and has no
+detection at all if the working tree changes underneath it. That gap is not
+theoretical: every one of these was built for the panel and simply never reached the
+fallback, which is the path every tiny MR takes.
+
+Use **Bash** for each (a `>` redirect), not the `Write` tool — `Write` refuses to
+overwrite a file it has not read this session, so it costs an error plus a read plus
+a retry on a file you rewrite several times.
+
+1. **Before spawning**, stamp the fan-out time and snapshot the tree:
+   ```bash
+   date +%s > "$QA_SCRATCH/fanout"
+   snap() { git -C "<target-abs>" rev-parse HEAD; git -C "<target-abs>" rev-parse --abbrev-ref HEAD
+            git -C "<target-abs>" status --porcelain; }
+   snap > "$QA_SCRATCH/tree-before.txt"
+   ```
+2. **Rewrite `status`** at every phase transition — `reviewing`, then `merging`,
+   `rendering`, `posting`, `done`. Copy every field through from the line already
+   there except `phase` and the completed count; `epoch_start`, `target_abs` and
+   `lens_stall_seconds` are resolved by preflight and must not be re-derived:
+   ```bash
+   printf '%s|%s|%s|reviewing|%s|%s|%s|%s|%s\n' \
+     "$mr" "$target" "$round" "$done" "$total" "$start" "$target_abs" "$lens_stall" \
+     > "$QA_SCRATCH/status"
+   ```
+   The file's mtime is what proves the round is alive, so rewrite it even when the
+   count has not moved.
+3. **When the reviewer returns**, write its findings to
+   `$QA_SCRATCH/lens-<name>.json` and re-snapshot the tree into `tree-after.txt`.
+   If it differs from `tree-before.txt`, the reviewer wrote to the tree: report it,
+   name the paths, and do **not** auto-revert — a reviewer's leftover and the
+   author's own uncommitted work are indistinguishable.
+4. **At the end of the round**, record the timing:
+   ```bash
+   bash "${CLAUDE_PLUGIN_ROOT}/lib/record-timing.sh" "$QA_SCRATCH"
+   ```
+
 **Use the Agent tool** to spawn a fresh sub-agent for the QA review. This is the critical step — do NOT display a prompt and ask the user to paste it elsewhere. Call the Agent tool directly.
 
 > **Why the definition-site evidence requirement exists.** During a previous

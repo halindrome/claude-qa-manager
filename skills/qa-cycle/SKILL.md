@@ -391,6 +391,11 @@ reviewer, which defeats the cycle. The levers are panel width (narrow a target's
 Not used on the default path. Take these only when `review_mode == "sequential"`, an Agent
 spawn was refused, or `--double`/`--triple` was passed.
 
+On this path **you** own the bookkeeping the manager would otherwise do — the `fanout`
+stamp, rewriting `status` at each phase, the before/after tree snapshot, and
+`record-timing.sh`. Skip them and the round reports no progress, detects no tree
+change, and records no timing. The reference has the exact commands.
+
 See `references/sequential-and-multimodel.md`.
 
 
