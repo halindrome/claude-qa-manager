@@ -149,6 +149,31 @@ once as a standalone `qa-reviewer`. If it fails again, do NOT treat its axis as
 clean — record it in `failed_lenses` and, if `contract-security` is the one
 lost, render NO contract table and flag it. A failed lens is never a clean review.
 
+### 1.4 Bracket the panel with a working-tree check — MANDATORY
+
+Lenses are read-only and may not modify a file even transiently. `Write`/`Edit` are
+withheld from them, but `Bash` is not, so enforcement cannot rest on the tool list.
+Record the tree **before** you fan out and verify it **after** every lens returns:
+
+```bash
+git -C "<target_abs>" status --porcelain > "$qa_scratch/tree-before.txt"
+#   ... fan out, collect all lenses ...
+git -C "<target_abs>" status --porcelain > "$qa_scratch/tree-after.txt"
+diff "$qa_scratch/tree-before.txt" "$qa_scratch/tree-after.txt"
+```
+
+If they differ, a lens wrote to the shared tree. Set `tree_mutated: true` in your
+verdict, name the changed paths in `blocking_summary`, and say in the round note that
+this round's findings may describe mutated code rather than the merge request. **Do
+not restore the tree yourself** — you cannot tell a lens's leftover stub from the
+author's own uncommitted work, and guessing wrong destroys someone's changes.
+
+Why this is bracketed rather than trusted: on a real round a lens ran mutation
+testing, and a concurrently-running lens read the stubbed function and filed findings
+about it. Nothing detected it; it surfaced only because a human was reading the
+manager's narration. A tree that changes under a review invalidates that review, so
+it must be observed rather than assumed.
+
 ### 1.5 Report progress as each lens returns — MANDATORY
 
 You run in the background, and until you render the note you produce no external
@@ -314,6 +339,7 @@ posting; the caller will post from `$qa_scratch/note-round<round>.md`.
   "note_url": "<url or empty>",
   "observations_count": 0,
   "qa_introduced_blocking": 0,
+  "tree_mutated": false,
   "blocking_summary": "<=2 sentences: the confirmed critical/major findings, or 'none'",
   "decisions_needed": []
 }

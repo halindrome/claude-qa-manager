@@ -371,6 +371,11 @@ it here):
 - **All** lenses in `failed_lenses` → a FAILED round: no clean post, no approval, re-run.
   Some failed → the missing axes are not clean, and the note says so.
 - Read `note_path` only if you need the markdown; the verdict alone drives Steps 3B-3E.
+- `tree_mutated: true` → a lens wrote to the shared working tree during the review.
+  **Stop before Step 3B.** Show the changed paths and ask the user what to keep: some
+  of this round's findings may describe the mutation rather than the MR, and a fix
+  commit would capture a lens's leftovers. Never auto-revert — you cannot distinguish
+  a lens's stub from the author's own uncommitted work.
 - `qa_introduced_blocking >= 2` → surface it to the user verbatim from the note. This
   cycle is largely fixing its own earlier fixes. **Report only**: do not recommend
   reverting or choose an approach — whether to revert, patch again, or stop is the
