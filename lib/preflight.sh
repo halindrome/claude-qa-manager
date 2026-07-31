@@ -1234,6 +1234,28 @@ done
 LENSES_JSON=$(printf '%s\n' "${LENSES[@]}" | jq -R . | jq -s .)
 
 # ---------------------------------------------------------------------------
+# Round progress -> $QA_SCRATCH/status
+# ---------------------------------------------------------------------------
+# One line, pipe-delimited, rewritten by the manager as each lens returns:
+#   <mr>|<target>|<round>|<phase>|<lenses_done>|<lenses_total>|<epoch_start>
+#
+# WHY THIS EXISTS. A round spends the overwhelming majority of its wall clock in
+# the lens panel, and the panel used to write NOTHING until the manager rendered
+# the note at the very end. From outside, "six lenses working" and "the manager
+# died twenty minutes ago" were byte-for-byte identical: an unchanged scratch
+# directory. Diagnosing a live round meant reading agent timers in the UI and
+# guessing. The file's MTIME is as load-bearing as its contents -- it is what
+# makes a stall visible, because a stalled round stops touching it while a
+# healthy one keeps counting up.
+#
+# Deliberately pre-formatted and single-line: a statusline renderer reads it on
+# every repaint, so it must cost one read and no parsing of preflight.json.
+STATUS_FILE="$QA_SCRATCH/status"
+printf '%s|%s|%s|preflight|0|%s|%s\n' \
+  "$MR_NUMBER" "$TARGET" "$ROUND" "$(printf '%s' "$LENSES_JSON" | jq -r 'length')" "$(date +%s)" \
+  > "$STATUS_FILE"
+
+# ---------------------------------------------------------------------------
 # Manager brief -> $QA_SCRATCH/manager-brief.txt
 # ---------------------------------------------------------------------------
 # The spawn payload for the qa-manager Agent, rendered here instead of being
@@ -1288,6 +1310,10 @@ MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
   # Feed them to lib/attribute-findings.sh to mark findings that sit on code a
   # previous round of THIS cycle wrote.
   printf 'qa_fix_commits=%s\n'         "$QA_FIX_COMMITS"
+  # Rewrite this as each lens returns. It is the ONLY external signal that the
+  # round is alive; leave it untouched and a stalled panel is indistinguishable
+  # from a working one.
+  printf 'status_path=%s\n'            "$STATUS_FILE"
 } > "$MANAGER_BRIEF"
 
 PREFLIGHT_JSON=$(jq -n \
@@ -1328,6 +1354,7 @@ PREFLIGHT_JSON=$(jq -n \
   --argjson approval_eligible "$APPROVAL_ELIGIBLE" \
   --arg manager_brief_path "$MANAGER_BRIEF" \
   --argjson qa_fix_commits "$QA_FIX_COMMITS" \
+  --arg status_path "$STATUS_FILE" \
   --argjson multi_target "$MULTI_TARGET" --argjson target_count "$TARGET_COUNT" \
   --argjson target_is_submodule "$TARGET_IS_SUBMODULE" \
   --argjson verify "$VERIFY_JSON" \
@@ -1369,6 +1396,7 @@ PREFLIGHT_JSON=$(jq -n \
     approval_eligible: $approval_eligible,
     manager_brief_path: $manager_brief_path,
     qa_fix_commits: $qa_fix_commits,
+    status_path: $status_path,
     # NOT `project`: that key is already the forge project slug. A duplicate key
     # is silently resolved by jq in favour of the LAST one, which is exactly how
     # the registry `scope` string was destroyed by `diff_scope` once before.

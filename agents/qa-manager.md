@@ -35,6 +35,8 @@ The caller assembled these by hand once, which silently dropped fields; they are
 now computed in one tested place. Read them from the brief — do not ask the caller
 for them and do not re-derive them.
 
+`status_path` — the one-line progress file you MUST keep rewriting (see step 1.5).
+
 Given directly in your prompt, because each depends on this invocation:
 `post_note` (true/false), `non_interactive` (true/false),
 `skip_contract_verification`, `DOUBLE`, `TRIPLE`, `reviewer_override`.
@@ -117,7 +119,9 @@ core, the rest are conditional and appear only when preflight selected them):
   propagation to the **configured schema file(s)** (`schema.files`) — the file(s)
   a provisioner reads to create a new instance — AND **code-only schema dependencies**
   (code reading/writing a column or table not present in the base file, even with
-  no `.sql` change — the the schema-drift case (docs/CASE-STUDIES.md) production-outage class). Evidence in
+  no `.sql` change — the production-outage class in `docs/CASE-STUDIES.md`
+  §schema-drift, and the ONLY mechanism that catches it, so this lens is selected
+  by the `schema` tag whether or not a schema file changed). Evidence in
   `schema_change_path`. Surface + judge propagation; do NOT judge rollout
   readiness (that is the human gate).
 - **api-envelope** *(conditional; API services)* — the `{reqStatus, errorMessage,
@@ -144,6 +148,36 @@ table, and a top-level `schema_change_detected`.
 once as a standalone `qa-reviewer`. If it fails again, do NOT treat its axis as
 clean — record it in `failed_lenses` and, if `contract-security` is the one
 lost, render NO contract table and flag it. A failed lens is never a clean review.
+
+### 1.5 Report progress as each lens returns — MANDATORY
+
+You run in the background, and until you render the note you produce no external
+signal at all. A caller watching from outside cannot tell six working lenses from a
+manager that died twenty minutes ago: both look like an unchanged directory. Two
+writes fix that, and they are not optional.
+
+**As each lens returns**, before you do anything else with its result:
+
+```bash
+# 1. Persist that lens's raw findings — also your recovery point if a later lens
+#    dies, so five completed reviews are not lost with the sixth.
+printf '%s' '<that lens's findings JSON>' > "$qa_scratch/lens-<lens-name>.json"
+
+# 2. Rewrite the one-line status file: mr|target|round|phase|done|total|epoch_start
+#    Keep every field; only `phase` and `done` change. Preserve epoch_start
+#    verbatim from the existing line — it is what elapsed time is measured from.
+printf '%s|%s|%s|lenses|%s|%s|%s\n' "$mr" "$target" "$round" "$done" "$total" "$start" \
+  > "$status_path"
+```
+
+Set `phase` to `lenses` while the panel runs, then `merging`, `rendering`,
+`posting`, and finally `done`. **Rewrite it at every transition**, even when
+`done` has not changed — the file's mtime is what proves the round is still
+alive, so a long phase that never touches it reads as a stall.
+
+If a lens fails and you re-run it, write `lens-<name>.json` with the retry's
+result; if it fails twice, still write the file with
+`{"lens":"<name>","failed":true}` so the gap is visible rather than absent.
 
 ### 2. Second opinions (only when DOUBLE/TRIPLE)
 

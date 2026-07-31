@@ -374,6 +374,38 @@ eq "XDG root settings.local.json counts"  "$(jq -r '.tooling.ctx_available' <<<"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------
+echo "[round progress — a stalled panel must not look like a working one]"
+r=$(mkfixture "feature/x" "main"); out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+st=$(jq -r '.status_path' <<<"$out")
+eq "status_path emitted"          "$( [ -s "$st" ] && echo yes || echo no )" "yes"
+eq "  seeded at phase=preflight"  "$(cut -d'|' -f4 "$st")" "preflight"
+eq "  carries mr/target/round"    "$(cut -d'|' -f1,2,3 "$st")" "73|mono|1"
+eq "  lens total matches panel"   "$(cut -d'|' -f6 "$st")" "$(jq -r '.lenses|length' <<<"$out")"
+eq "  and reaches the brief"      "$(grep -c '^status_path=' "$(jq -r '.manager_brief_path' <<<"$out")")" "1"
+
+# The fragment: silent when idle, alive vs stalled, silent when done.
+FRAG="$REPO_SRC/lib/statusline-fragment.sh"
+sroot=$(mktemp -d)
+eq "no round -> prints nothing"   "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" | wc -c | tr -d ' ')" "0"
+mkdir -p "$sroot/qa-cycle-abc-706"
+printf '706|rest-api|1|lenses|3|6|%s\n' "$(( $(date +%s) - 240 ))" > "$sroot/qa-cycle-abc-706/status"
+eq "fresh round -> lens progress" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG")" "QA !706 rest-api r1 ◆3/6 4m"
+# THE case this exists for: a crashed panel leaves the file behind, so existence
+# cannot mean "running". Age of the last write is what separates them.
+# 10 minutes old: past STALL_AFTER (180s) but well inside FORGET_AFTER (4h). An
+# ancient mtime would exercise the forget path instead and silently pass.
+old=$(date -v-10M +%Y%m%d%H%M 2>/dev/null || date -d '10 minutes ago' +%Y%m%d%H%M)
+touch -t "$old" "$sroot/qa-cycle-abc-706/status"
+eq "stale write -> reported stalled" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" | grep -c 'stalled')" "1"
+# ...and an abandoned dir eventually goes quiet rather than nagging forever.
+touch -t 200001010000 "$sroot/qa-cycle-abc-706/status"
+eq "  abandoned dir -> silent"       "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" | wc -c | tr -d ' ')" "0"
+# A finished round stops writing; it must go quiet, not read as stalled forever.
+printf '706|rest-api|1|done|6|6|%s\n' "$(date +%s)" > "$sroot/qa-cycle-abc-706/status"
+eq "phase=done -> prints nothing"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" | wc -c | tr -d ' ')" "0"
+rm -rf "$sroot" "$r"
+
+# ---------------------------------------------------------------------------
 echo "[self-inflicted findings — blame attribution, not line arithmetic]"
 ATTR="$REPO_SRC/lib/attribute-findings.sh"
 a=$(mktemp -d); git init -q "$a/r"
@@ -842,8 +874,11 @@ git -C "$r/repo" add -A >/dev/null; git -C "$r/repo" commit -qm sqlfile
 out=$(run_preflight "$r" 73 mono)
 eq "other .sql file -> NO schema-propagation" "$(jq -r '.lenses|index("schema-propagation")' <<<"$out")" "null"
 rm -rf "$r"
-# A schema-tagged target gets schema-propagation WITHOUT any DDL (the code-only
-# code-only-dependency case).
+# A schema-tagged target gets schema-propagation WITHOUT any DDL. This asserts
+# INTENT, not incidental behaviour: the lens's second mandate is code-only schema
+# dependencies — code reading a column absent from the schema file, with no .sql
+# change — which is the §schema-drift production-outage class and the only thing
+# that catches it. Do NOT "optimise" this by gating the lens on schema.detected.
 r=$(mkfixture "feature/x" "main" '.targets.mono.lens_tags = ["schema"]'); commit_lines "$r/repo" 5 plain.txt
 out=$(run_preflight "$r" 73 mono)
 eq "schema TAG, no DDL -> +schema-propagation" "$(jq -r '.lenses|index("schema-propagation")!=null' <<<"$out")" "true"
