@@ -105,3 +105,72 @@ an escape hatch must be reconciled with every mechanism that already exists — 
 that raises it, the guard that might undo it, and every site that documents the old rule.
 Hardening one site while another still asserts the opposite is the single most common
 defect this cycle finds.
+
+---
+
+## §lens-contamination — why reviewers may not touch the working tree
+
+A concurrent reviewer panel shares ONE working tree. On a live round, one lens ran
+mutation testing — stub a function, run the suite, see whether a test notices, restore
+the file. A second lens, reading concurrently, saw the stubbed function and filed
+findings about it. Those findings described the mutation, not the merge request.
+
+**Why the existing rule did not prevent it.** The reviewer contract already said
+"strictly read-only". A lens that intends to restore a file in a moment does not read
+that as modifying anything, and mutation testing is a legitimate technique in
+isolation. The prohibition was true and insufficient.
+
+**Why it went unnoticed.** Nothing compared the tree before and after. It surfaced only
+because a human happened to be reading the orchestrator's narration. Had the lens died
+mid-mutation, the stub would have been left in place and committed by the fix step.
+
+**What this plugin does about it.**
+
+1. Reviewers get no file-writing tools, and the prohibition names the transient case
+   explicitly, because "I will put it back" was the loophole.
+2. The manager brackets the panel: a snapshot of HEAD, branch and status before
+   fan-out and after every reviewer returns. A difference is reported, never
+   auto-reverted — a leftover stub and the author's own uncommitted work are
+   indistinguishable, and guessing wrong destroys someone's changes.
+3. HEAD is in the snapshot, not just the dirty-file list. A clean branch switch leaves
+   `status --porcelain` byte-identical, so a tree-dirt check alone cannot see one.
+
+**The deeper point.** Containment beats prohibition. Given a private checkout per
+reviewer, mutation testing would be safe and useful; forbidding it outright is a
+stopgap that costs a real capability. The prohibition is what fits an architecture
+where reviewers share a tree.
+
+---
+
+## §unrun-suite — why "the tests were not run" must be said out loud
+
+Across two consecutive rounds on one merge request, a six-reviewer panel graded
+thirteen acceptance criteria without executing a single test. Every claim — including
+whether a newly added test actually failed before the fix — was derived by reading
+assertions and by trusting a commit message.
+
+The panel was **right** to decline. Its detected test entry point managed service
+lifecycle (it restarted the stack, ran the suite, then shut the stack down), and
+several reviewers were reading the same tree concurrently. Running it would have
+broken the review it was meant to support.
+
+**What went wrong was not the decision but the silence around it.** Two things had to
+be true for this to be safe, and only one was:
+
+1. The panel said so, prominently, in the round note. A grade of PASS that is really
+   "PASS by reading" is a different claim, and it was labelled as one.
+2. Something else should have executed the suite. Nothing did, because the fix step —
+   the one place execution belongs — never ran, and no gate noticed that a round had
+   closed with zero execution evidence.
+
+**What this plugin does about it.** Reviewers never run the suite, unconditionally, so
+the decision is no longer re-derived per round by whoever is reasoning that day.
+Execution happens in exactly one place, the fix step, single-threaded, after the panel
+has finished. When the discovered command is unsafe to run even there, the answer is a
+per-target override naming a safe invocation — and the round is required to say it
+skipped, not to fall silent.
+
+**General lesson.** Detection finds *a* test entry point, not a *safe* one: it proves a
+target exists, not what the recipe does. Any gate that can decline must report
+declining, or "we didn't check" becomes indistinguishable from "we checked and it was
+fine" — which is the failure this entire document is about.

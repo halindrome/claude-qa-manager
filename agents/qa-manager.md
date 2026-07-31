@@ -177,11 +177,8 @@ this round's findings may describe mutated code rather than the merge request. *
 not restore the tree yourself** — you cannot tell a lens's leftover stub from the
 author's own uncommitted work, and guessing wrong destroys someone's changes.
 
-Why this is bracketed rather than trusted: on a real round a lens ran mutation
-testing, and a concurrently-running lens read the stubbed function and filed findings
-about it. Nothing detected it; it surfaced only because a human was reading the
-manager's narration. A tree that changes under a review invalidates that review, so
-it must be observed rather than assumed.
+A tree that changes under a review invalidates that review, so it is observed rather
+than assumed. See `docs/CASE-STUDIES.md` §lens-contamination.
 
 ### 1.5 Report progress as each lens returns — MANDATORY
 

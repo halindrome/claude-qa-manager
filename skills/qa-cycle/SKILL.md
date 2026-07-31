@@ -426,15 +426,11 @@ Do NOT apply fixes automatically. Instead:
    (`verify.build_command` too when present). This is the step whose absence produces the
    tail-chasing pattern: a round's fix is otherwise unverified until the *next* round's full
    panel finds it broken.
-   **This is the only place the suite runs.** Lenses are forbidden from running it —
-   six concurrent readers on one working tree, and a harness that starts or stops
-   services would break the environment under the others. So if you skip it, the
-   round has no execution evidence at all: measured on a real cycle, two consecutive
-   rounds graded thirteen acceptance criteria entirely by reading assertions.
-   If the detected command is unsafe to run here (one real `make test` began with
-   `make restart` and ended with `make down`), that is what
-   `targets.<name>.verify.command` is for — say so and ask, rather than skipping
-   silently.
+   **This is the only place the suite runs** — lenses are forbidden from running it,
+   so skipping here leaves the round with no execution evidence at all, and every
+   claim in it rests on reading. If the detected command is unsafe to run at this
+   point, that is what `targets.<name>.verify.command` is for: say so and ask,
+   rather than skipping silently. See `docs/CASE-STUDIES.md` §unrun-suite.
    - **A new or changed test must be shown to fail without the fix.** Stash or revert the
      source change, run the test, confirm it FAILS, restore. A test that passes either way
      verifies nothing while looking like proof, and it is what lets a bad fix survive into
