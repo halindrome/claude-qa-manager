@@ -17,8 +17,11 @@ load a description of work a shell script had already done.
 > (`--double`/`--triple`/`--reviewer=`) from argv yourself.
 
 Extract `MR_NUMBER`, `TARGET`, and the optional reviewer flags from the
-invocation arguments. If `MR_NUMBER` or `TARGET` is missing, ask for it before
-proceeding. Record:
+invocation arguments. `MR_NUMBER` is required. `TARGET` is optional and resolves
+to the sole configured target when the project defines exactly one; when it
+defines several, ask which one rather than guessing — the config layers merge, so
+a `default` entry exists even in a monorepo and would quietly select the repo
+root. Record:
 
 - `DOUBLE=true` if `--double` **or** `--triple` appears anywhere in the argv,
   else `DOUBLE=false`. (Triple implies double — a second reviewer always runs
@@ -47,14 +50,14 @@ Documented argument surface:
 are per-invocation — nothing is persisted between rounds; callers must pass the
 flags again on subsequent rounds to keep multi-model QA active.
 
-Load `the resolved config` and look up `targets.<TARGET>`. Resolve `<target-path>`, `<remote>`, and `<scope>` from that entry. If the target is not present, ask the user for the path and offer to add the entry.
+Load the merged config (shipped defaults → user → project, later winning) and look up `targets.<TARGET>`. Resolve `<target-path>`, `<remote>`, and `<scope>` from that entry. If the target is not present, ask the user for the path and offer to add the entry.
 
 Then resolve `<base-branch>` with this precedence:
 
 1. If `.branchconfig.yaml` exists at the repo root:
    a. If `<target-path>` is `.` (the monorepo itself), use the top-level `base_branch:` field of `.branchconfig.yaml`.
    b. Otherwise, look up `submodule_branches.<target-path>.base_branch`. If present, use that value.
-2. If neither produced a value, fall back to `targets.<TARGET>.base_branch` from `the resolved config`.
+2. If neither produced a value, fall back to `targets.<TARGET>.base_branch` from the merged config.
 
 Implementation snippet (the resolver should behave equivalently to this):
 
@@ -86,12 +89,14 @@ if [[ -f "$CONFIG" ]]; then
   [[ -n "$RESOLVED_BASE" ]] && RESOLVED_SOURCE=".branchconfig.yaml"
 fi
 if [[ -z "$RESOLVED_BASE" ]]; then
-  RESOLVED_BASE=$(jq -r --arg t "$TARGET" '.targets[$t].base_branch' the resolved config)
-  RESOLVED_SOURCE="the resolved config fallback"
+  # $MERGED_CONFIG is the three-layer merge, written to one temp file before any
+  # lookup runs; preflight.sh calls it $BB.
+  RESOLVED_BASE=$(jq -r --arg t "$TARGET" '.targets[$t].base_branch' "$MERGED_CONFIG")
+  RESOLVED_SOURCE="config fallback"
 fi
 ```
 
-Report which source was used (one line, e.g. `base_branch = main (from .branchconfig.yaml)` or `base_branch = master (from the resolved config fallback)`) so the user can confirm the skill picked up the right context.
+Report which source was used (one line, e.g. `base_branch = main (from .branchconfig.yaml)` or `base_branch = master (from config fallback)`) so the user can confirm the skill picked up the right context.
 
 Navigate into the target directory and fetch the MR details:
 
@@ -126,14 +131,14 @@ git diff <remote>/<target-branch>..<remote>/<feature-branch> --stat 2>/dev/null 
 
 Before any QA round runs, resolve credentials for **QA-attributed GitLab actions** (posting round notes, approving the MR). Fix commits and branch syncs continue to use the user's normal `glab`/dev token — only the actions enumerated below use the QA agent token.
 
-1. **Load the `qa_agent` block** from `the resolved config`. Capture `token_env`, `token_file`, `expected_username`, and the `approval` sub-block.
+1. **Load the `qa_agent` block** from the merged config. Capture `token_env`, `token_file`, `expected_username`, and the `approval` sub-block.
 
 2. **Resolve the token.** First check the env var named by `token_env` (default `QA_AGENT_TOKEN`):
 
    ```bash
    # Guard against empty/unset token_env — bash ${!var:-} errors with
    # "bad substitution" when var is empty (e.g. user dropped qa_agent.token_env
-   # from the resolved config to disable env-var lookup).
+   # from the merged config to disable env-var lookup).
    QA_TOKEN=""
    if [ -n "$token_env" ]; then
      QA_TOKEN="${!token_env:-}"   # e.g. ${QA_AGENT_TOKEN:-}

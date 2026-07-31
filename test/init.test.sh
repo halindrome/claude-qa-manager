@@ -104,8 +104,8 @@ SH
 }
 
 d=$(mkrepo "https://gitlab.com/o/r.git"); bin="$d/bin"; mkstub "$bin"
-cfgdir="$d/xdg/claude-qa-manager"
-( cd "$d" && XDG_CONFIG_HOME="$d/xdg" PATH="$bin:$PATH" QA_AGENT_TOKEN="good-token" \
+cfgdir="$d/home/.config/claude-qa-manager"
+( cd "$d" && HOME="$d/home" PATH="$bin:$PATH" QA_AGENT_TOKEN="good-token" \
     bash "$INIT" token </dev/null >/dev/null 2>&1 )
 eq "valid token stored"        "$( [ -s "$cfgdir/qa-agent-token" ] && echo yes || echo no )" "yes"
 eq "  stored content matches"  "$(cat "$cfgdir/qa-agent-token" 2>/dev/null)" "good-token"
@@ -115,7 +115,7 @@ eq "  expected_username recorded" "$(jq -r '.qa_agent.expected_username' "$cfgdi
 # The whole point: nothing lands inside the repository.
 # Exclude ./bin: the stub forge CLI legitimately contains the token literal in
 # its own comparison, and matching it is a false positive, not a leak.
-leak=$( cd "$d" && grep -rl 'good-token' . --exclude-dir=xdg --exclude-dir=.git --exclude-dir=bin 2>/dev/null | head -1 )
+leak=$( cd "$d" && grep -rl 'good-token' . --exclude-dir=home --exclude-dir=.git --exclude-dir=bin 2>/dev/null | head -1 )
 eq "  token NOT written into the repo" "${leak:-none}" "none"
 rm -rf "$d"
 
@@ -123,12 +123,54 @@ rm -rf "$d"
 # token is worse than none: the plugin looks configured and silently posts under
 # the developer's identity instead.
 d=$(mkrepo "https://gitlab.com/o/r.git"); bin="$d/bin"; mkstub "$bin"
-cfgdir="$d/xdg/claude-qa-manager"
-( cd "$d" && XDG_CONFIG_HOME="$d/xdg" PATH="$bin:$PATH" QA_AGENT_TOKEN="bad-token" \
+cfgdir="$d/home/.config/claude-qa-manager"
+( cd "$d" && HOME="$d/home" PATH="$bin:$PATH" QA_AGENT_TOKEN="bad-token" \
     bash "$INIT" token </dev/null >/dev/null 2>&1 )
 rc=$?
 eq "unverifiable token -> non-zero exit" "$( [ "$rc" -ne 0 ] && echo yes || echo no )" "yes"
 eq "  and is NOT stored"                 "$( [ -e "$cfgdir/qa-agent-token" ] && echo stored || echo absent )" "absent"
+rm -rf "$d"
+
+# The user config layer is $HOME-relative and deliberately NOT XDG-aware, because
+# `qa_agent.token_file` is a $HOME-relative literal that preflight expands. If
+# init.sh alone honoured XDG_CONFIG_HOME the two would diverge: the token would be
+# stored where preflight never looks, and preflight would report "no token" on a
+# repo that was correctly initialised. Point XDG at a decoy and assert it is
+# ignored, so re-introducing XDG-awareness here fails loudly rather than silently.
+d=$(mkrepo "https://gitlab.com/o/r.git"); bin="$d/bin"; mkstub "$bin"
+cfgdir="$d/home/.config/claude-qa-manager"
+( cd "$d" && HOME="$d/home" XDG_CONFIG_HOME="$d/decoy" PATH="$bin:$PATH" \
+    QA_AGENT_TOKEN="good-token" bash "$INIT" token </dev/null >/dev/null 2>&1 )
+eq "XDG_CONFIG_HOME ignored: token under \$HOME" "$( [ -s "$cfgdir/qa-agent-token" ] && echo yes || echo no )" "yes"
+eq "  and nothing written to the XDG decoy"      "$( [ -e "$d/decoy" ] && echo written || echo absent )" "absent"
+rm -rf "$d"
+
+# ---------------------------------------------------------------------------
+# A project whose fixes cannot be run is the tail-chasing generator: the fix ships
+# unverified and the NEXT round's panel pays to discover it was wrong. init is
+# where that gets said, because the fix belongs in the project, not in this config.
+echo "[verify entry point is reported per target]"
+d=$(mkrepo "https://gitlab.com/o/r.git")
+out=$( cd "$d" && bash "$INIT" check 2>&1 | strip )
+eq "no test entry -> NONE FOUND"      "$(grep -c 'NONE FOUND' <<<"$out")" "1"
+eq "  and is not reported as ok"      "$(grep -c '✔ tests' <<<"$out")" "0"
+eq "  and points at the project"      "$(grep -c "Do NOT work around it" <<<"$out")" "1"
+printf 'test:\n\techo hi\n' > "$d/Makefile"
+out=$( cd "$d" && bash "$INIT" check 2>&1 | strip )
+eq "detected -> reported with source" "$(grep -c 'tests: make test' <<<"$out")" "1"
+rm -rf "$d"
+
+# Every configured target is checked, not just the first: in a monorepo the whole
+# point is that one submodule can have tests while its sibling has none.
+d=$(mkrepo "https://gitlab.com/o/r.git")
+mkdir -p "$d/apps/a" "$d/apps/b" "$d/.claude/skills/qa-cycle"
+printf 'test:\n\techo hi\n' > "$d/apps/a/Makefile"
+cat > "$d/.claude/skills/qa-cycle/config.json" <<'JSON'
+{"targets":{"a":{"path":"apps/a"},"b":{"path":"apps/b"}}}
+JSON
+out=$( cd "$d" && bash "$INIT" check 2>&1 | strip )
+eq "target with tests reported ok"    "$(grep -c "tests for 'a': make test" <<<"$out")" "1"
+eq "sibling without tests warned"     "$(grep -c "tests for 'b': NONE FOUND" <<<"$out")" "1"
 rm -rf "$d"
 
 # ---------------------------------------------------------------------------

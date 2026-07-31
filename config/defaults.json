@@ -1,5 +1,5 @@
 {
-  "_comment": "Shipped defaults. Resolution order, later wins, shallow-merged per top-level key: (1) this file, (2) ~/.config/claude-code/claude-qa-manager/config.json (user-level: credentials, policy), (3) <repo>/.claude/skills/qa-cycle/config.json (project-level: targets, schema files). A project should never need to restate credentials, and a user config should never need to know a repo's layout.",
+  "_comment": "Shipped defaults. Resolution order, later wins, shallow-merged per top-level key: (1) this file, (2) ~/.config/claude-qa-manager/config.json (user-level: credentials, policy), (3) <repo>/.claude/skills/qa-cycle/config.json (project-level: targets, schema files). A project should never need to restate credentials, and a user config should never need to know a repo's layout.",
 
   "protected_branches": ["main", "master"],
 
@@ -38,6 +38,11 @@
       "unapprove_on_dirty_reround": true,
       "allow_deferred_findings_exit": true
     }
+  },
+
+  "verify": {
+    "_comment": "How a fix is verified before it is committed. Normally EMPTY: the target's own test/build entry point is DISCOVERED from its Makefile, package.json, tox.ini, go.mod, etc. Any decent project already declares how it is tested, and restating that here duplicates it -- the copy then drifts and the gate certifies a command the project stopped using. Set `command` only when detection is wrong. When nothing is discoverable the gate reports state 'none-found' and the round note must say the fixes went unverified; it NEVER reports a pass.",
+    "command": ""
   },
 
   "review": {

@@ -64,8 +64,10 @@ die_internal() { echo "preflight: internal: $*" >&2; exit 5; }
 
 MR_NUMBER="${1:-}"
 TARGET="${2:-}"
-[ -n "$MR_NUMBER" ] || die_usage "missing MR number (usage: preflight.sh <MR> <TARGET>)"
-[ -n "$TARGET" ]    || die_usage "missing target (usage: preflight.sh <MR> <TARGET>)"
+[ -n "$MR_NUMBER" ] || die_usage "missing MR number (usage: preflight.sh <MR> [TARGET])"
+# TARGET is resolved after the config merge (Step 0): it is optional ONLY when the
+# project defines exactly one target. See the note there — the obvious shortcut of
+# defaulting it to `default` is wrong, and silently reviews the wrong subproject.
 
 for t in git jq awk; do
   command -v "$t" >/dev/null 2>&1 || die_usage "required tool '$t' not on PATH"
@@ -98,7 +100,12 @@ REPO_ROOT="$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)
 # The merged result is written to one temp file and every downstream jq call
 # reads it, which keeps the (many) existing `.targets[$t]…` queries unchanged.
 CONFIG_DEFAULTS="$PLUGIN_ROOT/config/defaults.json"
-CONFIG_USER="${XDG_CONFIG_HOME:-$HOME/.config}/claude-qa-manager/config.json"
+# Deliberately NOT XDG-aware. `qa_agent.token_file` defaults to the literal
+# `~/.config/claude-qa-manager/qa-agent-token`, expanded against $HOME below; if
+# this line honoured XDG_CONFIG_HOME the two would diverge and `init.sh token`
+# would store a token where preflight never looks. Claude Code itself uses
+# CLAUDE_CONFIG_DIR, not XDG (see the tool-mandate probe further down).
+CONFIG_USER="$HOME/.config/claude-qa-manager/config.json"
 CONFIG_PROJECT="$REPO_ROOT/.claude/skills/qa-cycle/config.json"
 
 [ -f "$CONFIG_DEFAULTS" ] || die_usage "shipped defaults missing at $CONFIG_DEFAULTS (broken install)"
@@ -123,8 +130,33 @@ CONFIG_SOURCES="defaults"
 # ---------------------------------------------------------------------------
 # Step 0 — target registry lookup
 # ---------------------------------------------------------------------------
+# TARGET_COUNT drives every "does this project HAVE subprojects" decision
+# downstream. `_comment` is a documentation key in the shipped defaults, not a
+# target; counting it would make every single-project repo look like a monorepo
+# and re-expose the whole subproject vocabulary this gate exists to suppress.
+TARGET_COUNT=$(jq '[.targets | keys[] | select(. != "_comment")] | length' "$BB")
+MULTI_TARGET=false; [ "$TARGET_COUNT" -gt 1 ] && MULTI_TARGET=true
+_known=$(jq -r '[.targets | keys[] | select(. != "_comment")] | join(", ")' "$BB")
+
+# Omitted TARGET is allowed only when there is exactly ONE target, and then it
+# resolves to that target whatever its name.
+#
+# Defaulting to the literal name `default` instead LOOKS equivalent and is not.
+# The three config layers DEEP-merge, so `targets.default` from the shipped
+# defaults survives into every project — including a monorepo that defines seven
+# real targets. A bare `preflight.sh 2184` would therefore have resolved silently
+# to `default` (path "."), reviewed the repository root instead of the intended
+# subproject, and reported a clean round on a diff it never looked at. Requiring
+# the argument whenever the choice is real is the only safe form.
+if [ -z "$TARGET" ]; then
+  if [ "$TARGET_COUNT" -eq 1 ]; then
+    TARGET=$(jq -r '[.targets | keys[] | select(. != "_comment")] | .[0]' "$BB")
+  else
+    die_usage "this project defines $TARGET_COUNT targets, so the target is required (usage: preflight.sh <MR> <TARGET>). Available: $_known"
+  fi
+fi
 if [ "$(jq -r --arg t "$TARGET" '.targets | has($t)' "$BB")" != "true" ]; then
-  die_usage "unknown target '$TARGET' (not in base-branches.json)"
+  die_usage "unknown target '$TARGET'. Available: $_known"
 fi
 TARGET_PATH=$(jq -r --arg t "$TARGET" '.targets[$t].path'            "$BB")
 REMOTE=$(jq -r      --arg t "$TARGET" '.targets[$t].remote // "origin"' "$BB")
@@ -184,6 +216,18 @@ EXPECTED_QA_USER=$(jq -r '.qa_agent.expected_username // ""' "$BB")
 QA_TOKEN_ENV=$(jq -r     '.qa_agent.token_env // "QA_AGENT_TOKEN"'    "$BB")
 QA_TOKEN_FILE=$(jq -r    '.qa_agent.token_file // "~/.config/claude-qa-manager/qa-agent-token"' "$BB")
 TINY_MAX=$(jq -r '.qa_agent.approval.tiny_mr_max_lines_changed // 50' "$BB")
+# NEVER read a boolean knob with jq's `//`. It is the ALTERNATIVE operator, not a
+# null-coalesce: it fires on `false` as well as `null`, so `.x // true` can never
+# return false and a user who explicitly disables a knob is silently overridden.
+# (Same operator, opposite direction, as the `scope: ""` bug: `//` does NOT fire on
+# an empty string.) Test for null instead.
+cfg_bool() {   # $1 = jq path, $2 = default when the key is absent
+  jq -r --argjson d "$2" "if ($1) == null then \$d else ($1) end" "$BB"
+}
+# Defaults must match config/defaults.json: they apply only when a key is absent,
+# so a drifted default silently changes approval policy.
+MIN_CLEAN_ROUND=$(jq -r '.qa_agent.approval.min_clean_round // 2' "$BB")
+TINY_RELAX=$(cfg_bool '.qa_agent.approval.tiny_mr_relax_to_round_1' true)
 
 # Branches this script must never push to. The old prose Step 2 relied on the
 # model reading the Notes section; a shell script cannot, so the list is read
@@ -198,13 +242,40 @@ PROTECTED_BRANCHES=$(jq -r '.protected_branches[]? // empty' "$BB")
 SEQ_MAX=$(jq -r '.review_mode.sequential_max_lines_changed // empty' "$BB")
 [ -n "$SEQ_MAX" ] || SEQ_MAX="$TINY_MAX"
 
-# Absolute target dir (target_path "." == monorepo root)
+# Absolute target dir (target_path "." == the repository root itself)
 if [ "$TARGET_PATH" = "." ]; then
   TARGET_ABS="$REPO_ROOT"
 else
   TARGET_ABS="$REPO_ROOT/$TARGET_PATH"
 fi
 [ -d "$TARGET_ABS" ] || die_usage "target path '$TARGET_ABS' does not exist"
+
+# Is the TARGET actually a git submodule? Asked of git, not inferred from the
+# path or the target's name: `target_path != "."` only means "a subdirectory",
+# which in a plain monorepo is not a submodule and needs no parent-workspace
+# commit. This is what gates the submodule reminder in the final report — the
+# reminder is noise, and slightly alarming, in a repo that has no parent to
+# update.
+TARGET_IS_SUBMODULE=false
+[ -n "$( (cd "$TARGET_ABS" && git rev-parse --show-superproject-working-tree 2>/dev/null) || true)" ] \
+  && TARGET_IS_SUBMODULE=true
+
+# How this target verifies a fix. DISCOVERED from the project's own rules, not
+# configured here: the project already declares how it is tested, and a copy in
+# this plugin's config would drift from it and then certify a command the project
+# abandoned. `verify.command` exists as an override for when detection is wrong,
+# and is empty by default.
+VERIFY_OVERRIDE=$(jq -r '.verify.command // ""' "$BB")
+if [ -n "$VERIFY_OVERRIDE" ]; then
+  VERIFY_JSON=$(jq -n --arg c "$VERIFY_OVERRIDE" \
+    '{state:"configured", command:$c, source:"config verify.command", build_command:"", build_source:""}')
+else
+  VERIFY_JSON=$(bash "$PLUGIN_ROOT/lib/detect-verify.sh" "$TARGET_ABS" 2>/dev/null || true)
+  # A detector that crashed must not read as "this project has no tests" — that
+  # is the same class of lie as a skipped gate reporting clean.
+  jq -e . >/dev/null 2>&1 <<<"${VERIFY_JSON:-}" || \
+    VERIFY_JSON='{"state":"none-found","command":"","source":"detector failed to run","build_command":"","build_source":""}'
+fi
 
 # ---------------------------------------------------------------------------
 # Step 0 — base-branch resolution (.branchconfig.yaml authoritative, else fallback)
@@ -792,8 +863,21 @@ if [ -n "${FORGE_PROJECT:-}" ]; then
     _MAX_ROUND=$(printf '%s' "$_NOTES_JSON" | jq -r '.[]?.body // empty' 2>/dev/null \
       | grep -oE '^## QA Round [0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)
     [ -n "$_MAX_ROUND" ] && ROUND=$((_MAX_ROUND + 1))
+
+    # This cycle's own fix commits, read back from the trailers earlier rounds
+    # wrote into their notes. They are what lets a later round tell "a defect in
+    # the MR" from "a defect THIS CYCLE introduced while fixing something else".
+    #
+    # Read from the notes rather than matched by commit subject on purpose: a
+    # rebase, a squash, or a hand-edited message breaks subject matching, and the
+    # round note is already the cycle's durable ledger (the deferred-findings
+    # exit runs on the same principle — what is not written down did not happen).
+    QA_FIX_COMMITS=$(printf '%s' "$_NOTES_JSON" | jq -r '.[]?.body // empty' 2>/dev/null \
+      | grep -oE '^QA-Fix-Commit:[[:space:]]*[0-9a-f]{7,40}' \
+      | grep -oE '[0-9a-f]{7,40}' | sort -u | jq -R . | jq -sc .)
   fi
 fi
+[ -n "${QA_FIX_COMMITS:-}" ] || QA_FIX_COMMITS='[]'
 
 # The lens spawn prompts inject this file verbatim as a titled `## Proportionality`
 # section, exactly like tool-mandate.md below — same delivery mechanism, for the
@@ -812,6 +896,38 @@ fi
 # The escalating tier at round >= 3 is the lever: early rounds genuinely find
 # real defects (rounds 1-2 above caught a missing BINLOG MONITOR grant), so the
 # mandate stays light there and tightens only where the value curve flattens.
+# Approval eligibility, computed here rather than by the skill at runtime.
+#
+# It is a function of $ROUND and three config knobs, all of which preflight
+# already holds — so having the main loop recompute it bought nothing and cost a
+# silent failure mode. The manager conditions both its `approval` and `sast_wait`
+# decisions on eligibility but is given none of the inputs, so when main forgot to
+# pass it, the manager could never raise either decision and the hands-free path
+# silently never approved anything.
+#
+# Eligibility is NECESSARY, NOT SUFFICIENT. Step 3E still re-checks every gate
+# (clean round, QA_TOKEN_OK, schema-change acknowledgement) before approving.
+APPROVAL_ELIGIBLE=false
+if [ "$ROUND" -ge "$MIN_CLEAN_ROUND" ]; then
+  APPROVAL_ELIGIBLE=true
+elif [ "$TINY_RELAX" = "true" ] && [ "$IS_TINY" = "true" ]; then
+  APPROVAL_ELIGIBLE=true
+fi
+
+# Fix-commit subject, rendered here rather than assembled in the skill. A scope
+# is a MULTI-PROJECT concept: it says which subproject a commit belongs to, and a
+# single-project repo has no answer. The shipped default target carries
+# `scope: ""`, and `.scope // $t` does NOT fall back on it — jq's `//` fires on
+# null and false, and an empty string is truthy — so the skill rendered a literal
+# `fix(): address QA round 1`, which is malformed conventional-commit and is
+# rejected outright by a commitlint hook. Emitting the finished string keeps the
+# empty-scope branch in one tested place instead of in prose.
+if [ -n "$SCOPE" ]; then
+  COMMIT_SUBJECT="fix($SCOPE): address QA round $ROUND"
+else
+  COMMIT_SUBJECT="fix: address QA round $ROUND"
+fi
+
 PROPORTIONALITY_FILE="$QA_SCRATCH/proportionality.md"
 {
   # Stamp the round this file was rendered FOR. The tier is a function of $ROUND at
@@ -867,20 +983,85 @@ PROPORTIONALITY_FILE="$QA_SCRATCH/proportionality.md"
 # substantial on a real code diff. When NEITHER is present the file is EMPTY, so
 # the prompt says nothing about them and the reviewer just uses Read/grep; the
 # review is correct either way (correctness never depends on these tools).
-# Detection mirrors the project hooks' "grep the known registration sites"
-# approach: a best-effort shell probe that is wrong only in the edge case where a
-# plugin is on disk but not actually loaded into the running session.
-_CC_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.config/claude-code}"
-_probe_registered() {  # $1 = name substring; scans Claude Code registration files + plugin cache
-  local name="$1" f
-  for f in "$REPO_ROOT/.mcp.json" "$_CC_DIR/.mcp.json" "$_CC_DIR/.claude.json" \
-           "$_CC_DIR/settings.json" "$HOME/.claude.json" "$HOME/.claude/settings.json"; do
-    [ -f "$f" ] && grep -q "$name" "$f" 2>/dev/null && return 0
+# Detection takes the UNION of every plausible location rather than resolving one.
+# That is a deliberate difference from a canonical resolver (CLAUDE_CONFIG_DIR ->
+# ~/.config/claude-code -> ~/.claude, FIRST MATCH WINS), which is correct when you
+# are about to WRITE a config. Here the question is "is it registered anywhere this
+# session can see", and a false negative is not neutral: it makes fix-mandate.md
+# announce the text-search-only regime while a fully indexed graph sits unused, so
+# Step 3B reconciles by regex when it could have queried the call graph. When the
+# candidate roots disagree, over-detecting is the safe direction.
+#
+# `~/.claude` is the LEGACY DEFAULT and still very common. An earlier version
+# resolved a single root as "${CLAUDE_CONFIG_DIR:-$HOME/.config/claude-code}" with
+# no existence check, so on a legacy install the plugin-cache scan targeted a
+# directory that does not exist and a plugin-form install was invisible.
+_claude_roots() {
+  local d
+  for d in "${CLAUDE_CONFIG_DIR:-}" "$HOME/.config/claude-code" "$HOME/.claude"; do
+    [ -n "$d" ] && [ -d "$d" ] && printf '%s\n' "$d"
   done
-  [ -d "$_CC_DIR/plugins/cache" ] && \
-    find "$_CC_DIR/plugins/cache" -maxdepth 7 -name plugin.json -path '*/.claude-plugin/*' \
-      -exec grep -q "\"name\"[[:space:]]*:[[:space:]]*\"$name\"" {} \; -print 2>/dev/null | grep -q . \
-    && return 0
+}
+# Project roots. $REPO_ROOT is the SUPERPROJECT (correct for target paths, and
+# load-bearing for them) but wrong for this: Claude Code resolves `.mcp.json` from
+# where the session was launched, which inside a submodule is the submodule itself,
+# not its parent. Same variable, right for one purpose and wrong for the other, so
+# take both plus the session's own project dir when it is exported.
+_project_roots() {
+  local d
+  for d in "${CLAUDE_PROJECT_DIR:-}" "$(git rev-parse --show-toplevel 2>/dev/null || true)" "$REPO_ROOT"; do
+    [ -n "$d" ] && [ -d "$d" ] && printf '%s\n' "$d"
+  done
+}
+# Registration is read with jq, not grepped. A substring grep matches a DISABLED
+# entry too -- `"codebase-memory-mcp@mkt": false` in enabledPlugins made the probe
+# report the tool as available, and the mandate then asserts a graph that is not
+# there. Recursive (`..`) because ~/.claude.json nests per-project mcpServers maps.
+_registered_in_file() {  # $1 = json file, $2 = plugin/server name
+  jq -e --arg n "$2" '
+    [ .. | objects
+      | ( ((.mcpServers?    // empty) | objects | has($n)) // false )
+        or
+        ( ((.enabledPlugins? // empty) | objects | to_entries
+            | any(.value == true and ((.key | split("@")[0]) == $n))) // false )
+    ] | any
+  ' "$1" >/dev/null 2>&1
+}
+_probe_registered() {  # $1 = plugin/server name
+  local name="$1" root f
+  for root in $(_project_roots | sort -u); do
+    for f in "$root/.mcp.json" "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
+      [ -f "$f" ] && _registered_in_file "$f" "$name" && return 0
+    done
+  done
+  for root in $(_claude_roots | sort -u); do
+    # settings.local.json first: it overrides settings.json.
+    for f in "$root/.mcp.json" "$root/settings.local.json" "$root/settings.json" "$root/.claude.json"; do
+      [ -f "$f" ] && _registered_in_file "$f" "$name" && return 0
+    done
+  done
+  [ -f "$HOME/.claude.json" ] && _registered_in_file "$HOME/.claude.json" "$name" && return 0
+  # Plugin cache. Variable-depth on purpose: the real layout is
+  # <cache>/<marketplace>/<plugin>[/<version>]/.claude-plugin/plugin.json, so a
+  # fixed-depth glob silently misses every versioned install.
+  local cache_roots="" p
+  for root in $(_claude_roots | sort -u); do
+    [ -d "$root/plugins/cache" ] && cache_roots="$cache_roots $root/plugins/cache"
+  done
+  # If THIS plugin was itself loaded from a cache, that locates the cache without
+  # guessing a config root at all. Walk up looking for .../plugins/cache.
+  # The `$prev` guard is not decorative: dirname of a RELATIVE path stalls at "."
+  # (dirname "." == "."), so a loop that only tests for "/" never terminates.
+  p="${CLAUDE_PLUGIN_ROOT:-}"; local prev=""
+  while [ -n "$p" ] && [ "$p" != "/" ] && [ "$p" != "$prev" ]; do
+    case "$p" in */plugins/cache) [ -d "$p" ] && cache_roots="$cache_roots $p"; break ;; esac
+    prev="$p"; p="$(dirname "$p")"
+  done
+  for root in $(printf '%s\n' $cache_roots | sort -u); do
+    find "$root" -maxdepth 7 -name plugin.json -path '*/.claude-plugin/*' \
+      -exec grep -q "\"name\"[[:space:]]*:[[:space:]]*\"$name\"" {} \; -print 2>/dev/null \
+      | grep -q . && return 0
+  done
   return 1
 }
 CMM_AVAILABLE=false; _probe_registered "codebase-memory-mcp" && CMM_AVAILABLE=true
@@ -917,6 +1098,68 @@ if [ "$CMM_AVAILABLE" = "true" ] || [ "$CTX_AVAILABLE" = "true" ]; then
     echo "Fall back to Read/grep only if a specific tool call genuinely fails."
   } > "$MANDATE_FILE"
 fi
+
+# ---------------------------------------------------------------------------
+# Fix mandate -> $QA_SCRATCH/fix-mandate.md  (consumed ONLY by Step 3B)
+# ---------------------------------------------------------------------------
+# A SEPARATE file from tool-mandate.md on purpose. tool-mandate.md is injected
+# verbatim into every lens spawn prompt, and reviewers are explicitly forbidden
+# from prescribing fixes (agents/qa-reviewer.md) — fix guidance there is noise in
+# the prompt whose adoption effect was actually measured. This file is review's
+# mirror image: it is read by the ORCHESTRATOR before it edits code in Step 3B.
+#
+# It is NEVER empty, unlike tool-mandate.md. The fix step must always know which
+# regime it is in, because the two give different guarantees and the weaker one
+# must say so out loud (invariant: an absent check never reports as a pass).
+# With a call graph, "no other call sites" is an answer. Without one it is the
+# absence of a regex match, which is not the same claim.
+FIX_MANDATE_FILE="$QA_SCRATCH/fix-mandate.md"
+{
+  echo "**Before editing code to address a finding.**"
+  echo
+  echo "**Any claim about behaviour in code OUTSIDE this diff must be confirmed by opening"
+  echo "that code.** A ticket, an MR description, a changelog, or an earlier round's commit"
+  echo "message is a claim, not evidence. This is not a stylistic preference: on a measured"
+  echo "5-round cycle, ONE unverified assumption about a backend handler — inferred from"
+  echo "another MR's description rather than read from the source — produced defects in three"
+  echo "of the five rounds, twice critical, because each later round's fix built on it."
+  echo "If you state such an assumption in a fix commit message, you have just made it"
+  echo "load-bearing for every round that follows. Verify it first, or do not write it."
+  echo
+  if [ "$CMM_AVAILABLE" = "true" ]; then
+    echo "A code-navigation graph IS available. Site discovery is a graph query, not a grep."
+    echo
+    echo "1. **Check the index is fresh FIRST.** Run \`detect_changes\` (or \`index_status\`);"
+    echo "   re-index the repository ROOT if it is stale. This step is not optional. An index"
+    echo "   built before this MR's commits answers \`trace_path\` with the callers of the OLD"
+    echo "   code and reports no other sites — a reconciliation that looks exhaustive and"
+    echo "   examined nothing. That is strictly worse than grep, which at least fails noisily."
+    echo "2. **Read the real source before editing it.** \`search_graph\` to resolve the symbol,"
+    echo "   \`get_code_snippet\` for its exact current body. Never edit from the finding's"
+    echo "   description plus a line number — the finding is evidence, not a model of the code."
+    echo "3. **Find every site with \`trace_path\`, not \`grep\`.** Every caller is a candidate"
+    echo "   site for the same defect. A regex misses a renamed alias, a re-export, a call split"
+    echo "   across lines, and a differently-cased spelling — and it misses them SILENTLY."
+    echo "4. **Then sweep for what a graph cannot hold**, with \`search_code\`: config, migrations,"
+    echo "   templates, fixtures, docs, and any call name built from a string at runtime."
+    echo "   Dynamic dispatch and reflection are invisible to a static graph — say so if the"
+    echo "   changed code uses them, rather than implying the sweep was complete."
+    echo "5. Note that \`CALLS\` edges are LSP-resolved only for the supported language families."
+    echo "   Outside them the edges are heuristic: fall back to \`search_code\` and say which"
+    echo "   regime applied."
+  else
+    echo "No code-navigation graph is registered in this session. Site discovery is TEXT SEARCH"
+    echo "ONLY, and is therefore best-effort — not exhaustive."
+    echo
+    echo "1. **Read the whole file before editing it.** Never edit from the finding's description"
+    echo "   plus a line number."
+    echo "2. **Look for sibling sites deliberately.** The most common defect this cycle finds is a"
+    echo "   fix that hardens one place while another still asserts the opposite. Search for the"
+    echo "   symbol, its snake_case/camelCase variants, and any alias or re-export."
+    echo "3. **Do not claim the sweep was exhaustive.** Report reconciliation as best-effort in the"
+    echo "   round note, so a missed sibling site reads as a known limit and not as a clean pass."
+  fi
+} > "$FIX_MANDATE_FILE"
 
 # ---------------------------------------------------------------------------
 # Emit preflight.json
@@ -990,6 +1233,63 @@ done
 # JSON array of the selected lens names (order = spawn order = core-first).
 LENSES_JSON=$(printf '%s\n' "${LENSES[@]}" | jq -R . | jq -s .)
 
+# ---------------------------------------------------------------------------
+# Manager brief -> $QA_SCRATCH/manager-brief.txt
+# ---------------------------------------------------------------------------
+# The spawn payload for the qa-manager Agent, rendered here instead of being
+# transcribed by the model out of preflight.json at spawn time.
+#
+# Every value below already existed in this script; the skill's job was to copy
+# ~20 of them into a text blob on every round of every MR. That is per-invocation
+# cost for a purely mechanical transformation; it is an error surface nothing
+# tested (a dropped field is invisible until the manager misbehaves); and it made
+# the spine carry a paragraph per field explaining why that field is passed.
+# Rendering it once, here, removes all three — Step 3A.1 now passes `brief_path`.
+#
+# Emitted LAST because it depends on nearly everything above: $ROUND, $LENSES_JSON,
+# the mandate files, and the sync'd branch names are all resolved by this point.
+# Values only, no prose: the manager's contract lives in agents/qa-manager.md,
+# which the manager reads for itself.
+MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
+{
+  printf 'target_abs=%s\n'             "$TARGET_ABS"
+  printf 'mr=%s\n'                     "$MR_NUMBER"
+  printf 'round=%s\n'                  "$ROUND"
+  printf 'feature_branch=%s\n'         "$SOURCE_BRANCH"
+  printf 'target_branch=%s\n'          "$TARGET_BRANCH"
+  printf 'diff_range=%s\n'             "$REMOTE/$TARGET_BRANCH..HEAD"
+  printf 'lenses=%s\n'                 "$(printf '%s' "$LENSES_JSON" | jq -c .)"
+  printf 'forge=%s\n'                  "$FORGE"
+  printf 'project=%s\n'                "$FORGE_PROJECT"
+  printf 'project_enc=%s\n'            "$FORGE_PROJECT_ENC"
+  printf 'qa_scratch=%s\n'             "$QA_SCRATCH"
+  printf 'contract_path=%s\n'          "$QA_SCRATCH/contract.md"
+  printf 'sast_path=%s\n'              "$SAST_REPORT"
+  printf 'schema_change_path=%s\n'     "$QA_SCRATCH/schema-change.md"
+  printf 'tool_mandate_path=%s\n'      "$MANDATE_FILE"
+  printf 'proportionality_path=%s\n'   "$PROPORTIONALITY_FILE"
+  printf 'schema_change_detected=%s\n' "$SCHEMA_DETECTED"
+  printf 'qa_token_ok=%s\n'            "$QA_TOKEN_OK"
+  printf 'expected_qa_user=%s\n'       "$EXPECTED_QA_USER"
+  # Both the env var NAME and the file path, so the manager resolves the token
+  # env-first then file — the order this script uses. Given only the file, an
+  # env-only token resolves empty and the round note posts under the DEVELOPER's
+  # identity instead of the QA agent's.
+  printf 'qa_token_env=%s\n'           "$QA_TOKEN_ENV"
+  printf 'qa_token_file=%s\n'          "$QA_TOKEN_FILE"
+  # Lets the manager honour the Step 3B.6 ordering rule: never post a round that
+  # found new confirmed critical/major findings onto an MR the QA agent already
+  # approved. It returns unapprove_before_post; main revokes, then posts.
+  printf 'mr_approved=%s\n'            "$MR_APPROVED"
+  printf 'approval_eligible=%s\n'      "$APPROVAL_ELIGIBLE"
+  printf 'unapprove_on_dirty_reround=%s\n' "$(cfg_bool '.qa_agent.approval.unapprove_on_dirty_reround' true)"
+  printf 'sast_running=%s\n'           "$SAST_RUNNING"
+  # This cycle's own fix commits, recovered from earlier rounds' note trailers.
+  # Feed them to lib/attribute-findings.sh to mark findings that sit on code a
+  # previous round of THIS cycle wrote.
+  printf 'qa_fix_commits=%s\n'         "$QA_FIX_COMMITS"
+} > "$MANAGER_BRIEF"
+
 PREFLIGHT_JSON=$(jq -n \
   --argjson mr "$MR_NUMBER" \
   --arg target "$TARGET" --arg target_path "$TARGET_PATH" --arg target_abs "$TARGET_ABS" \
@@ -1023,6 +1323,14 @@ PREFLIGHT_JSON=$(jq -n \
   --argjson docs_only "$DOCS_ONLY" \
   --argjson cmm_available "$CMM_AVAILABLE" --argjson ctx_available "$CTX_AVAILABLE" \
   --arg tool_mandate_path "$MANDATE_FILE" \
+  --arg fix_mandate_path "$FIX_MANDATE_FILE" \
+  --arg commit_subject "$COMMIT_SUBJECT" \
+  --argjson approval_eligible "$APPROVAL_ELIGIBLE" \
+  --arg manager_brief_path "$MANAGER_BRIEF" \
+  --argjson qa_fix_commits "$QA_FIX_COMMITS" \
+  --argjson multi_target "$MULTI_TARGET" --argjson target_count "$TARGET_COUNT" \
+  --argjson target_is_submodule "$TARGET_IS_SUBMODULE" \
+  --argjson verify "$VERIFY_JSON" \
   --argjson round "$ROUND" --arg proportionality_path "$PROPORTIONALITY_FILE" \
   --arg title_ticket "${TITLE_TICKET:-}" --argjson candidate_tickets "$CANDIDATES_JSON" \
   --argjson desc_len "$DESC_LEN" \
@@ -1056,7 +1364,16 @@ PREFLIGHT_JSON=$(jq -n \
     docs_only: $docs_only,
     round: $round,
     proportionality_path: $proportionality_path,
-    tooling: { cmm_available: $cmm_available, ctx_available: $ctx_available, mandate_path: $tool_mandate_path },
+    tooling: { cmm_available: $cmm_available, ctx_available: $ctx_available, mandate_path: $tool_mandate_path, fix_mandate_path: $fix_mandate_path },
+    commit_subject: $commit_subject,
+    approval_eligible: $approval_eligible,
+    manager_brief_path: $manager_brief_path,
+    qa_fix_commits: $qa_fix_commits,
+    # NOT `project`: that key is already the forge project slug. A duplicate key
+    # is silently resolved by jq in favour of the LAST one, which is exactly how
+    # the registry `scope` string was destroyed by `diff_scope` once before.
+    layout: { multi_target: $multi_target, target_count: $target_count, target_is_submodule: $target_is_submodule },
+    verify: $verify,
     warnings: $warnings
   }') || die_internal "jq failed to build preflight.json (a --argjson input was not valid JSON)"
 

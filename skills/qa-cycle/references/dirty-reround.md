@@ -33,9 +33,11 @@ this entire step.
 ```bash
 # A "dirty re-round" is a round that (a) found new critical/major confirmed
 # findings AND (b) is running after a prior round had auto-approved the MR.
-# Gated by qa_agent.approval.unapprove_on_dirty_reround in the resolved config.
+# Gated by qa_agent.approval.unapprove_on_dirty_reround in the merged config
+# ($MERGED_CONFIG: the shipped -> user -> project merge; preflight.sh calls it $BB).
+# The `// false` default must match config/defaults.json, which ships this true.
 UNAPPROVE_ON_DIRTY=$(jq -r '.qa_agent.approval.unapprove_on_dirty_reround // false' \
-  the resolved config)
+  "$MERGED_CONFIG")
 
 # ROUND_HAS_CRITICAL_OR_MAJOR was set by the orchestrator just above, based
 # on the merged/Claude-only report from Step 3A. If the orchestrator failed

@@ -99,6 +99,9 @@ mkfixture() {
   # the exact failure documented in this file's header. The `glab` binary on
   # $PATH is what gets stubbed instead, one layer lower.
   cp "$REPO_SRC/lib/forge.sh" "$REPO_SRC/lib/forge-gitlab.sh" "$REPO_SRC/lib/forge-github.sh" "$plugin/lib/"
+  # Likewise the REAL verify detector: preflight shells out to it, and a stub here
+  # would assert against a copy of the logic instead of the logic.
+  cp "$REPO_SRC/lib/detect-verify.sh" "$plugin/lib/"
 
   # Project layer only. Credentials/policy would normally arrive from the user
   # layer; the fixture puts everything here so a case can rewrite one file.
@@ -199,7 +202,22 @@ SH
 # preflight resolves the repo root from git now, so it must be RUN FROM INSIDE the
 # repo; the plugin lives outside that tree entirely. The subshell keeps the cd from
 # leaking into the suite.
-run_preflight() { local root="$1"; shift; ( cd "$root/repo" && PATH="$root/bin:$PATH" bash "$root/plugin/lib/preflight.sh" "$@" 2>/dev/null ); }
+# HOME is overridden because preflight merges a USER config layer from
+# $HOME/.config/claude-qa-manager/config.json. Without this, a developer's real
+# user config merges into every fixture and the suite is not hermetic: it would
+# pass or fail differently on their machine than in CI.
+#
+# CLAUDE_CONFIG_DIR must be pinned for the SAME reason and is NOT covered by HOME:
+# the CMM/Context-Mode probe reads "${CLAUDE_CONFIG_DIR:-$HOME/.config/claude-code}",
+# so an inherited CLAUDE_CONFIG_DIR points the probe straight back at the developer's
+# real plugin cache and `tooling.cmm_available` becomes a property of the machine
+# running the suite. Pinning HOME alone left that hole open — verified, not assumed.
+# CLAUDE_PLUGIN_ROOT / CLAUDE_PROJECT_DIR are unset for the same reason: the probe
+# walks CLAUDE_PLUGIN_ROOT up to a plugins/cache root, so an inherited value points
+# it at the DEVELOPER'S real plugin cache. That is both a hermeticity leak and a
+# performance cliff — a maxdepth-7 find over a populated cache, twice per run, on
+# every fixture, took the suite from seconds to minutes.
+run_preflight() { local root="$1"; shift; ( cd "$root/repo" && env -u CLAUDE_PLUGIN_ROOT -u CLAUDE_PROJECT_DIR HOME="$root/home" CLAUDE_CONFIG_DIR="$root/home/.config/claude-code" PATH="$root/bin:$PATH" bash "$root/plugin/lib/preflight.sh" "$@" 2>/dev/null ); }
 
 commit_lines() { local i=0; : > "$1/$3"; while [ "$i" -lt "$2" ]; do echo "line $i" >> "$1/$3"; i=$((i+1)); done
   git -C "$1" add -A >/dev/null; git -C "$1" commit -qm "add $2 lines"; }
@@ -279,6 +297,239 @@ eq "scope is the registry STRING"       "$(jq -r '.scope|type' <<<"$out")" "stri
 eq "scope value"                        "$(jq -r '.scope' <<<"$out")" "mono"
 eq "diff_scope is an object"            "$(jq -r '.diff_scope|type' <<<"$out")" "object"
 eq "diff_scope.total_changed is number" "$(jq -r '.diff_scope.total_changed|type' <<<"$out")" "number"
+rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+# The fix mandate is what Step 3B reads before editing code. Its whole purpose is
+# that it is NEVER empty: the fixer must always know whether "no other call sites"
+# is a graph answer or merely the absence of a regex match. An empty file here is
+# the absent-check-reports-as-pass failure, so assert both regimes.
+#
+# CMM availability is driven by the fixture repo's own .mcp.json — reachable only
+# because run_preflight pins HOME, so the probe cannot see the developer's real
+# Claude config and decide this test's outcome for it.
+echo "[fix mandate — emitted in both tooling regimes]"
+r=$(mkfixture "feature/x" "main"); out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+fm=$(jq -r '.tooling.fix_mandate_path' <<<"$out")
+eq "fix_mandate_path is emitted"        "$( [ -n "$fm" ] && [ "$fm" != "null" ] && echo yes || echo no )" "yes"
+eq "  distinct from tool-mandate.md"    "$( [ "$fm" != "$(jq -r '.tooling.mandate_path' <<<"$out")" ] && echo yes || echo no )" "yes"
+eq "  NO cmm -> file still non-empty"   "$( [ -s "$fm" ] && echo yes || echo no )" "yes"
+eq "  and names the weaker regime"      "$(grep -q 'TEXT SEARCH' "$fm" && echo yes || echo no)" "yes"
+eq "  and forbids an exhaustive claim"  "$(grep -q 'best-effort' "$fm" && echo yes || echo no)" "yes"
+eq "  cmm_available false"              "$(jq -r '.tooling.cmm_available' <<<"$out")" "false"
+rm -rf "$r"
+
+# Same fixture, but with CMM registered in the repo's own .mcp.json.
+r=$(mkfixture "feature/x" "main")
+echo '{"mcpServers":{"codebase-memory-mcp":{"command":"x"}}}' > "$r/repo/.mcp.json"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+fm=$(jq -r '.tooling.fix_mandate_path' <<<"$out")
+eq "cmm registered -> cmm_available"    "$(jq -r '.tooling.cmm_available' <<<"$out")" "true"
+eq "  graph regime mandates trace_path" "$(grep -q 'trace_path' "$fm" && echo yes || echo no)" "yes"
+# The freshness gate is the invariant this file exists to protect: a stale index
+# answers with the callers of the PRE-MR code and reports no other sites.
+eq "  and gates on index freshness"     "$(grep -q 'detect_changes' "$fm" && echo yes || echo no)" "yes"
+eq "  and keeps the non-graph residue"  "$(grep -q 'search_code' "$fm" && echo yes || echo no)" "yes"
+eq "  and does NOT claim text-only"     "$(grep -q 'TEXT SEARCH' "$fm" && echo yes || echo no)" "no"
+rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+# Tooling discovery. `env -u` is required, not decorative: an inherited
+# CLAUDE_CONFIG_DIR would point the probe at the developer's real config and make
+# the legacy-root case pass for the wrong reason.
+run_preflight_nocfg() { local root="$1"; shift; ( cd "$root/repo" && env -u CLAUDE_CONFIG_DIR -u CLAUDE_PLUGIN_ROOT -u CLAUDE_PROJECT_DIR HOME="$root/home" PATH="$root/bin:$PATH" bash "$root/plugin/lib/preflight.sh" "$@" 2>/dev/null ); }
+mkplugincache() { # $1 = config root, $2 = plugin name; versioned nesting on purpose
+  local d="$1/plugins/cache/mkt/$2/1.2.3/.claude-plugin"
+  mkdir -p "$d"; printf '{"name": "%s", "version": "1.2.3"}\n' "$2" > "$d/plugin.json"
+}
+
+echo "[tooling probe — config roots, project roots, enabled vs disabled]"
+# THE regression: ~/.claude is the legacy default and holds a plugin-form install.
+# The previous probe resolved a single root as ${CLAUDE_CONFIG_DIR:-~/.config/claude-code}
+# with no existence check, so it scanned a directory that does not exist and
+# reported the graph as unavailable — which now also makes fix-mandate.md print
+# the text-search-only regime while a real index sits there.
+r=$(mkfixture "feature/x" "main"); mkplugincache "$r/home/.claude" "codebase-memory-mcp"
+out=$(run_preflight_nocfg "$r" 73 mono); note_scratch "$out"
+eq "legacy ~/.claude plugin cache found"  "$(jq -r '.tooling.cmm_available' <<<"$out")" "true"
+eq "  and fix mandate uses graph regime"  "$(grep -q 'trace_path' "$(jq -r '.tooling.fix_mandate_path' <<<"$out")" && echo yes || echo no)" "yes"
+rm -rf "$r"
+
+# A DISABLED plugin must not read as available. The old substring grep matched the
+# key regardless of its value, so the mandate asserted a graph that was not loaded.
+r=$(mkfixture "feature/x" "main"); mkdir -p "$r/home/.claude"
+echo '{"enabledPlugins":{"codebase-memory-mcp@mkt":false}}' > "$r/home/.claude/settings.json"
+out=$(run_preflight_nocfg "$r" 73 mono); note_scratch "$out"
+eq "enabledPlugins:false -> unavailable"  "$(jq -r '.tooling.cmm_available' <<<"$out")" "false"
+echo '{"enabledPlugins":{"codebase-memory-mcp@mkt":true}}' > "$r/home/.claude/settings.json"
+out=$(run_preflight_nocfg "$r" 73 mono); note_scratch "$out"
+eq "enabledPlugins:true  -> available"    "$(jq -r '.tooling.cmm_available' <<<"$out")" "true"
+rm -rf "$r"
+
+# settings.local.json is a registration site in its own right.
+r=$(mkfixture "feature/x" "main"); mkdir -p "$r/home/.config/claude-code"
+echo '{"mcpServers":{"context-mode":{"command":"x"}}}' > "$r/home/.config/claude-code/settings.local.json"
+out=$(run_preflight_nocfg "$r" 73 mono); note_scratch "$out"
+eq "XDG root settings.local.json counts"  "$(jq -r '.tooling.ctx_available' <<<"$out")" "true"
+rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+echo "[self-inflicted findings — blame attribution, not line arithmetic]"
+ATTR="$REPO_SRC/lib/attribute-findings.sh"
+a=$(mktemp -d); git init -q "$a/r"
+git -C "$a/r" config user.email t@t.t; git -C "$a/r" config user.name t
+printf 'a\nb\nc\nd\n' > "$a/r/f.txt"; git -C "$a/r" add -A; git -C "$a/r" commit -qm "author work"
+printf 'a\nb\nFIXED\nc\nd\n' > "$a/r/f.txt"; git -C "$a/r" add -A; git -C "$a/r" commit -qm "qa round 1"
+FIXSHA=$(git -C "$a/r" rev-parse HEAD)
+# THE case that defeats a line-range comparison: the author inserts 10 lines ABOVE
+# the QA-written line, so it is now at 13 while the fix commit "touched line 3".
+{ printf 'x\n%.0s' 1 2 3 4 5 6 7 8 9 10; printf 'a\nb\nFIXED\nc\nd\n'; } > "$a/r/f.txt"
+git -C "$a/r" add -A; git -C "$a/r" commit -qm "author adds lines above"
+eq "QA line really did shift"     "$(grep -n FIXED "$a/r/f.txt" | cut -d: -f1)" "13"
+F='[{"file":"f.txt","line_low":13,"title":"t1"},{"file":"f.txt","line_low":1,"title":"t2"}]'
+res=$(printf '%s' "$F" | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]")
+eq "  shifted QA line attributed"  "$(jq -r '.[0].qa_introduced' <<<"$res")" "true"
+eq "  and carries the sha"         "$(jq -r '.[0].qa_introduced_commit' <<<"$res")" "$FIXSHA"
+eq "  author's line NOT attributed" "$(jq -r '.[1].qa_introduced' <<<"$res")" "false"
+# An abbreviated SHA in a note trailer must still resolve.
+eq "  short sha resolves"          "$(printf '%s' "$F" | bash "$ATTR" "$a/r" "[\"${FIXSHA:0:8}\"]" | jq -r '.[0].qa_introduced')" "true"
+# Round 1 has no recorded fix commits: "not known", never a claim of clean.
+eq "no fix commits -> all false"   "$(printf '%s' "$F" | bash "$ATTR" "$a/r" '[]' | jq -c '[.[].qa_introduced]')" "[false,false]"
+eq "unknown sha -> all false"      "$(printf '%s' "$F" | bash "$ATTR" "$a/r" '["0000000"]' | jq -c '[.[].qa_introduced]')" "[false,false]"
+eq "missing file -> not attributed" "$(printf '[{"file":"nope.txt","line_low":1}]' | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" | jq -r '.[0].qa_introduced')" "false"
+eq "empty findings -> empty array" "$(printf '[]' | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" | jq -c .)" "[]"
+rm -rf "$a"
+
+# preflight recovers the cycle's fix commits from prior round-note trailers.
+r=$(mkfixture "feature/x" "main")
+notes='[{"body":"## QA Round 1\nstuff\nQA-Fix-Commit: aabbccdd1122\n"},{"body":"## QA Round 2\nQA-Fix-Commit: 99887766ffee\n"}]'
+out=$(GLAB_STUB_NOTES="$notes" run_preflight "$r" 73 mono); note_scratch "$out"
+eq "fix commits read from notes"   "$(jq -r '.qa_fix_commits | sort | join(",")' <<<"$out")" "99887766ffee,aabbccdd1122"
+eq "  and reach the brief"         "$(grep -c '^qa_fix_commits=' "$(jq -r '.manager_brief_path' <<<"$out")")" "1"
+out=$(GLAB_STUB_NOTES='[{"body":"## QA Round 1\nno trailer here\n"}]' run_preflight "$r" 73 mono); note_scratch "$out"
+eq "no trailer -> empty array"     "$(jq -c '.qa_fix_commits' <<<"$out")" "[]"
+rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+echo "[manager brief + approval_eligible are computed once, by preflight]"
+r=$(mkfixture "feature/x" "main"); out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+brief=$(jq -r '.manager_brief_path' <<<"$out")
+eq "manager_brief_path emitted"   "$( [ -s "$brief" ] && echo yes || echo no )" "yes"
+# Every key the manager is contracted to receive. This list is the point of the
+# change: hand-transcription dropped fields silently, and nothing caught it until
+# the manager misbehaved. Assert the WHOLE set, not a sample.
+for k in target_abs mr round feature_branch target_branch diff_range lenses forge \
+         project project_enc qa_scratch contract_path sast_path schema_change_path \
+         tool_mandate_path proportionality_path schema_change_detected qa_token_ok \
+         expected_qa_user qa_token_env qa_token_file mr_approved approval_eligible \
+         unapprove_on_dirty_reround sast_running; do
+  eq "  brief has $k" "$(grep -c "^$k=" "$brief")" "1"
+done
+# No key may render empty-valued where preflight has a real value for it.
+eq "  paths are absolute"         "$(grep -c '^qa_scratch=/' "$brief")" "1"
+eq "  lenses is the JSON array"   "$(grep '^lenses=' "$brief" | sed 's/^lenses=//' | jq -r 'type')" "array"
+eq "  diff_range is three-part"   "$(grep -c '^diff_range=origin/main\.\.HEAD' "$brief")" "1"
+
+# approval_eligible: round-based and tiny-relax paths, plus the negative case.
+# It used to be computed by the model at spawn time; when it was omitted the
+# manager could never raise `approval` and the hands-free path silently never
+# approved anything.
+# The fixture's diff is tiny, so the tiny-relax clause alone makes round 1
+# eligible — assert that path first, then disable it to expose the round rule.
+eq "round 1 + tiny relax -> true"  "$(jq -r '.approval_eligible' <<<"$out")" "true"
+eq "  diff really is tiny"         "$(jq -r '.diff_scope.is_tiny' <<<"$out")" "true"
+cfg="$r/repo/.claude/skills/qa-cycle/config.json"
+jq '.qa_agent.approval.tiny_mr_relax_to_round_1 = false' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  relax off, round 1 -> false" "$(jq -r '.approval_eligible' <<<"$out")" "false"
+eq "  and the brief agrees"        "$(grep -c '^approval_eligible=false' "$(jq -r '.manager_brief_path' <<<"$out")")" "1"
+jq '.qa_agent.approval.min_clean_round = 1' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  min_clean_round 1 -> true"   "$(jq -r '.approval_eligible' <<<"$out")" "true"
+# Explicitly disabling a boolean knob must actually disable it. jq's `//` fires on
+# `false` as well as `null`, so `.x // true` silently overrides the user; this
+# asserts the knob is read with a null test instead.
+jq '.qa_agent.approval.unapprove_on_dirty_reround = false' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  explicit false survives"     "$(grep -c '^unapprove_on_dirty_reround=false' "$(jq -r '.manager_brief_path' <<<"$out")")" "1"
+rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+echo "[verify detection — the project's own rules, discovered not configured]"
+DETECT="$REPO_SRC/lib/detect-verify.sh"
+dv() { bash "$DETECT" "$1" | jq -r "$2"; }
+d=$(mktemp -d)
+
+mkdir -p "$d/mk"; printf 'test:\n\techo hi\n' > "$d/mk/Makefile"
+eq "Makefile test target"            "$(dv "$d/mk" .command)" "make test"
+eq "  state detected"                "$(dv "$d/mk" .state)"   "detected"
+
+mkdir -p "$d/np"; echo '{"scripts":{"test":"jest"}}' > "$d/np/package.json"
+eq "package.json scripts.test"       "$(dv "$d/np" .command)" "npm test"
+touch "$d/np/pnpm-lock.yaml"
+# The lockfile decides the runner: `npm test` in a pnpm workspace resolves a
+# different tree than CI does.
+eq "  lockfile picks the runner"     "$(dv "$d/np" .command)" "pnpm test"
+
+# THE case that breaks the obvious implementation, taken from a real submodule:
+# a package.json with an EMPTY scripts object next to a Makefile that has the
+# real test target. Presence of a manifest must not short-circuit detection.
+mkdir -p "$d/ft"; echo '{"scripts":{}}' > "$d/ft/package.json"; printf 'test:\n\techo hi\n' > "$d/ft/Makefile"
+eq "empty scripts falls through"     "$(dv "$d/ft" .command)" "make test"
+mkdir -p "$d/ft2"; echo '{"scripts":{"build":"tsc"}}' > "$d/ft2/package.json"
+eq "no test entry anywhere -> none"  "$(dv "$d/ft2" .state)"  "none-found"
+eq "  and command is empty"          "$(dv "$d/ft2" .command)" ""
+eq "  but build is still reported"   "$(dv "$d/ft2" .build_command)" "npm run build"
+
+mkdir -p "$d/empty"
+eq "bare directory -> none-found"    "$(dv "$d/empty" .state)" "none-found"
+eq "missing directory -> none-found" "$(bash "$DETECT" "$d/nope" | jq -r .state)" "none-found"
+rm -rf "$d"
+
+# End to end: preflight must carry the result, and an undiscoverable project must
+# reach the skill as an explicit none-found rather than as an absent key.
+r=$(mkfixture "feature/x" "main"); out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "preflight verify.state none-found" "$(jq -r '.verify.state' <<<"$out")" "none-found"
+printf 'test:\n\techo hi\n' > "$r/repo/Makefile"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  detected once the repo has one"  "$(jq -r '.verify.command' <<<"$out")" "make test"
+eq "  and names where it came from"    "$(jq -r '.verify.source' <<<"$out" | grep -c Makefile)" "1"
+# An override exists for when detection is wrong, but must announce itself as
+# configured so it is never mistaken for the project's own rule.
+cfg="$r/repo/.claude/skills/qa-cycle/config.json"
+jq '. + {verify:{command:"bazel test //..."}}' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  config override wins"            "$(jq -r '.verify.command' <<<"$out")" "bazel test //..."
+eq "  and is labelled configured"      "$(jq -r '.verify.state' <<<"$out")" "configured"
+rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+echo "[subproject concepts appear only when there are subprojects]"
+# A single-target project config models a plain repo (gitops-ansible shape); the
+# stock fixture, which defines `mono`, stays as the multi-target control.
+r=$(mkfixture "feature/x" "main")
+cfg="$r/repo/.claude/skills/qa-cycle/config.json"; mkdir -p "$(dirname "$cfg")"
+echo '{"targets":{"default":{"path":".","remote":"origin","scope":"","lens_tags":[]}}}' > "$cfg"
+out=$(run_preflight "$r" 73); rc=$?; note_scratch "$out"   # TARGET omitted on purpose
+eq "target arg optional -> exit 0"        "$rc" "0"
+eq "  multi_target false"                 "$(jq -r '.layout.multi_target' <<<"$out")" "false"
+eq "  target_count 1"                     "$(jq -r '.layout.target_count' <<<"$out")" "1"
+eq "  target_is_submodule false"          "$(jq -r '.layout.target_is_submodule' <<<"$out")" "false"
+# The shipped bug: jq's // does not fire on "" (an empty string is truthy), so the
+# scope stayed empty and Step 3B rendered a literal `fix(): …` — malformed
+# conventional-commit, rejected outright by a commitlint hook.
+eq "  commit subject has no empty parens" "$(jq -r '.commit_subject' <<<"$out")" "fix: address QA round 1"
+# .project must remain the forge slug: `layout` is a separate key precisely so the
+# duplicate-key collision that once destroyed `scope` cannot repeat.
+eq "  .project still the forge slug"      "$(jq -r '.project|type' <<<"$out")" "string"
+rm -rf "$r"
+
+r=$(mkfixture "feature/x" "main"); out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "multi-target -> multi_target true"    "$(jq -r '.layout.multi_target' <<<"$out")" "true"
+eq "  commit subject carries the scope"   "$(jq -r '.commit_subject' <<<"$out")" "fix(mono): address QA round 1"
+# Omitting the target where targets ARE named must fail loudly, never silently
+# review some other subproject.
+run_preflight "$r" 73 >/dev/null; eq "  omitted target, named targets -> exit 2" "$?" "2"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------

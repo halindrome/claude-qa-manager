@@ -9,7 +9,7 @@ means it did not, and none of them may be treated as a security review.
 
 ## Step 2.5 — Fetch security findings (auto-skipped when not applicable)
 
-**Per-target opt-in.** Before running the helper, read `targets[<TARGET>].security_stage` from `the resolved config`. When it is `false` (or absent), this target's CI pipeline does not yet include the shared CI security template (`.gitlab-ci-security.yml`) — currently `sse` and the workspace itself fall here. Skip the helper call entirely, write the minimal stub directly, and continue:
+**Per-target opt-in**, resolved from `targets[<TARGET>].security_stage` in the merged config and reported as `security_stage` in `preflight.json` — read the field, do not re-read the config. When it is `false` (or absent), this target's CI pipeline does not include a security stage. preflight then skips the helper entirely, writes the minimal stub below, and sets `sast.gate_state = skipped:no-stage`:
 
 ```bash
 # Assign the report path first so BOTH branches below have a valid target.
@@ -37,12 +37,12 @@ SAST_REPORT="$QA_SCRATCH/sast.md"
 # certified scans that never ran.
 SAST_GATE_STATE="skipped:unknown"
 
-SECURITY_STAGE=$(jq -r --arg t "<TARGET>" '.targets[$t].security_stage // false' the resolved config)
+SECURITY_STAGE=$(jq -r --arg t "<TARGET>" '.targets[$t].security_stage // false' "$MERGED_CONFIG")
 if [ "$SECURITY_STAGE" != "true" ]; then
   cat > "$SAST_REPORT" <<EOF
 ## SAST review not applicable
 
-Target \`<TARGET>\` has \`security_stage: false\` in \`the resolved config\`. No CI security stage is wired for this target, so no SAST/SCA delta is computed. Update the flag when the shared CI security template lands for this target.
+Target \`<TARGET>\` has \`security_stage: false\` in the project config. No CI security stage is wired for this target, so no SAST/SCA delta is computed. Update the flag once a security stage lands for this target.
 EOF
   SAST_GATE_STATE="skipped:no-stage"
 else
@@ -99,7 +99,7 @@ detected` / `No pipeline associated with MR` / `Security scans are still in prog
 
 ### Pipeline-still-running gate
 
-After the helper runs, inspect `$SAST_REPORT` for the running-pipeline marker. If it's present AND the current round is approval-eligible AND `sast_gate.wait_on_approval_round` is true in `the resolved config`, prompt the user before continuing — approving an MR with a still-running SAST pipeline means the QA round certifies zero security delta.
+After the helper runs, inspect `$SAST_REPORT` for the running-pipeline marker. If it's present AND the current round is approval-eligible AND `sast_gate.wait_on_approval_round` is true in the merged config, prompt the user before continuing — approving an MR with a still-running SAST pipeline means the QA round certifies zero security delta.
 
 ```bash
 # Running-marker regex MUST match the helper's ACTUAL output. The helper's two
@@ -110,14 +110,18 @@ After the helper runs, inspect `$SAST_REPORT` for the running-pipeline marker. I
 SAST_RUNNING_RE='\*\*(running|pending|created|preparing|scheduled|waiting_for_resource)\*\*'
 SAST_GATE_RUNNING=$(grep -Eq "$SAST_RUNNING_RE" "$SAST_REPORT" && echo true || echo false)
 
-# Read sast_gate config
-SAST_GATE_ENABLED=$(jq -r '.sast_gate.wait_on_approval_round // true' the resolved config)
-POLL_INTERVAL=$(jq -r '.sast_gate.poll_interval_seconds // 90' the resolved config)
-MAX_WAIT=$(jq -r '.sast_gate.max_wait_seconds // 900' the resolved config)
-ASK_BEFORE_WAIT=$(jq -r '.sast_gate.ask_user_before_wait // true' the resolved config)
-MIN_CLEAN_ROUND=$(jq -r '.qa_agent.approval.min_clean_round // 2' the resolved config)
-TINY_RELAX=$(jq -r '.qa_agent.approval.tiny_mr_relax_to_round_1 // false' the resolved config)
-TINY_MAX=$(jq -r '.qa_agent.approval.tiny_mr_max_lines_changed // 50' the resolved config)
+# Read the sast_gate and approval knobs. $MERGED_CONFIG is the three-layer merge
+# (shipped -> user -> project) written to one temp file; preflight.sh calls it $BB.
+# Each `//` default here must match config/defaults.json: these fire only when a
+# key is absent, so a default that drifts changes behaviour for every project that
+# did not set the key.
+SAST_GATE_ENABLED=$(jq -r '.sast_gate.wait_on_approval_round // true' "$MERGED_CONFIG")
+POLL_INTERVAL=$(jq -r '.sast_gate.poll_interval_seconds // 90' "$MERGED_CONFIG")
+MAX_WAIT=$(jq -r '.sast_gate.max_wait_seconds // 900' "$MERGED_CONFIG")
+ASK_BEFORE_WAIT=$(jq -r '.sast_gate.ask_user_before_wait // true' "$MERGED_CONFIG")
+MIN_CLEAN_ROUND=$(jq -r '.qa_agent.approval.min_clean_round // 2' "$MERGED_CONFIG")
+TINY_RELAX=$(jq -r '.qa_agent.approval.tiny_mr_relax_to_round_1 // false' "$MERGED_CONFIG")
+TINY_MAX=$(jq -r '.qa_agent.approval.tiny_mr_max_lines_changed // 50' "$MERGED_CONFIG")
 ```
 
 Determine **approval-eligibility for this round** using the same rule as Step 3E:

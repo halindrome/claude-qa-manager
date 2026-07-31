@@ -97,7 +97,7 @@ PIPE_ID=$(printf '%s' "$PIPE_JSON" | jq -r '.head_pipeline.id // empty')
 if [ -z "$PIPE_ID" ]; then
   emit "## SAST review skipped"
   emit ""
-  emit "No pipeline associated with MR !${MR} on \`${PROJECT}\`. Either security stage is not wired for this submodule, or the pipeline has not been triggered yet."
+  emit "No pipeline associated with MR !${MR} on \`${PROJECT}\`. Either security stage is not wired for this project, or the pipeline has not been triggered yet."
   exit 0
 fi
 
@@ -122,7 +122,7 @@ SECURITY_JOBS=$(printf '%s' "$JOBS_JSON" \
 
 if [ -z "$SECURITY_JOBS" ]; then
   # No security jobs detected. If the pipeline is still spinning up they may not
-  # have been created yet; otherwise this submodule has no security stage.
+  # have been created yet; otherwise this project has no security stage.
   case "$PIPE_STATUS" in
     running|pending|created|preparing|scheduled|waiting_for_resource)
       emit "## SAST review skipped"
@@ -132,7 +132,7 @@ if [ -z "$SECURITY_JOBS" ]; then
     *)
       emit "## SAST review skipped"
       emit ""
-      emit "No security stage detected in pipeline #${PIPE_ID}. This submodule is not yet wired for SAST/SCA scanning."
+      emit "No security stage detected in pipeline #${PIPE_ID}. This project is not yet wired for SAST/SCA scanning."
       exit 0 ;;
   esac
 fi

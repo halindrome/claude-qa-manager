@@ -20,7 +20,10 @@
 set -uo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-qa-manager"
+# Deliberately NOT XDG-aware: it must agree with preflight.sh's CONFIG_USER and
+# with the $HOME-relative `qa_agent.token_file` default. Honouring
+# XDG_CONFIG_HOME here alone would store the token where preflight never looks.
+CONFIG_DIR="$HOME/.config/claude-qa-manager"
 
 c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_dim=$'\033[2m'; c_rst=$'\033[0m'
 ok()   { printf '  %s✔%s %s\n' "$c_grn" "$c_rst" "$1"; }
@@ -105,6 +108,8 @@ cmd_check() {
   if [ -f "$CONFIG_DIR/config.json" ]; then ok "user config: $CONFIG_DIR/config.json"
   else info "no user config (optional; holds credentials + policy)"; fi
 
+  check_verify
+
   local tf="$CONFIG_DIR/qa-agent-token"
   if [ -s "$tf" ]; then
     local mode; mode=$(stat -f '%Lp' "$tf" 2>/dev/null || stat -c '%a' "$tf" 2>/dev/null || echo "?")
@@ -114,6 +119,51 @@ cmd_check() {
     info "no QA agent token — round notes will post under your own identity and"
     info "approval will be skipped entirely. Run '$0 token' to set one up."
   fi
+}
+
+# --- how each target verifies a fix ------------------------------------------
+# Reported at init time because this is the one thing a project must fix in the
+# PROJECT, not here. A QA cycle whose fixes are never run is the tail-chasing
+# generator: round N's fix ships unverified, and round N+1 pays a full reviewer
+# panel to discover it was wrong. Telling the operator up front is cheaper than
+# discovering it mid-round, and it is deliberately a warning about their repo
+# rather than a prompt to configure a command here — see config/defaults.json's
+# `verify` comment for why duplicating the project's own rules is the wrong fix.
+check_verify() {
+  local det="$PLUGIN_ROOT/lib/detect-verify.sh" t path abs out state cmd src
+  [ -f "$det" ] || { warn "verify detector missing at $det (broken install)"; return; }
+
+  # Every configured target, or just the repo root when there is no config.
+  local targets=""
+  if [ -f "$PROJECT_CONFIG" ] && jq empty "$PROJECT_CONFIG" 2>/dev/null; then
+    targets=$(jq -r '[.targets // {} | keys[] | select(. != "_comment")] | join(" ")' "$PROJECT_CONFIG")
+  fi
+  [ -n "$targets" ] || targets="."
+
+  for t in $targets; do
+    if [ "$t" = "." ]; then
+      path="."; abs="$REPO_ROOT"
+    else
+      path=$(jq -r --arg t "$t" '.targets[$t].path // "."' "$PROJECT_CONFIG")
+      [ "$path" = "." ] && abs="$REPO_ROOT" || abs="$REPO_ROOT/$path"
+    fi
+    [ -d "$abs" ] || { warn "target '$t': path '$path' does not exist"; continue; }
+
+    out=$(bash "$det" "$abs" 2>/dev/null)
+    state=$(jq -r '.state' <<<"$out" 2>/dev/null || echo "none-found")
+    cmd=$(jq -r '.command' <<<"$out" 2>/dev/null)
+    src=$(jq -r '.source'  <<<"$out" 2>/dev/null)
+    local label="tests"; [ "$t" = "." ] || label="tests for '$t'"
+    if [ "$state" = "detected" ]; then
+      ok "$label: $cmd  (from $src)"
+    else
+      warn "$label: NONE FOUND — QA fixes in this target cannot be verified before they are committed"
+      info "add a test entry point the project itself uses (a Makefile 'test' target, an"
+      info "npm 'test' script, tox.ini, …). Do NOT work around it by setting verify.command"
+      info "here unless detection is simply wrong: this plugin should follow your project's"
+      info "rules, not keep a second copy of them."
+    fi
+  done
 }
 
 # --- project config ---------------------------------------------------------

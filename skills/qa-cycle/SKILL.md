@@ -44,7 +44,7 @@ shell step in its own turn. It is idempotent, and re-running it is what advances
 round and re-renders the proportionality tier together; see Step 3 and Step 3D:
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/lib/preflight.sh <MR_NUMBER> <TARGET>
+bash ${CLAUDE_PLUGIN_ROOT}/lib/preflight.sh <MR_NUMBER> [TARGET]
 ```
 
 It emits one JSON object to `$QA_SCRATCH/preflight.json` (and stdout) and
@@ -75,16 +75,13 @@ it:
 | `proportionality_path` | the `## Proportionality` section injected verbatim into every lens prompt (Step 3A / the manager). Never empty; preflight escalates its contents at `round >= 3`. |
 | `forge` (`gitlab`\|`github`), `forge_cli` (`glab`\|`gh`) | which backend `lib/forge.sh` dispatches to, and which CLI it drives. Everything that touches the forge goes through `forge_*` — never call `glab`/`gh` directly, or the step works on one forge only. |
 | `project`,`project_enc`,`qa_scratch` | as named |
+| `commit_subject` | the Step 3B fix-commit subject, already rendered — scopeless in a single-project repo |
+| `verify.command`,`verify.source`,`verify.state`,`verify.build_command` | the target's OWN test/build entry point, discovered from its Makefile / package.json / tox.ini / …. Step 3B runs it before committing. `state=none-found` means the project has no discoverable tests — report that, never treat it as a pass. |
+| `layout.multi_target`,`layout.target_is_submodule` | whether this project HAS subprojects, and whether this target is one. Gate subproject wording (Step 4) on these; never assume a repo has parts. |
 
-> **`scope` vs `diff_scope` — do not merge these two keys.** Top-level `scope` is
-> the **registry string**: the commit-message token preflight resolved from config
-> (`api`, `monorepo`, …) that Step 3B interpolates into `fix(<scope>): …`.
-> The **diff numbers** live under `diff_scope`. They were briefly the same key,
-> and because jq keeps the *last* of a duplicate key, the registry string was
-> silently destroyed — every consumer then had to re-read the config
-> by hand, which is the exact work preflight exists to remove. preflight now
-> asserts `.scope|type=="string"` before it will emit, so the collision cannot
-> return unnoticed.
+> `scope` is the target token; `diff_scope` is the diff numbers. preflight asserts the
+> distinction before emitting, and Step 3B reads `.commit_subject` rather than either.
+> Why the assertion exists: `references/design-notes.md`.
 
 **Exit-code contract — honor it before anything else runs:**
 - **`0`** — proceed. If `warnings` is non-empty, surface them.
@@ -116,14 +113,10 @@ the value from `preflight.json`.
 
 ---
 
-## Step 0 — mechanics performed by preflight
+## Step 0 — parse your own flags
 
-Steps 0 (argument/target resolution), 0.25 (QA credentials), 0.4 (scratch dir), 0.7
-(approval seeding) and 2 (branch sync) are all performed by preflight. Read the
-corresponding fields from `preflight.json` — do **not** re-run them by hand.
-
-Still yours to parse from argv: `--double`, `--triple`, `--reviewer=`, `--non-interactive`,
-`--auto-approve`.
+Everything mechanical is preflight's; read its fields. Yours to parse from argv:
+`--double`, `--triple`, `--reviewer=`, `--non-interactive`, `--auto-approve`.
 
 Policy detail: `references/preflight-internals.md`.
 
@@ -281,26 +274,10 @@ back to sequential Step 3A regardless of `review_mode`. `DOUBLE`/`TRIPLE` do
 **not** change this routing — the manager runs the preflight-selected lens panel
 regardless; the multi-model flags only add second-opinion shims inside it.
 
-**Why a manager subagent (not the `Workflow` tool).** Two reasons:
-
-1. **A clean main loop, hands-free.** A subagent runs the whole noisy round —
-   lens fan-out, merge, render, post — in **its own** context; only a compact
-   verdict returns to main. Agent nesting to depth 2 (manager → lens
-   grandchildren) works here (verified).
-2. **Hooks reach the lenses — spawn gate, inside-subagent gates, and startup
-   injection all fire.** Verified in this environment: PreToolUse hooks fire inside
-   Agent subagents at **depth 2** (a keyword-free grandchild spawn was hard-blocked
-   by `agent-cmm-gate`), and PostToolUse fires inside subagents too. So a lens's own
-   tool calls are governed by the same gates as the main thread — native `Grep` on
-   source → `grep-cmm-gate`; non-exempt large Bash → `ctx-execute-enforcer` (bare
-   `grep` is exempt) — on top of the `SubagentStart` code-navigation guidance
-   injected into the manager and its lens grandchildren at startup (also verified to
-   depth 2). `Workflow`-tool workers reportedly **bypass** these gates (not
-   re-verified here) — the original reason to prefer the Agent path. Even so,
-   reviewer **correctness does not depend on any of this**: it rests on the diff,
-   the acceptance criteria, and definition-site evidence (see
-   `agents/qa-reviewer.md`), so the panel still works if that tooling is
-   absent.
+**Why a manager subagent, not the `Workflow` tool** — a clean main loop (the round's
+fan-out, merge and render noise stays in the manager's own context) and hooks that reach
+the lenses. Both verified to Agent depth 2; reviewer correctness depends on neither. See
+`references/design-notes.md`.
 
 So: **main spawns ONE `qa-manager` Agent** (background); the manager fans out
 the `qa-reviewer` lenses named in preflight's `lenses` array **concurrently**
@@ -315,56 +292,21 @@ contract + the lens catalog live in `agents/qa-manager.md`; this step is
 the main-loop side — how to invoke it and what to do with the verdict.
 
 **Invoke it** with the Agent tool (`subagent_type: "qa-manager"`,
-`run_in_background: true`). Pass literal values + scratch **paths** (the manager
-and its lenses read the files themselves — do not paste blobs):
+`run_in_background: true`), passing:
 
 ```
-target_abs=<target-abs>  mr=<MR_NUMBER>  round=<N>
-feature_branch=<feature-branch>  target_branch=<target-branch>  diff_range=<remote>/<target-branch>..HEAD
-lenses=<preflight.json .lenses array, verbatim — the panel to spawn>
-forge=<forge>  project=<project>  project_enc=<project_enc>  qa_scratch=<QA_SCRATCH>
-contract_path=<QA_SCRATCH>/contract.md  sast_path=<SAST_REPORT>  schema_change_path=<QA_SCRATCH>/schema-change.md
-tool_mandate_path=<QA_SCRATCH>/tool-mandate.md
-proportionality_path=<QA_SCRATCH>/proportionality.md
-schema_change_detected=<true|false>  skip_contract_verification=<true|false>
+brief_path=<preflight.json .manager_brief_path>
+post_note=<true|false>        # true = the manager posts the round note itself (hands-free)
+non_interactive=<true|false>  # from --non-interactive; it still returns decisions_needed
 DOUBLE=<t|f>  TRIPLE=<t|f>  reviewer_override=<qwen-local|"">
-qa_token_ok=<true|false>  expected_qa_user=<qa_agent.expected_username>
-qa_token_env=<qa_agent.token_env>    qa_token_file=<qa_agent.token_file>
-mr_approved=<true|false>        # preflight's MR_APPROVED — gates the manager's post (see below)
-approval_eligible=<true|false>  # YOU compute this — the manager cannot (see below)
-unapprove_on_dirty_reround=<true|false>   # qa_agent.approval.unapprove_on_dirty_reround
-sast_running=<true|false>       # preflight's sast.running — with the above, lets the manager raise sast_wait
-post_note=<true|false>          # true = manager posts the round note itself (option 3 / hands-free)
-non_interactive=<true|false>    # from --non-interactive; the manager still returns decisions_needed
+skip_contract_verification=<true|false>
 ```
 
-**`approval_eligible` must be computed by main and passed in.** The manager's
-`approval` and `sast_wait` decisions are both conditioned on the round being
-approval-eligible, but eligibility depends on `min_clean_round`,
-`tiny_mr_relax_to_round_1` and `diff_scope.is_tiny` — none of which the manager is
-given, and none of which it can derive from `round` alone. Omit this and the
-manager can never raise either decision, so the hands-free path silently never
-approves anything. Compute it with the same rule Step 3E uses:
-
-```
-approval_eligible = (round >= qa_agent.approval.min_clean_round)
-                    OR (qa_agent.approval.tiny_mr_relax_to_round_1 AND diff_scope.is_tiny)
-```
-
-Eligibility is *necessary*, not sufficient — Step 3E still re-checks every gate
-(clean round, `QA_TOKEN_OK`, and the schema-change preconditions) before approving.
-The manager only raises the decision; main decides it.
-
-`qa_token_env` + `qa_token_file` are passed so the manager resolves the QA token
-**env-var-first, then file** — the same order Step 0.25 uses. Passing only the
-file path lets an env-only token resolve to empty, at which point `glab` silently
-posts the round note under the **developer's** identity instead of the QA agent's.
-
-`mr_approved` is what lets the manager honor the Step 3B.6 ordering rule: it must
-NOT post a round that found new confirmed critical/major findings onto an MR the
-QA agent has already approved. In that case it renders the note, returns
-`note_posted=false` and a `decisions_needed` entry of kind `unapprove_before_post`,
-and **main revokes the approval first and then posts** — see Step 3B.6.
+Everything else the manager needs — branches, diff range, lens panel, forge, every
+scratch path, the token env/file pair, `mr_approved`, `approval_eligible` — is already
+rendered in that brief by preflight. **Do not re-derive or re-type those values.** Only
+the five above depend on this invocation's flags and your Step 3D/3E decisions, so only
+they are passed here.
 
 **Interactive vs. hands-free split.** The manager cannot call `AskUserQuestion`,
 so it never approves, never applies fixes, and never disambiguates a contract —
@@ -420,75 +362,23 @@ Bash, keeping the same per-reviewer non-blocking failure semantics as Step 3A.2
 failed shim as a zero-finding success). Their argv is unchanged; only their
 launch site moves from main into the manager.
 
-**Hard invariants — the contract the manager MUST satisfy** (each is a defect a
-real QA round caught; do not relax them):
+**What main does with the verdict** (the manager's own contract — merge rules, lens
+failure handling, the verdict schema — lives in `agents/qa-manager.md`; do not restate
+it here):
 
-1. **Compact structured hand-off.** The manager returns the compact verdict JSON
-   defined in `agents/qa-manager.md` (counts, `schema_change_detected`,
-   `contract_all_pass`, `failed_lenses`, `note_path`/`note_url`, `decisions_needed`)
-   — NOT the raw lens output and NOT a human-facing report. The full round-note
-   markdown lives in `note_path`; only the verdict crosses back into main. Lens
-   output + merge/render text stay in the manager's context.
-2. **Every downstream axis survives the merge** (else the panel regresses vs the
-   sequential fallback): per-finding `relevance` (`contract|regression|observation`)
-   → observations route into the note's `## Observations` section, never inflating
-   the blocking counts; per-finding `schema_change` + a top-level
-   `schema_change_detected` → the manager surfaces it in the verdict and main sets
-   `SCHEMA_CHANGE_DETECTED=true` **before Step 3E** (arms the the schema-drift case gate — must
-   not be silently dropped); a `contract_verification` table **owned by the
-   `contract-security` lens only** (other lenses do not re-verify the contract —
-   that duplicates split work and invites conflicting verdicts).
-3. **A failed lens is never a clean review.** A lens that errors/returns empty is
-   re-run once as a standalone `qa-reviewer`; if it fails again it goes in
-   `failed_lenses`. **All** of them dead → a FAILED round (no clean post, no approval,
-   re-run). Some dead → the note carries `⚠ lens(es) failed: <keys> — axes not
-   covered this round` and the missing axes are never treated as clean; if
-   `contract-security` is the casualty, render NO contract table and flag it.
-4. **Never downgrade the lens model** (cost caveat below).
+- `schema_change_detected: true` → set `SCHEMA_CHANGE_DETECTED=true` **before Step 3E**.
+  This arms the schema gate; dropping it silently un-arms it.
+- **All** lenses in `failed_lenses` → a FAILED round: no clean post, no approval, re-run.
+  Some failed → the missing axes are not clean, and the note says so.
+- Read `note_path` only if you need the markdown; the verdict alone drives Steps 3B-3E.
+- `qa_introduced_blocking >= 2` → surface it to the user verbatim from the note. This
+  cycle is largely fixing its own earlier fixes. **Report only**: do not recommend
+  reverting or choose an approach — whether to revert, patch again, or stop is the
+  human's, because the attribution cannot tell a wrong premise from a sloppy fix.
 
-**Caveats:**
-
-- **Cost — roughly comparable to a serialized review, not N× it.** The bulk of a
-  review's tokens is iterative tool-call reasoning (read → search → reason); the
-  panel **splits** that across lenses rather than duplicating it, so cumulative
-  (context × turns) is roughly conserved. The genuine premium is in the margins:
-  each lens re-reads the same diff/files (no shared prompt cache), each carries its
-  own fixed preamble, and the manager adds one coordinating agent on top. A
-  manager-owned round therefore costs a little **more total tokens** than the
-  Workflow path (the manager is an extra agent) but keeps that spend — and the
-  entire merge/render — **out of the main context**. If the pain is context
-  pollution, this fixes it; if the pain is raw token count, it does not. For a
-  large, read-heavy diff the read portion trends additive-per-lens (~N× on reads);
-  the levers are **panel width** (preflight-selected, 3-6 — narrow a target's
-  `lens_tags` rather than overriding the panel by hand) and the **trivial-MR gate**,
-  never the model tier.
-- **Do NOT downgrade the model to manage cost.** Each lens (and the manager)
-  inherits the session model — a top-capability model, the deliberate QA quality
-  bar (the round note attributes QA to Opus). Do not pass a lighter tier to save
-  tokens: a cheaper reviewer is a weaker reviewer, which defeats the cycle.
-- **Full context per lens.** Give every lens the **full** diff and context, not a
-  slice — the lenses differ by *mandate*, not by *input*.
-- **Fresh subagents each round.** Manager and lens grandchildren are all
-  first-class Agent subagents; each round spawns a **fresh** manager + panel — no
-  reused review context (the "fresh sub-agent per round" invariant holds). Project
-  hooks reach them: the spawn gate, the inside-subagent PreToolUse/PostToolUse
-  gates, and the `SubagentStart` injection all fire for the lenses (PreToolUse
-  verified firing at depth 2 in this environment), so a lens is governed by the
-  same guards as the main thread, plus the read-only constraint in its own agent
-  def.
-- **CMM/ctx usage is preflight-gated, not hardcoded.** The skill's prose carries
-  **no** hardcoded tool dependency. `preflight.sh` probes whether CMM /
-  Context-Mode are registered and writes `$QA_SCRATCH/tool-mandate.md`: an explicit
-  "use these tools" mandate when they are available, an **empty file** when they are
-  not. The manager (and the sequential Step 3A prompt) inject that file verbatim
-  into every lens prompt — so when the tools are present the lenses are told,
-  unconditionally, to use them (measured to flip lens adoption from 0 to
-  substantial on a real code diff); when absent, nothing is injected and the lenses
-  use Read/grep. The `agent-cmm-gate` spawn-gate still exempts both agent types via
-  `.claude/cmm-agent-passthrough.txt` (keyword-free spawns pass), and the
-  `SubagentStart` hooks add a soft nudge on top. This keeps the skill tool-agnostic
-  — it works unchanged if that tooling is ever removed (the mandate file just goes
-  empty).
+**Never manage round cost by downgrading the model** — a cheaper reviewer is a weaker
+reviewer, which defeats the cycle. The levers are panel width (narrow a target's
+`lens_tags`) and the trivial-MR gate. Cost analysis: `references/design-notes.md`.
 
 
 ## Step 3A / 3A.2 / 3A.3 — sequential fallback and extra reviewers
@@ -515,17 +405,43 @@ Do NOT apply fixes automatically. Instead:
 **If `IS_OWN_BRANCH=true` (your own MR):**
 
 1. Read each finding carefully. For findings marked "hypothetical" or "minor" with no confirmed reproduction, ask the user whether to fix them before proceeding.
-2. For confirmed and critical/major findings, proceed to fix them in the submodule codebase in this session.
-3. Each QA round's fixes must be committed as a **single, separate commit** — do not amend previous commits:
+2. **Read `tooling.fix_mandate_path` from `preflight.json` before you edit anything.** It is
+   never empty: it states whether a code-navigation graph is available this session and how
+   to find every affected site under that regime. You are the only participant in the round
+   who edits code and the only one who was not handed the navigation mandate — the lens
+   reviewers got theirs at spawn and are forbidden from prescribing fixes. Follow it.
+3. For confirmed and critical/major findings, fix them in the target codebase in this session.
+   **A finding names one site; it does not bound the defect.** Reconcile every site, per the
+   fix mandate — with a graph that means `trace_path` over the callers, without one it means a
+   deliberate, and explicitly best-effort, text sweep. A fix that hardens the cited line while a
+   sibling still asserts the opposite is the single most common defect this cycle re-finds, and
+   it is what makes round N+1 pay a full panel to catch round N's fix.
+4. **Run the project's own checks before committing.** `verify.command` in `preflight.json`,
+   from the target directory; `verify.source` names the file it was discovered in
+   (`verify.build_command` too when present). This is the step whose absence produces the
+   tail-chasing pattern: a round's fix is otherwise unverified until the *next* round's full
+   panel finds it broken.
+   - **A new or changed test must be shown to fail without the fix.** Stash or revert the
+     source change, run the test, confirm it FAILS, restore. A test that passes either way
+     verifies nothing while looking like proof, and it is what lets a bad fix survive into
+     the next round wearing a green tick.
+   - If `verify.state` is `none-found`, do **not** treat that as clean: say in the round note
+     that this round's fixes are unverified and why. That is a finding about the project, not
+     a passing gate.
+   - If the checks fail, fix that before committing. Do not commit a red tree and leave it to
+     the next round.
+5. Each QA round's fixes must be committed as a **single, separate commit** — do not amend previous commits:
 
 ```bash
 cd <target-path>
 git add <changed-files>
-git commit -m "fix(<scope>): address QA round <N>"
+git commit -m "<preflight.json .commit_subject, verbatim>"
 git push <remote> <feature-branch>
 ```
 
-Where `<scope>` is `preflight.json`'s top-level **`scope`** string (e.g., `api`, `webapp`, `mobile`, `monorepo`) — the registry value preflight already resolved from `the resolved config`. Read it from `preflight.json`; do not re-read the registry by hand. Note it is `.scope`, **not** `.diff_scope` (which carries the diff numbers).
+`.commit_subject` is already rendered — `fix(api): address QA round 3` where the project
+defines named targets, `fix: address QA round 3` where it does not. Do not assemble it from
+`.scope`: a scope is a multi-project concept, and a single-project repo has none.
 
 If there are no actionable findings (all hypothetical or minor), skip the fix commit.
 
@@ -584,9 +500,16 @@ section from the QA report above.>
 opted to continue, omit the SAST block entirely (do NOT post a stale or
 empty section).>
 
+<if Step 3B made a fix commit this round, include this trailer verbatim, one line,
+with the full SHA — it is the cycle's durable record of what IT changed, and the
+next round reads it back to tell an MR defect from one a previous round of this
+cycle introduced. A subject-pattern match cannot replace it: rebases, squashes and
+hand-edited messages all break that, and this note survives them.>
+QA-Fix-Commit: <full SHA of this round's fix commit>
+
 ---
 <if QA_TOKEN_OK=true:>
-*QA performed by <qa_agent.expected_username from the resolved config> via Claude Code (<the model you are actually running as — not a literal copied from this file; a hardcoded id rots and misattributes the review. If you cannot determine it, write "Claude Code" with no parenthetical>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` where tag is the reviewer's tag, e.g. ` + do:deepseek-v4-pro` or ` + do:openai-gpt-5.3-codex` or ` + qwen3-14b (LM Studio)`>
+*QA performed by <qa_auth_user from preflight.json when qa_token_ok, else the dev identity that posted> via Claude Code (<the model you are actually running as — not a literal copied from this file; a hardcoded id rots and misattributes the review. If you cannot determine it, write "Claude Code" with no parenthetical>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` where tag is the reviewer's tag, e.g. ` + do:deepseek-v4-pro` or ` + do:openai-gpt-5.3-codex` or ` + qwen3-14b (LM Studio)`>
 <else (QA_TOKEN_OK=false): omit the "<username> via " prefix:>
 *QA performed by Claude Code (<the model you are actually running as — see the note above>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` as above>
 
@@ -620,7 +543,8 @@ After each round, evaluate the findings:
 
 - **If the round is clean** (no findings, or only hypothetical/minor with nothing to fix): announce the round came back clean. If this is at least round 2, tell the user the MR is ready to mark for review.
 - **If critical or major confirmed findings were found and fixed** (own branch): announce that another round is required. Ask: *"Ready to run QA round <N+1>?"* If yes, post this round's note first (it is what makes the next derivation return N+1), then **re-run `preflight.sh`** and take the new `round` and the freshly rendered `proportionality.md` from it. Do NOT increment the round by hand and reuse the existing scratch files — preflight re-runs the sync and re-renders the mandate for the new round in the same pass, which is the only thing that keeps the round number and the proportionality tier in agreement (see Step 3).
-- **If critical or major findings were reported but not fixed** (someone else's branch, report-only mode): announce the findings have been posted. The QA cycle pauses here — the author needs to apply fixes before further rounds can be meaningful. Tell the user: *"QA report posted. Once {author} addresses the findings, run `/qa-cycle {MR_NUMBER} {SUBMODULE}` again to continue QA."*
+- **If critical or major findings were reported but not fixed** (someone else's branch, report-only mode): announce the findings have been posted. The QA cycle pauses here — the author needs to apply fixes before further rounds can be meaningful. Tell the user: *"QA report posted. Once {author} addresses the findings, run `/qa-cycle {MR_NUMBER}` again to continue QA."* (append the target name only when
+`.layout.multi_target` is true.)
 - **After 4 rounds**: if findings persist beyond round 4, present a summary of remaining open issues and ask the user how to proceed.
 - **On a `diminishing_returns` decision** (any round): stop and ask, regardless of round number. Do not roll into another round on the assumption that more review is always safer — the failure mode this catches is the opposite one. A useful check when deciding: **if most of this round's blocking findings target code an earlier QA round introduced rather than the change the MR exists to make, the cycle has stopped adding value.** Ending it there, with the remaining findings explicitly deferred and enumerated in a note, is a legitimate and complete outcome — see the Step 3E deferred-findings exit.
 
@@ -653,7 +577,7 @@ Full gate logic, comment wording, and the exit's preconditions: `references/appr
 After the QA cycle ends (clean round or user decision to stop), output a summary:
 
 ```
-## QA Cycle Complete — MR #<MR_NUMBER> — <submodule>
+## QA Cycle Complete — MR #<MR_NUMBER><, TARGET only if .layout.multi_target>
 
 - Rounds completed: N
 - Round N came back: clean / minor-only / hypothetical-only
@@ -663,8 +587,12 @@ After the QA cycle ends (clean round or user decision to stop), output a summary
 
 Next steps:
 - Mark the MR as ready for review (remove Draft status if applicable)
-- Ensure the submodule commit is referenced in the parent workspace (if required)
+- <ONLY if .layout.target_is_submodule> Reference the new commit in the parent workspace
 ```
+
+The two gated lines come from `preflight.json`'s `layout` block. Naming a target in a repo
+that has exactly one, or mentioning a parent workspace to someone whose repo has no parent,
+describes a structure the reader does not have — omit them rather than hedging them.
 
 ---
 

@@ -21,28 +21,32 @@ it is empty, just use `Read`/grep.
 
 ## Inputs (from your prompt)
 
-You are given, as literal values or scratch-file paths:
+**`brief_path` — read this file FIRST.** preflight renders it; it is `key=value`,
+one per line, and carries everything that does not depend on the caller's flags:
 `target_abs`, `mr`, `round`, `feature_branch`, `target_branch`, `diff_range`,
-`lenses` (JSON array of lens names from preflight, 3-6 entries — the panel to
-spawn; see the Lens catalog in step 1),
-`forge`, `project`, `project_enc`, `qa_scratch`, `contract_path`,
-`sast_path`, `schema_change_path`, `tool_mandate_path`, `proportionality_path`,
-`schema_change_detected`,
-`skip_contract_verification`, `DOUBLE`, `TRIPLE`, `reviewer_override`,
-`qa_token_ok`, `expected_qa_user`, `qa_token_env`, `qa_token_file`,
-`mr_approved` (true/false), `approval_eligible` (true/false),
-`unapprove_on_dirty_reround` (true/false), `sast_running` (true/false),
-`post_note` (true/false), `non_interactive` (true/false).
+`lenses` (JSON array of lens names, 3-6 entries — the panel to spawn; see the Lens
+catalog in step 1), `forge`, `project`, `project_enc`, `qa_scratch`,
+`contract_path`, `sast_path`, `schema_change_path`, `tool_mandate_path`,
+`proportionality_path`, `schema_change_detected`, `qa_token_ok`,
+`expected_qa_user`, `qa_token_env`, `qa_token_file`, `mr_approved`,
+`approval_eligible`, `unapprove_on_dirty_reround`, `sast_running`.
+
+The caller assembled these by hand once, which silently dropped fields; they are
+now computed in one tested place. Read them from the brief — do not ask the caller
+for them and do not re-derive them.
+
+Given directly in your prompt, because each depends on this invocation:
+`post_note` (true/false), `non_interactive` (true/false),
+`skip_contract_verification`, `DOUBLE`, `TRIPLE`, `reviewer_override`.
 
 - `mr_approved` — whether the **QA agent** currently has an approval on this MR
   (preflight seeds it). Gates the posting rule in step 5: a round that finds new
   blocking problems must not post onto a still-approved MR.
 - `approval_eligible` — whether this round is far enough along to be approvable at
-  all (the caller computes it from `min_clean_round` / the tiny-MR relax; you
-  cannot derive it from `round` alone). Required for the `approval` and
-  `sast_wait` decisions below. If it is missing from your prompt, treat it as
-  **false** and say so in `blocking_summary` — do NOT guess, and do NOT silently
-  drop the decision.
+  all (preflight computes it from `min_clean_round` / the tiny-MR relax; you cannot
+  derive it from `round` alone). Required for the `approval` and `sast_wait`
+  decisions below. If it is missing from the brief, treat it as **false** and say so
+  in `blocking_summary` — do NOT guess, and do NOT silently drop the decision.
 - `unapprove_on_dirty_reround` — the policy knob behind the step-5 withhold rule.
 - `sast_running` — whether the SAST pipeline is still in progress.
 
@@ -158,12 +162,48 @@ titles), `|`-join concurring tags, route every `relevance:observation` into a
 `## Observations` section, and reconcile contract tables. Compute the confirmed
 counts (critical/major/minor where `status==confirmed`).
 
+### 3.5 Attribute findings to this cycle's own fix commits
+
+Run the helper — do NOT attempt this attribution yourself, and do not compare line
+numbers by hand:
+
+```bash
+printf '%s' "<merged findings JSON array>" \
+  | bash "${CLAUDE_PLUGIN_ROOT}/lib/attribute-findings.sh" "<target_abs>" "<qa_fix_commits from the brief>"
+```
+
+Each finding comes back with `qa_introduced` (and `qa_introduced_commit` when true):
+the finding sits on a line a **previous round of this cycle wrote**, not on the
+author's code. `git blame` decides it, so insertions and deletions between rounds are
+handled; a hand-rolled line-range comparison is wrong, because every edit shifts the
+lines below it.
+
+With no recorded fix commits (round 1, or a cycle that predates the trailer) every
+finding comes back `qa_introduced:false`. That is "not known", not "verified clean" —
+do not describe it as the latter.
+
 ### 4. Render the round note
 
 Write the full round-note markdown to `$qa_scratch/note-round<round>.md` in the
 skill's Step 3C format: Contract Verification table, `### Finding N` blocks for
 `relevance != observation`, a Summary table, an `## Observations` section, the
-SAST section (verbatim tail of `sast_path`), and the QA footer
+SAST section (verbatim tail of `sast_path`), and the QA footer described below.
+
+**Self-inflicted findings are marked, and called out at two or more.** Every finding
+with `qa_introduced:true` carries the marker `↩ on code QA round <N> introduced` in
+its `### Finding N` heading. When **two or more** blocking findings are
+`qa_introduced`, put a line immediately under the `## QA Round <N>` heading, where a
+human cannot miss it:
+
+> ⚠ **<K> of <M> blocking findings are on code an earlier round of this QA cycle
+> introduced.** This cycle may be fixing its own work rather than the MR's.
+
+Report it and stop there. Do **not** recommend reverting, do not propose an approach,
+and do not treat it as a reason to withhold the note. Whether to revert, patch again,
+or stop is the human's call — the pattern is real but its cause (a wrong premise vs. a
+sloppy fix) is not something you can determine from the attribution alone.
+
+The QA footer is
 `*QA performed by <expected_qa_user> via Claude Code (<model>), manager + <N>-lens panel*`
 (where `<N>` is the number of entries in `lenses`)
 — where `<model>` is the model **you are actually running as**, not a literal
@@ -239,6 +279,7 @@ posting; the caller will post from `$qa_scratch/note-round<round>.md`.
   "note_posted": true,
   "note_url": "<url or empty>",
   "observations_count": 0,
+  "qa_introduced_blocking": 0,
   "blocking_summary": "<=2 sentences: the confirmed critical/major findings, or 'none'",
   "decisions_needed": []
 }
