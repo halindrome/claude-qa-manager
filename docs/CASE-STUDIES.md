@@ -174,3 +174,28 @@ skipped, not to fall silent.
 target exists, not what the recipe does. Any gate that can decline must report
 declining, or "we didn't check" becomes indistinguishable from "we checked and it was
 fine" — which is the failure this entire document is about.
+
+**A detected command may encapsulate things you cannot see.** The obvious response to
+"the discovered test target has side effects" is to run the useful part of it — read
+the recipe, lift out the line that actually runs the suite, skip the rest. That
+reasoning is wrong, and its wrongness is silent.
+
+A test target is an **interface**; its recipe is the implementation. On one real
+project the recipe brought a container stack up, cleared message-broker volumes,
+waited for the database, copied three fixture files into two locations, ran the
+suite, and tore the stack down. Lifting out the suite invocation alone would have
+run it on the host rather than in the container it requires, without its fixtures,
+against whatever state the previous run left. It would not have errored. It would
+have produced output, exited zero, and been recorded as verification.
+
+So the rule is: **never decompose a discovered entry point.** Either use it, or name
+a different entry point the project already provides — projects that wrap their
+suite usually offer more than one. What you must not do is synthesise a third
+command out of the first one's insides, and least of all write that synthesis into
+configuration, where it becomes the permanent answer for every future round.
+
+The same reasoning limits what an override is for. `verify.command` exists for a
+project that documents no procedure — not for editorialising one that does. Where a
+project's own rules describe how its suite is run, those rules are the source of
+truth, and reading them is the correct behaviour; a config key that restates part of
+them is a fork that drifts from the moment it is written.
