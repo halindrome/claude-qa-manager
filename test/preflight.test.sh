@@ -422,17 +422,23 @@ sroot=$(mktemp -d)
 eq "no round -> prints nothing"   "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | wc -c | tr -d ' ')" "0"
 mkdir -p "$sroot/qa-cycle-abc-706"
 printf '706|rest-api|1|lenses|3|6|%s|/repo/a/apps/rest-api\n' "$(( $(date +%s) - 240 ))" > "$sroot/qa-cycle-abc-706/status"
-eq "fresh round -> lens progress" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a)" "QA !706 rest-api r1 ◆3/6 4m"
+# IDENTITY ONLY — no elapsed time, no lens count. A statusline repaints on
+# main-thread activity, and the main thread is blocked for a round's whole
+# duration, so any number it shows is a reading from before the work started.
+# Identity does not go stale; a counter does, and a stale counter invites you to
+# conclude a healthy round is stuck. Live progress is watch-round.sh's job.
+eq "fresh round -> identity only" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a)" "QA !706 rest-api r1"
+eq "  no elapsed or count leaks"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | grep -cE '◆|[0-9]+[ms]$')" "0"
 
 # THE two-concurrent-rounds bug: the scratch root is shared machine-wide, so
 # "newest wins" made each session render the OTHER project's round.
 mkdir -p "$sroot/qa-cycle-def-99"
 printf '99|webapp|2|lenses|5|6|%s|/repo/b\n' "$(( $(date +%s) - 60 ))" > "$sroot/qa-cycle-def-99/status"
-eq "project A sees only its round"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a)" "QA !706 rest-api r1 ◆3/6 4m"
-eq "project B sees only its round"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/b)" "QA !99 webapp r2 ◆5/6 1m"
+eq "project A sees only its round"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a)" "QA !706 rest-api r1"
+eq "project B sees only its round"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/b)" "QA !99 webapp r2"
 eq "unrelated project sees neither" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/c | wc -c | tr -d ' ')" "0"
 # A session opened INSIDE the submodule under review still matches.
-eq "session inside the target"      "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a/apps/rest-api)" "QA !706 rest-api r1 ◆3/6 4m"
+eq "session inside the target"      "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a/apps/rest-api)" "QA !706 rest-api r1"
 rm -rf "$sroot/qa-cycle-def-99"
 # THE case this exists for: a crashed panel leaves the file behind, so existence
 # cannot mean "running". Age of the last write is what separates them.

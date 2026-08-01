@@ -13,9 +13,22 @@
 #   [ -n "$qa" ] && printf ' | %s' "$qa"
 #
 # Output shapes:
-#   QA !706 rest-api r1 ◆3/6 4m          — alive, 3 of 6 lenses returned
-#   QA !706 rest-api r1 ◆3/6 ⚠stalled 12m — nothing written for over STALL_AFTER
-#   (nothing)                             — no round in flight
+#   QA !706 rest-api r1            — a round is in flight in this project
+#   QA !706 rest-api r1 ⚠stalled   — it has stopped writing; go look
+#   (nothing)                      — no round in flight
+#
+# DELIBERATELY NO ELAPSED TIME AND NO LENS COUNT. A statusline repaints on
+# main-thread activity, and for the whole duration of a round the main thread is
+# blocked waiting on a backgrounded manager — so the one period you would want a
+# progress readout is exactly the period this surface cannot refresh. Observed:
+# the fragment returned `rendering 14m` when invoked directly while the on-screen
+# line still showed a value from 11 minutes earlier. A number that looks live and
+# is not is worse than no number: it invites you to conclude the round is stuck
+# from a reading taken before it started working.
+#
+# So this reports IDENTITY, which does not go stale — which MR, which target,
+# which round — plus a stall marker, without a duration for the same reason. For
+# live progress use lib/watch-round.sh, which polls on its own clock.
 #
 # DESIGN CONSTRAINTS, all learned the hard way:
 #   - SILENT WHEN IDLE. This runs on every statusline repaint in every session
@@ -99,23 +112,12 @@ age=$(( now - newest_mtime ))
 [ "${phase:-}" = "done" ] && exit 0
 [ "$age" -gt "$FORGET_AFTER" ] && exit 0
 
-elapsed=$(( now - ${start:-$now} ))
-[ "$elapsed" -lt 0 ] && elapsed=0
-if   [ "$elapsed" -lt 60 ];   then el="${elapsed}s"
-elif [ "$elapsed" -lt 3600 ]; then el="$(( elapsed / 60 ))m"
-else el="$(( elapsed / 3600 ))h$(( (elapsed % 3600) / 60 ))m"; fi
-
 frag="QA !${mr} ${target} r${round}"
-case "${phase:-}" in
-  lenses) frag="$frag ◆${done:-0}/${total:-?}" ;;
-  ""|preflight) : ;;
-  *) frag="$frag ${phase}" ;;
-esac
 
 stall_limit="$STALL_AFTER"
 [ "${phase:-}" = "lenses" ] && stall_limit="$LENS_STALL_AFTER"
 if [ "$age" -gt "$stall_limit" ]; then
-  printf '%s ⚠stalled %dm\n' "$frag" "$(( age / 60 ))"
+  printf '%s ⚠stalled\n' "$frag"
 else
-  printf '%s %s\n' "$frag" "$el"
+  printf '%s\n' "$frag"
 fi
