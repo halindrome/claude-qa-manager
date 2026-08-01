@@ -104,6 +104,27 @@ and `forge` / `forge_cli` added.
 
 ### Smaller, independent items
 
+- **Consider `effort` on the agent definitions — upward, not downward.** Subagent
+  frontmatter supports `effort: low|medium|high|xhigh|max` ("Overrides the session effort
+  level. Default: inherits from session"; available levels depend on the model). Nothing
+  in this plugin sets it, so both agents inherit. The interesting move is *raising* it on
+  `qa-reviewer`: invariant 6 says never manage review cost by downgrading the model, and
+  effort is the same lever class, so the same reasoning makes a harder-thinking reviewer a
+  legitimate quality lever. Unresolved before changing anything: it multiplies across up
+  to six concurrent lenses; a level the session's model does not support needs a defined
+  fallback rather than a silent one; and `qa-manager` is coordination rather than
+  analysis, so it probably wants a different answer from the lenses. Worth an A/B on one
+  MR — same target, same panel width — rather than a guess.
+  Related fields on the same page that this plugin also does not use, and which may be
+  worth more than effort: `skills` (preloads full skill content at subagent startup — the
+  tool-mandate injection currently does that by hand), `isolation: worktree` (a private
+  checkout per lens, which is the containment answer to the shared-tree problem in
+  CASE-STUDIES §lens-contamination, and would make mutation testing safe rather than
+  forbidden), `maxTurns`, and `background`.
+  Also from that page: **extended thinking is NOT per-subagent** — it inherits from the
+  session, with no per-subagent setting, and before Claude Code v2.1.198 subagents ran
+  with it disabled regardless. Any measured lens behaviour predating that version was
+  measured under different conditions.
 - **`docs/INSTALL.md`** — not written. `README.md` currently carries install steps inline
   and does **not** link to it, so this is optional rather than a dangling link.
 - **Trim `Step 3A.1`** in the spine. It is the largest kept block; its "why a manager
