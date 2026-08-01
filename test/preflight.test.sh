@@ -544,6 +544,14 @@ eq "fix commits read from notes"   "$(jq -r '.qa_fix_commits | sort | join(",")'
 eq "  and reach the brief"         "$(grep -c '^qa_fix_commits=' "$(jq -r '.manager_brief_path' <<<"$out")")" "1"
 out=$(GLAB_STUB_NOTES='[{"body":"## QA Round 1\nno trailer here\n"}]' run_preflight "$r" 73 mono); note_scratch "$out"
 eq "no trailer -> empty array"     "$(jq -c '.qa_fix_commits' <<<"$out")" "[]"
+# A round is SUPPOSED to land one commit, but a follow-up fix is normal and happened
+# on a real round. Both must be attributable, or the second commit's lines read as MR
+# defects in the next round. The reader takes every trailer; the writer is told to
+# emit one line per commit rather than one per round.
+two='[{"body":"## QA Round 1\nx\nQA-Fix-Commit: 953e24ea5c4b\ny\nQA-Fix-Commit: 9880c49cdead\n"}]'
+out=$(GLAB_STUB_NOTES="$two" run_preflight "$r" 73 mono); note_scratch "$out"
+eq "two trailers in one note -> both" "$(jq -r '.qa_fix_commits|sort|join(",")' <<<"$out")" "953e24ea5c4b,9880c49cdead"
+eq "  and the spine says one per commit" "$(grep -c 'ONE LINE PER COMMIT' "$REPO_SRC/skills/qa-cycle/SKILL.md")" "1"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------

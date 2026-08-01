@@ -515,12 +515,19 @@ section from the QA report above.>
 opted to continue, omit the SAST block entirely (do NOT post a stale or
 empty section).>
 
-<if Step 3B made a fix commit this round, include this trailer verbatim, one line,
-with the full SHA — it is the cycle's durable record of what IT changed, and the
-next round reads it back to tell an MR defect from one a previous round of this
-cycle introduced. A subject-pattern match cannot replace it: rebases, squashes and
-hand-edited messages all break that, and this note survives them.>
-QA-Fix-Commit: <full SHA of this round's fix commit>
+<for EVERY commit Step 3B made this round, one trailer line each, full SHA. These
+are the cycle's durable record of what IT changed, and the next round reads them
+back to tell an MR defect from one a previous round of this cycle introduced. A
+subject-pattern match cannot replace them: rebases, squashes and hand-edited
+messages all break that, and this note survives them.
+
+ONE LINE PER COMMIT, not one per round. A round is *supposed* to land a single
+commit, but a follow-up fix is a normal thing to produce, and it happened on a real
+round — the note recorded only the first, so the second's lines were invisible to
+the next round's attribution and would have been reported as MR defects. Count the
+commits you actually made; do not assume there was one.>
+QA-Fix-Commit: <full SHA>
+QA-Fix-Commit: <full SHA of any further fix commit this round>
 
 ---
 <if QA_TOKEN_OK=true:>
