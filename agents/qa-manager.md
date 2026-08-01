@@ -213,13 +213,20 @@ printf '%s|%s|%s|lenses|%s|%s|%s|%s|%s\n' \
   > "$status_path"
 ```
 
-**When you fan out**, alongside setting `phase=lenses`, stamp the fan-out time —
-it is the start of the longest silence in the round, and without it that gap
-cannot be measured afterwards:
+**When you fan out**, alongside setting `phase=lenses`, clear the previous round's
+per-lens files and stamp the fan-out time:
 
 ```bash
+rm -f "$qa_scratch"/lens-*.json     # round N-1's results are NOT this round's
 date +%s > "$qa_scratch/fanout"
 ```
+
+The scratch directory is keyed to the MR, not the round, so it persists across
+rounds. Leave the old files and `ls lens-*.json` reports six done on a round that
+has finished two — the exact opposite of what those files exist for, and a stale
+artifact that looks like a fresh one is worse than no artifact. The fan-out stamp
+is the start of the round's longest silence; without it that gap cannot be
+measured afterwards.
 
 **When the round is finished** (after the note is rendered/posted, phase `done`):
 

@@ -26,8 +26,11 @@ Use **Bash** for each (a `>` redirect), not the `Write` tool — `Write` refuses
 overwrite a file it has not read this session, so it costs an error plus a read plus
 a retry on a file you rewrite several times.
 
-1. **Before spawning**, stamp the fan-out time and snapshot the tree:
+1. **Before spawning**, clear the previous round's per-reviewer files, stamp the
+   fan-out time, and snapshot the tree. The scratch dir is keyed to the MR, not the
+   round, so anything left behind is read as belonging to this round:
    ```bash
+   rm -f "$QA_SCRATCH"/lens-*.json     # round N-1's results are NOT this round's
    date +%s > "$QA_SCRATCH/fanout"
    snap() { git -C "<target-abs>" rev-parse HEAD; git -C "<target-abs>" rev-parse --abbrev-ref HEAD
             git -C "<target-abs>" status --porcelain; }

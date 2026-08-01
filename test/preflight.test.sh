@@ -1177,6 +1177,17 @@ for f in epoch_start target_abs lens_stall; do
   eq "  manager preserves $f"    "$(grep -c "$f" "$MGR")" "$( [ "$(grep -c "$f" "$MGR")" -ge 1 ] && grep -c "$f" "$MGR" || echo 0 )"
   eq "  sequential mentions $f"  "$( [ "$(grep -c "$f" "$SEQ")" -ge 1 ] && echo yes || echo no )" "yes"
 done
+# Both writers must CLEAR the previous round's per-lens files. The scratch dir is
+# keyed to the MR, not the round, so leftovers read as this round's results —
+# observed live: `ls lens-*.json` showed 6 on a round that had finished 2.
+for doc in "$MGR" "$SEQ"; do
+  eq "  $(basename "$doc") clears stale lens files" \
+     "$( grep -c 'rm -f .*lens-\*\.json' "$doc" )" "1"
+done
+# The watcher does not TRUST that: it filters by the fanout stamp, so a round that
+# forgets to clear still reports the right count.
+eq "watcher filters lens files by fanout" \
+   "$( grep -c 'lt "\$fo"' "$REPO_SRC/lib/watch-round.sh" )" "1"
 # The fallback must also carry the round-level bookkeeping the manager does.
 for m in 'fanout' 'tree-before' 'record-timing.sh' 'lens-'; do
   eq "  sequential does '$m'"   "$( [ "$(grep -c -- "$m" "$SEQ")" -ge 1 ] && echo yes || echo no )" "yes"

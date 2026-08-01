@@ -35,8 +35,15 @@ while :; do
       "$mr" "${target:-?}" "${round:-?}" "${phase:-?}" "${done:-0}" "${total:-?}" \
       "$(hms $(( now - ${start:-$now} )))" "$(hms "$age")"
     [ -n "${target_abs:-}" ] && printf '        %s\n' "$target_abs"
+    # Only count files written AFTER this round fanned out. The scratch dir is
+    # keyed to the MR, not the round, so round N-1's results sit right here and
+    # would otherwise show as six done on a round that has finished two. The round
+    # is supposed to clear them; this does not depend on it having done so.
+    fo=0; [ -f "$d/fanout" ] && fo=$(tr -cd '0-9' < "$d/fanout")
     for f in "$d"/lens-*.json; do
       [ -f "$f" ] || continue
+      m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) || continue
+      [ "${fo:-0}" -gt 0 ] && [ "$m" -lt "$fo" ] && continue
       n=$(basename "$f"); n=${n#lens-}; n=${n%.json}
       printf '        ✓ %s\n' "$n"
     done
