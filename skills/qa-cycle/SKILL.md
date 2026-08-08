@@ -450,6 +450,11 @@ Do NOT apply fixes automatically. Instead:
      test. Only then apply the fix and confirm it passes. A test that passes either way
      verifies nothing while looking like proof. Running it green-first inverts that: you are
      debugging a harness you have already built on, which is the loop that eats whole rounds.
+   - **A coverage-only test needs a check that can fail too.** When the test targets code
+     this round did NOT change, there is no fix to revert and the rule above passes for
+     free — so mutate the code under test instead, confirm red, restore. That exemption is
+     exactly where the last cycle's surviving defects landed, including an assertion that
+     could not fail by construction.
    - **The harness is where these tests actually break, not the assertions.** A wrong exit
      status, a `chdir` in a constructor, a shell that is not the script's shebang, an extra
      parsing layer — each looks like a code defect and costs a round. `fix-mandate.md` gives

@@ -1196,6 +1196,30 @@ FIX_MANDATE_FILE="$QA_SCRATCH/fix-mandate.md"
   # blocked in plain Bash by the enforcer hook but is only ADVISORY inside a
   # ctx_execute payload, which is exactly where the fix step runs suites: one
   # session showed 11 truncating payloads against 1 truncating Bash call.
+  # -- Authoring the test ---------------------------------------------------
+  # Both rules below were paid for on ONE MR. Round 1 spent ~25 turns debugging a
+  # test harness whose root cause was a Read with offset:30 limit:75 that stopped
+  # at line 104 of the precedent being copied, missing two params -- one annotated
+  # "NOT NULL column". Round 2 then found 3 minor defects on lines round 1 wrote,
+  # and all of them were in a COVERAGE-only test file: that file passed the
+  # negative control trivially, because it covers an unchanged module and so had
+  # no fix to revert. The red-first rule as written covers a test FOR A FIX; the
+  # residue landed exactly in the case it exempts.
+  echo
+  echo "**Authoring the test.**"
+  echo
+  echo "**Read the whole precedent you are copying.** If you clone an existing test's"
+  echo "setup, open that file in full before adapting it. A partial read is"
+  echo "indistinguishable from a complete one and what you missed fails silently,"
+  echo "for the same reason a truncated command output does."
+  echo
+  echo "**A coverage-only test still needs a check that can fail.** When the test"
+  echo "targets code this round did NOT change, there is no fix to revert, so the"
+  echo "negative control passes for free and proves nothing. Mutate the code under"
+  echo "test instead — break the behaviour the assertion names, confirm the test goes"
+  echo "red, restore. An assertion never observed failing may be unfalsifiable by"
+  echo "construction, and that is not a hypothetical: it is where the last cycle's"
+  echo "surviving defects were."
   echo
   echo "**Capturing a test run.**"
   echo
@@ -1314,6 +1338,24 @@ if [ "$CMM_AVAILABLE" = "true" ] || [ "$CTX_AVAILABLE" = "true" ]; then
       echo "  files, and capture command/test output through these so the raw bytes stay out"
       echo "  of your context; only your derived findings return. Use \`ctx_search\` first to"
       echo "  reuse anything already captured this session."
+      # A lens once issued `find / -name 'MQTT.pm' -path '*AnyEvent*'` inside a
+      # batch. It never returned; the MCP client aborted it after 1807s, taking
+      # the batch's four other commands with it (there is no per-command
+      # timeout). That single call cost 30 of the round's 45 minutes -- the other
+      # five lenses had all finished in 6-10. The merge is barrier-joined, so one
+      # lens's stall is the ROUND's wall-clock, which is why this is a hard rule
+      # and not advice. The retry then used `find / -maxdepth 8` twice and cost
+      # another 3 minutes, so bounding the depth is NOT the fix; bounding the
+      # ROOT is.
+      echo "  **Never scan outside the repository.** No \`find /\`, no \`grep -r /\`, no"
+      echo "  walk of \`\$HOME\`, a container image store, or a system library path — with"
+      echo "  or without \`-maxdepth\`. Anchor every scan at the repo or target directory."
+      echo "  One such call hung for 30 minutes and was killed by the client timeout,"
+      echo "  taking its whole batch with it, while the rest of the panel sat finished."
+      echo "  To locate an installed dependency, ask the interpreter for its resolved"
+      echo "  path (e.g. \`perl -M<Mod> -e 'print \$INC{...}'\`, \`python -c 'import m;"
+      echo "  print(m.__file__)'\`, \`node -p \"require.resolve(...)\"\`) instead of"
+      echo "  searching the filesystem for it."
     fi
     echo
     # Without this, a reviewer calls search_graph, gets "no such tool" because

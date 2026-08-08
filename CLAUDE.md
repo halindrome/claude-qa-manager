@@ -19,24 +19,29 @@ claude --plugin-dir . plugin details claude-qa-manager   # inventory + token cos
 
 `--plugin-dir` loads the plugin for one session only, so you can test without installing.
 
-**But testing is not deploying, and this is the trap.** The plugin IS installed at user
-scope from a `directory`-source marketplace (`halindrome` → this repo). That install is a
-COPY into `~/.config/claude-code/plugins/cache/halindrome/claude-qa-manager/<version>/`,
-taken at install time — it does not track the working tree, and it does not track `git`.
-So `--plugin-dir .` can be green on a change that no real `/qa-cycle` run has ever loaded.
-It happened: the cache sat at the Aug 1 commit while a week of work accumulated
-uncommitted, and every QA cycle in that week ran the Aug 1 plugin.
+**The plugin is ALSO installed at user scope, and it runs from this working tree.** The
+`halindrome` marketplace is a `directory` source whose `installLocation` is this repo, so
+`CLAUDE_PLUGIN_ROOT` resolves to `~/Sources/claude-qa-manager/` and every real
+`/qa-cycle` sources `lib/preflight.sh`, `lib/forge.sh` and the rest from **here** —
+verified across three sessions' transcripts, none of which reference the plugin cache at
+all. Practical consequence: a live run picks up uncommitted edits immediately. There is no
+deploy step to forget, and an experiment left half-finished in the tree is live.
 
-**The cache keys on the version in `.claude-plugin/plugin.json`.** Editing files without
-bumping it means `claude plugin update` no-ops and leaves the stale copy in place — an
-absent update reporting as a successful one, which is invariant 2 in a different costume.
-So: bump the version in all four sites (`plugin.json`, both entries in `marketplace.json`,
-the `README.md` status line), reinstall, then **verify the deployed copy**, not the source:
+Do not generalise this. It holds because the source is a `directory`. A **git**-source
+marketplace copies into
+`~/.config/claude-code/plugins/cache/<marketplace>/<plugin>/<version>/` at install time,
+and that copy tracks neither the tree nor `git` — there, editing without bumping the
+version in `.claude-plugin/plugin.json` makes `claude plugin update` no-op and report
+success over a stale copy, which is invariant 2 in a different costume. A cache directory
+exists here from an earlier install; it is inert, and its staleness means nothing.
+
+When in doubt, do not reason about it — ask what actually ran:
 
 ```bash
-ls  ~/.config/claude-code/plugins/cache/halindrome/claude-qa-manager/*/skills/qa-cycle/references/
-jq -r '."claude-qa-manager@halindrome"[0] | .version, .installPath, .gitCommitSha' \
+jq -r '.plugins."claude-qa-manager@halindrome"[0] | .version, .installPath' \
    ~/.config/claude-code/plugins/installed_plugins.json
+jq -r '.halindrome.installLocation' ~/.config/claude-code/plugins/known_marketplaces.json
+grep -o '[^"]*lib/preflight\.sh' <the round's transcript>   # the path it really sourced
 ```
 
 ## Hard invariants

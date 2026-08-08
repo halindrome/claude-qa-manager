@@ -48,6 +48,39 @@ Then apply the fix and confirm it passes.
 Same two runs. Same total cost. The difference is which run you are holding when the
 harness lies to you.
 
+## The two cases red-first does not cover
+
+Both were measured on a single MR, one per round.
+
+### A coverage-only test has no fix to revert
+
+Round 1 added `TranslateWorker.t` for a module the MR did not change. On the negative
+control it passed — correctly, and the round said so: *"passes (pure coverage, as
+expected)"*. Round 2 then filed two defects against that exact file, one of them **an
+assertion that cannot fail by construction**, the other a harness bug (it bootstrapped
+against the repo-root config instead of the test config).
+
+The red-first rule says a test *for a fix* must be seen to fail. A coverage test is exempt
+by construction, so it gets no falsification check at all — and that is precisely where the
+residue landed. Three of the four defects round 2 attributed to round 1 were in new test
+files; none were in the production fixes.
+
+**So: when there is no fix to revert, mutate the code under test.** Break the behaviour the
+assertion names, watch the test go red, restore. An assertion you have never observed
+failing is a claim, not a check.
+
+### A partial read of the precedent you are cloning
+
+Round 1 copied an existing test's `buildParams` setup, reading it with `offset:30,
+limit:75` — which stops at line 104. The precedent's list continued past 104 with two more
+fields, one annotated **"NOT NULL column in observations schema"**. The resulting test
+failed against committed code, and ~25 turns went into diagnosing it. The fix, once found,
+was to re-read the same file from line 104.
+
+A partial read is indistinguishable from a complete one. Nothing marks the boundary, and
+what you missed does not announce itself — the same property that makes `| tail` dangerous,
+one level up. **Open the precedent in full before adapting it.**
+
 ## Reading the failure, not the exit code
 
 A test that fails is not yet evidence. The failure has to **name the behaviour under

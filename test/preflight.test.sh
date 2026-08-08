@@ -325,6 +325,13 @@ eq "  NO ctx -> shell capture regime"   "$(grep -q 'PIPESTATUS' "$fm" && echo ye
 eq "  and forbids status via a pipe"    "$(grep -qi 'never through a pipe' "$fm" && echo yes || echo no)" "yes"
 eq "  and does NOT mandate ctx_execute" "$(grep -q 'ctx_execute' "$fm" && echo yes || echo no)" "no"
 eq "  ctx_available false"              "$(jq -r '.tooling.ctx_available' <<<"$out")" "false"
+# Authoring rules are regime-INDEPENDENT: both were paid for on one MR, and neither
+# depends on which tools are registered. A coverage-only test has no fix to revert,
+# so the red-first check passes for free — that exemption is where the surviving
+# defects landed. A partial read of a cloned precedent fails just as silently.
+eq "  names the coverage-test case"     "$(grep -q 'coverage-only test' "$fm" && echo yes || echo no)" "yes"
+eq "  and says mutate the code"         "$(grep -q 'Mutate the code under' "$fm" && echo yes || echo no)" "yes"
+eq "  and demands the whole precedent"  "$(grep -q 'whole precedent' "$fm" && echo yes || echo no)" "yes"
 rm -rf "$r"
 
 # Same fixture, but with CMM registered in the repo's own .mcp.json.
@@ -356,6 +363,17 @@ eq "  and forbids truncating the run"   "$(grep -q 'Never truncate' "$fm" && ech
 eq "  and names the tail idiom"         "$(grep -q 'tail' "$fm" && echo yes || echo no)" "yes"
 eq "  and says nothing enforces it"     "$(grep -q 'sandbox payload' "$fm" && echo yes || echo no)" "yes"
 eq "  and drops the shell fallback"     "$(grep -q 'PIPESTATUS' "$fm" && echo yes || echo no)" "no"
+# The authoring rules must NOT be inside the ctx branch — they hold in both regimes.
+eq "  keeps the authoring rules"        "$(grep -q 'whole precedent' "$fm" && echo yes || echo no)" "yes"
+# tool-mandate.md is the LENS prompt, and this is the wall-clock rule. One `find /`
+# hung 1807s, was killed by the client timeout, took its batch's other four commands
+# with it, and cost 30 of a 45-minute round while the other five lenses sat finished.
+# The merge is barrier-joined, so one lens's stall is the round's. `-maxdepth` is not
+# the fix: the retry used `find / -maxdepth 8` and still cost 3 minutes.
+tm=$(jq -r '.tooling.mandate_path' <<<"$out")
+eq "  lens mandate bans scanning /"     "$(grep -q 'Never scan outside the repository' "$tm" && echo yes || echo no)" "yes"
+eq "  and rejects -maxdepth as the fix" "$(grep -q 'or without \`-maxdepth\`' "$tm" && echo yes || echo no)" "yes"
+eq "  and gives the resolver instead"   "$(grep -q 'require.resolve' "$tm" && echo yes || echo no)" "yes"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------
