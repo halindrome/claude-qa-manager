@@ -212,6 +212,15 @@ If no findings, output: ### No Issues Found
 
 Wait for the Agent tool to return its report before proceeding.
 
+### Where the shims run on the manager path
+
+On the default (manager) path the second-opinion shims run *inside* the manager as
+background Bash, not from the main loop. Their argv is unchanged and so are the
+per-reviewer failure semantics below — non-zero exit OR missing/empty output → record it,
+do not retry, and never read a failed shim as a zero-finding success. Only the launch site
+moves. `--double`/`--triple` do not change review routing; they add reviewers inside
+whichever path preflight selected.
+
 ### Step 3A.2 — Second-opinion review(s) (when `DOUBLE=true`)
 
 > **Sequential fallback.** On the default path the `qa-manager` subagent runs

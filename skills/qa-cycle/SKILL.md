@@ -287,10 +287,8 @@ back to sequential Step 3A regardless of `review_mode`. `DOUBLE`/`TRIPLE` do
 **not** change this routing — the manager runs the preflight-selected lens panel
 regardless; the multi-model flags only add second-opinion shims inside it.
 
-**Why a manager subagent, not the `Workflow` tool** — a clean main loop (the round's
-fan-out, merge and render noise stays in the manager's own context) and hooks that reach
-the lenses. Both verified to Agent depth 2; reviewer correctness depends on neither. See
-`references/design-notes.md`.
+**Why a manager subagent, not the `Workflow` tool** — a clean main loop, and hooks that
+reach the lenses. Reviewer correctness depends on neither: `references/design-notes.md`.
 
 So: **main spawns ONE `qa-manager` Agent** (background); the manager fans out
 the `qa-reviewer` lenses named in preflight's `lenses` array **concurrently**
@@ -356,37 +354,14 @@ it returns those as `decisions_needed`. The main loop:
   write "the operator explicitly deferred" about a deferral you had to talk them
   into: consent recorded that way is indistinguishable from consent volunteered,
   and the note is the only record anyone reads later.
-- **`--non-interactive`**: pre-answer the *defaultable* decisions without
-  prompting — `sast_wait` → defer the round (`skipped:pipeline-running`),
-  `fixes` → report-only (leave for the author), `contract_disambiguation` →
-  take the highest-confidence candidate or BLOCK if none,
-  `diminishing_returns` → surface it and **stop the cycle**, but defer NOTHING
-  and do not approve (deferral is a human decision; see Step 3E),
-  `unapprove_before_post` → just do it (revoke, then post; it needs no human
-  judgment), `post_after_fixes` → also just do it (the ordering is mechanical;
-  with `fixes` defaulted to report-only there are no trailers to append, so the
-  note posts unchanged). **`approval` is NOT defaultable** — skip it unless `--auto-approve`
-  was also passed. This is what lets a clean, non-approval round run fully
-  hands-free: the manager does everything and `decisions_needed` resolves to
-  no-op.
-
-  **Two prompts are NEVER auto-answered, because `--non-interactive` may not
-  invent a human's answer:**
-  - The **schema-change rollout ACK** (Step 3E). Under `--non-interactive`,
-    `SCHEMA_CHANGE_ACK` stays `false` and the run does not strand waiting on it:
-    record approval status `blocked: schema change rollout not acknowledged`,
-    finish the round (the note still posts), and stop before approval. Re-run
-    interactively to acknowledge. Treating silence as an ACK is exactly the
-    the schema-drift case failure mode.
-  - The **exit-3 unexpected-deletions gate**, which asks whether a
-    destructive-looking sync is intended. Under `--non-interactive`, do NOT
-    proceed on a guess — stop the round and report `sync.reason`.
-
-**Second-opinion shims (DOUBLE/TRIPLE)** run *inside* the manager as background
-Bash, keeping the same per-reviewer non-blocking failure semantics as Step 3A.2
-(non-zero exit OR missing/empty output → record, do not retry, never read a
-failed shim as a zero-finding success). Their argv is unchanged; only their
-launch site moves from main into the manager.
+- **`--non-interactive`**: pre-answer only the decisions whose default is *mechanical* —
+  it may never invent a human's answer. `approval` is not defaultable (needs
+  `--auto-approve` too), and two prompts are never answered at all: the **schema-change
+  rollout ACK** (silence is not an ACK — that is the schema-drift failure mode; record
+  `blocked: schema change rollout not acknowledged`, finish the round, stop before
+  approval) and the **exit-3 unexpected-deletions gate** (stop and report `sync.reason`;
+  never guess at a destructive sync). Per-decision policy:
+  `references/non-interactive.md`.
 
 **What main does with the verdict** (the manager's own contract — merge rules, lens
 failure handling, the verdict schema — lives in `agents/qa-manager.md`; do not restate
@@ -408,8 +383,8 @@ it here):
   human's, because the attribution cannot tell a wrong premise from a sloppy fix.
 
 **Never manage round cost by downgrading the model** — a cheaper reviewer is a weaker
-reviewer, which defeats the cycle. The levers are panel width (narrow a target's
-`lens_tags`) and the trivial-MR gate. Cost analysis: `references/design-notes.md`.
+reviewer, which defeats the cycle. The levers are panel width (`lens_tags`) and the
+trivial-MR gate. Why the panel is not N× a serialized review: `references/design-notes.md`.
 
 
 ## Step 3A / 3A.2 / 3A.3 — sequential fallback and extra reviewers
