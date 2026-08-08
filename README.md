@@ -37,7 +37,7 @@ plugin is designed to let it say so.
 
 ## Status
 
-**v0.1.0 — early.** Extracted from a private implementation that has run hundreds of real
+**v0.2.0 — early.** Extracted from a private implementation that has run hundreds of real
 review rounds, then generalised. The design is battle-tested; this packaging is new.
 
 ## Requirements

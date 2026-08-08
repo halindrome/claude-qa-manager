@@ -10,15 +10,34 @@ already made (with reasons) so they are not relitigated.
 ## Run everything before you claim anything
 
 ```bash
-bash test/preflight.test.sh          # 160 passed / 0 failed
-bash test/init.test.sh               #  21 passed / 0 failed
+bash test/preflight.test.sh          # 346 passed / 0 failed
+bash test/init.test.sh               #  32 passed / 0 failed
 bash test/no-private-identifiers.sh  # must print ok
 claude plugin validate .
 claude --plugin-dir . plugin details claude-qa-manager   # inventory + token cost
 ```
 
 `--plugin-dir` loads the plugin for one session only, so you can test without installing.
-Nothing here has ever needed `claude plugin install`.
+
+**But testing is not deploying, and this is the trap.** The plugin IS installed at user
+scope from a `directory`-source marketplace (`halindrome` → this repo). That install is a
+COPY into `~/.config/claude-code/plugins/cache/halindrome/claude-qa-manager/<version>/`,
+taken at install time — it does not track the working tree, and it does not track `git`.
+So `--plugin-dir .` can be green on a change that no real `/qa-cycle` run has ever loaded.
+It happened: the cache sat at the Aug 1 commit while a week of work accumulated
+uncommitted, and every QA cycle in that week ran the Aug 1 plugin.
+
+**The cache keys on the version in `.claude-plugin/plugin.json`.** Editing files without
+bumping it means `claude plugin update` no-ops and leaves the stale copy in place — an
+absent update reporting as a successful one, which is invariant 2 in a different costume.
+So: bump the version in all four sites (`plugin.json`, both entries in `marketplace.json`,
+the `README.md` status line), reinstall, then **verify the deployed copy**, not the source:
+
+```bash
+ls  ~/.config/claude-code/plugins/cache/halindrome/claude-qa-manager/*/skills/qa-cycle/references/
+jq -r '."claude-qa-manager@halindrome"[0] | .version, .installPath, .gitCommitSha' \
+   ~/.config/claude-code/plugins/installed_plugins.json
+```
 
 ## Hard invariants
 

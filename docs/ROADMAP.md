@@ -140,8 +140,11 @@ and `forge` / `forge_cli` added.
   found or not executable"), not silently, but they are documented in
   `references/sequential-and-multimodel.md` as if they work. Either migrate
   `gemma-reviewer.sh` (it holds the actual chat-completions logic both shims delegate to)
-  or delete both shims and the docs that reference them. **Do not ship 0.1.0 with this
-  unresolved** — it is a documented feature that is guaranteed to fail on first use.
+  or delete both shims and the docs that reference them. **Do not publish ANY version with
+  this unresolved** — it is a documented feature that is guaranteed to fail on first use.
+  This gate is about publishing, not about the version string: it was once worded "do not
+  ship 0.1.0", which a routine bump to 0.2.0 would have satisfied without fixing anything.
+  Local installs from the directory-source marketplace are not publishing and are not gated.
 - **The two second-opinion READMEs were not migrated** (`qwen-reviewer.README.md`,
   `gemma-reviewer.README.md` in the source tree). Nothing links to them, so there is no
   dangling reference — but `--reviewer=qwen-local` is documented in
