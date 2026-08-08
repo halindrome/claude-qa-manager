@@ -90,7 +90,41 @@ path for non-schema MRs.
 
 - `QA_TOKEN_OK=true` (the QA agent token resolved and verified in Step 0.25).
 - If `SCHEMA_CHANGE_DETECTED=true`, then BOTH `SCHEMA_CHANGE_ACK=true` AND `SCHEMA_HUMAN_APPROVED=true` (a human — neither the MR author nor the QA agent — has already approved on GitLab; see the schema-change gate above). For non-schema MRs (`SCHEMA_CHANGE_DETECTED=false`), **no** human GitLab approval is required — QA-agent-alone approval after a clean round is the sanctioned path.
+- **CI on the exact commit being approved has finished and passed.** See the CI gate below. A round's own fix commit is usually the head, and it is normally minutes old.
 - The current round is **clean** — no confirmed critical or major findings (hypothetical/minor are OK) — **OR** the deferred-findings exit below applies.
+
+  **CI gate.** Probe the forge **live**, at approval time:
+
+  ```bash
+  . "${CLAUDE_PLUGIN_ROOT}/lib/forge.sh"
+  forge_init "$(git remote get-url "$REMOTE")" "${CLAUDE_PLUGIN_ROOT}/lib"
+  read -r CI_STATE CI_SHA <<<"$(forge_head_ci "$PROJECT" "$MR_NUMBER" "$QA_TOKEN")" \
+    || { CI_STATE=unknown; CI_SHA=; }
+  HEAD_SHA=$(cd "$TARGET_PATH" && git rev-parse HEAD)
+  ```
+
+  Approve only when `CI_STATE=success` **and** `CI_SHA` matches `HEAD_SHA`. Every other
+  answer blocks, and the round note records which:
+
+  | `CI_STATE` | Action |
+  |---|---|
+  | `success` + sha match | gate satisfied |
+  | `running` | **wait**, then re-probe. Do not approve, and do not "approve pending CI". |
+  | `failed` | do not approve. Fix it — this round put the commit there. |
+  | `none` | no CI exists for this MR. Record `ci: none-found`; that is a finding about the project, **never** a pass. |
+  | `unknown`, probe failed, or sha mismatch | do not approve. A sha mismatch means CI ran on different code, which is worse than no answer. |
+
+  **Why live, and why the sha.** `preflight.json .pipeline_status` describes the head as it
+  was *before* this round's fix commit existed, so consuming it here certifies a commit no
+  CI ever saw. The observed failure: a round approved at 20:19:57 while the pipeline for
+  its own fix commit — started 20:11:29 — was still running, resting the approval on a
+  local suite run. The same repo had already had CI go red on a QA fix commit because the
+  local run covered 5 of N suites.
+
+  This gate reads the **blocking** outcome only. On GitLab that is `head_pipeline.status`,
+  which reports `success` when only `allow_failure: true` jobs fail — deliberate, so that
+  advisory scans do not hold approval, consistent with `skipped:pipeline-running` being an
+  accepted SAST state below.
 
   **Deferred-findings exit.** When `qa_agent.approval.allow_deferred_findings_exit` is true, a round with open confirmed critical/major findings is still approval-eligible if BOTH hold:
 

@@ -105,6 +105,39 @@ forge_approvers() {
     | .[] | select(.state == "APPROVED") | .user.login' 2>/dev/null | sort -u
 }
 
+# forge_head_ci <slug> <n> [token] -> "<state> <sha>"
+#
+# state is one of: success | failed | running | none | unknown
+# Contract and rationale: see the twin in forge-gitlab.sh. Probe LIVE at approval
+# time — preflight's pipeline_status describes the head BEFORE this round's fix
+# commit and would certify a commit no CI ever saw.
+#
+# GitHub has no single "blocking outcome" field, so it is derived. The order is
+# load-bearing: a failure anywhere outranks anything still in flight, and pending
+# outranks success, so a rollup that is half-green never reports `success`.
+# NEUTRAL and SKIPPED are NOT failures — they are how a conditional workflow
+# reports "did not apply", and treating them as red would block approval on every
+# path-filtered job. Unlike GitLab there is no allow_failure equivalent in the
+# rollup, so an advisory check that reports FAILURE will hold approval; that is
+# the safe direction, and the operator can act on it.
+forge_head_ci() {
+  local slug="$1" n="$2" token="${3:-}" raw sha rollup
+  raw=$(_gh "$token" api "repos/${slug}/pulls/${n}" 2>/dev/null) || return 1
+  sha=$(printf '%s' "$raw" | jq -r '.head.sha // ""' 2>/dev/null) || return 1
+  [ -n "$sha" ] || return 1
+  rollup=$(_gh "$token" api "repos/${slug}/commits/${sha}/check-runs?per_page=100" 2>/dev/null) || return 1
+  printf '%s %s\n' "$(printf '%s' "$rollup" | jq -r '
+    [ .check_runs[]? | { s: (.status // ""), c: (.conclusion // "") } ] as $r
+    | if   ($r | length) == 0                                              then "none"
+      elif ($r | map(select(.c=="failure" or .c=="timed_out"
+                         or .c=="cancelled" or .c=="action_required"))
+               | length) > 0                                              then "failed"
+      elif ($r | map(select(.s!="completed")) | length) > 0               then "running"
+      elif ($r | map(select(.c=="success" or .c=="neutral" or .c=="skipped"))
+               | length) == ($r | length)                                 then "success"
+      else "unknown" end' 2>/dev/null || echo unknown)" "$sha"
+}
+
 # forge_notes <slug> <n> [token] -> JSON array of {body: "..."}
 #
 # ISSUE comments, not PULL comments: a PR's conversation-tab comments live on

@@ -338,6 +338,12 @@ it returns those as `decisions_needed`. The main loop:
   note — that is what makes the Step 3E deferred-findings exit available. Do not
   silently continue to another round when this decision is raised; the panel
   judging its own output worthless is a result, not noise.
+  **Put the case once, then take the answer.** Ending the cycle and deferring a
+  finding are the operator's calls, exactly as `qa_introduced_blocking` is
+  report-only. If they want another round, run it — do not re-argue, and never
+  write "the operator explicitly deferred" about a deferral you had to talk them
+  into: consent recorded that way is indistinguishable from consent volunteered,
+  and the note is the only record anyone reads later.
 - **`--non-interactive`**: pre-answer the *defaultable* decisions without
   prompting — `sast_wait` → defer the round (`skipped:pipeline-running`),
   `fixes` → report-only (leave for the author), `contract_disambiguation` →
@@ -636,6 +642,11 @@ Approve only when ALL hold:
 - the round is **clean** (no confirmed critical/major) **OR** the deferred-findings exit
   applies;
 - `round >= min_clean_round`, **OR** the tiny-diff relax matched;
+- **CI has finished and passed on the exact commit you are approving** — probe the forge
+  live with `forge_head_ci` and check its sha against `HEAD`. `preflight.json
+  .pipeline_status` predates this round's fix commit, so using it certifies code no CI saw;
+  a round once approved while its own fix commit's pipeline was still running. `running`
+  means wait, `none` means say so — neither is a pass;
 - if `SCHEMA_CHANGE_DETECTED=true`: a human (neither author nor QA agent) has already
   approved on GitLab **and** the rollout checklist was acknowledged. No flag relaxes this.
 

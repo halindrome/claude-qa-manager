@@ -95,6 +95,46 @@ forge_approvers() {
   printf '%s' "$out" | awk 'NF' | sort -u
 }
 
+# forge_head_ci <slug> <n> [token] -> "<state> <sha>"
+#
+# state is one of: success | failed | running | none | unknown
+#
+# WHY THIS EXISTS. Step 3E approved an MR while the pipeline for the very commit
+# being approved was still running; the approval rested on a local suite run.
+# That is not hypothetical — an earlier cycle in the same repo had CI go red on a
+# QA fix commit because the local run covered 5 of N suites.
+#
+# The probe is LIVE and belongs at approval time, NOT in preflight.
+# `preflight.json .pipeline_status` describes the head as it was BEFORE this
+# round's fix commit existed, so consuming it here would gate on a pipeline for
+# different code and report a pass for a commit no CI ever saw. The sha is
+# returned so the caller can assert it matches the commit it is approving.
+#
+# `head_pipeline.status` is already the BLOCKING outcome: GitLab reports success
+# when only `allow_failure: true` jobs fail. That matters here — this project's
+# four security jobs are all allow_failure, and gating on raw job results would
+# block approval on advisory scans, contradicting the deliberate decision that
+# `skipped:pipeline-running` is an acceptable SAST state.
+#
+# `canceled` maps to unknown, not failed: it carries no verdict, and the caller
+# must not approve on it either way. A project with no CI at all yields `none`,
+# which the caller must REPORT rather than silently treat as a pass.
+forge_head_ci() {
+  local enc; enc=$(forge_project_enc "$1")
+  local n="$2" token="${3:-}" raw st sha
+  raw=$(_glab "$token" api "projects/${enc}/merge_requests/${n}" 2>/dev/null) || return 1
+  st=$(printf '%s' "$raw"  | jq -r '.head_pipeline.status // "none"' 2>/dev/null) || return 1
+  sha=$(printf '%s' "$raw" | jq -r '.head_pipeline.sha // .sha // ""' 2>/dev/null) || return 1
+  case "$st" in
+    success)                                              st=success ;;
+    failed)                                               st=failed  ;;
+    created|waiting_for_resource|preparing|pending|running|scheduled|manual) st=running ;;
+    none|null|"")                                         st=none    ;;
+    *)                                                    st=unknown ;;
+  esac
+  printf '%s %s\n' "$st" "$sha"
+}
+
 # forge_notes <slug> <n> [token] -> JSON array of {body: "..."}
 forge_notes() {
   local enc; enc=$(forge_project_enc "$1")

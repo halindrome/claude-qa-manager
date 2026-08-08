@@ -937,6 +937,68 @@ forge_guard_case() { # $1 forge, $2 cli, $3 remote url
 forge_guard_case gitlab glab 'git@gitlab.com:grp/proj.git'
 forge_guard_case github gh   'git@github.com:grp/proj.git'
 
+# ---------------------------------------------------------------------------
+echo "[forge_head_ci — the CI gate Step 3E approves behind]"
+# A round once approved an MR while the pipeline for its OWN fix commit was still
+# running, resting the approval on a local suite run — in a repo that had already
+# had CI go red on a QA fix commit because the local run covered 5 of N suites.
+# preflight's .pipeline_status cannot close that: it describes the head BEFORE the
+# fix commit exists. So this probe is live, and it returns the SHA so the caller
+# can prove CI ran on the code being approved.
+#
+# Each stub emits its forge's NATIVE payload, never the normalized answer — the
+# mapping under test is exactly what a normalized stub would hide (see this file's
+# header). `running` and `none` are asserted as distinct from both success and
+# failure: collapsing either into a pass is the absent-check-reports-clean defect.
+head_ci_case() { # $1 forge, $2 cli, $3 url, $4 stub-case-body, $5 want-state, $6 want-sha
+  local d; d=$(mktemp -d)
+  { echo '#!/usr/bin/env bash'; echo 'case "$*" in'; echo "$4"; echo '*) echo "{}" ;;'
+    echo 'esac'; echo 'exit 0'; } > "$d/$2"
+  chmod +x "$d/$2"
+  local got
+  got=$(QA_FORGE="$1" PATH="$d:$PATH" bash -c '
+    set -u
+    . "$1/lib/forge.sh"
+    forge_init "$2" "$1/lib" || exit 90
+    forge_head_ci grp/proj 73 tok
+  ' _ "$REPO_SRC" "$3" 2>/dev/null)
+  eq "$1/$5" "$got" "$5 $6"
+  rm -rf "$d"
+}
+# GitLab: head_pipeline.status IS the blocking outcome — it reports success when
+# only allow_failure jobs fail, which is why this gate does not read job results.
+_gl() { printf '*"merge_requests/73"*) jq -nc %s ;;' "'{head_pipeline:{status:\"$1\",sha:\"cafe123\"},sha:\"cafe123\"}'"; }
+head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl success)" success cafe123
+head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl failed)"  failed  cafe123
+head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl running)" running cafe123
+head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl pending)" running cafe123
+# `canceled` carries no verdict: it must not read as pass OR as a fixable failure.
+head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl canceled)" unknown cafe123
+# No pipeline at all -> `none`, which the caller must REPORT, never treat as clean.
+head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' \
+  '*"merge_requests/73"*) echo "{\"sha\":\"cafe123\"}" ;;' none cafe123
+
+# GitHub: no single blocking field, so it is derived — and the precedence is the
+# assertion. failure outranks in-flight; in-flight outranks success; NEUTRAL and
+# SKIPPED are how a path-filtered workflow says "did not apply" and are NOT red.
+_ghp() { printf '*"pulls/73"*) echo %s ;; *check-runs*) echo %s ;;' \
+  "'{\"head\":{\"sha\":\"cafe123\"}}'" "'{\"check_runs\":$1}'"; }
+head_ci_case github gh 'git@github.com:grp/proj.git' \
+  "$(_ghp '[{"status":"completed","conclusion":"success"}]')" success cafe123
+head_ci_case github gh 'git@github.com:grp/proj.git' \
+  "$(_ghp '[{"status":"completed","conclusion":"failure"}]')" failed cafe123
+head_ci_case github gh 'git@github.com:grp/proj.git' \
+  "$(_ghp '[{"status":"in_progress","conclusion":null}]')" running cafe123
+# Half-green must never report success: one pending among passes is still running.
+head_ci_case github gh 'git@github.com:grp/proj.git' \
+  "$(_ghp '[{"status":"completed","conclusion":"success"},{"status":"queued","conclusion":null}]')" running cafe123
+# ...and one failure among pending is FAILED, not running — red outranks in-flight.
+head_ci_case github gh 'git@github.com:grp/proj.git' \
+  "$(_ghp '[{"status":"queued","conclusion":null},{"status":"completed","conclusion":"failure"}]')" failed cafe123
+head_ci_case github gh 'git@github.com:grp/proj.git' \
+  "$(_ghp '[{"status":"completed","conclusion":"skipped"},{"status":"completed","conclusion":"neutral"}]')" success cafe123
+head_ci_case github gh 'git@github.com:grp/proj.git' "$(_ghp '[]')" none cafe123
+
 # Non-vacuity: with a token present the same calls MUST reach the CLI. Without
 # this, a guard that refused unconditionally would pass every assertion above.
 d=$(mktemp -d); log="$d/calls"
