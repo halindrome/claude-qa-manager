@@ -313,10 +313,17 @@ made every finding of a round read as "not ours" when all 8 were.
 
 ### 4. Render the round note
 
-Write the full round-note markdown to `$qa_scratch/note-round<round>.md` in the
-skill's Step 3C format: Contract Verification table, `### Finding N` blocks for
-`relevance != observation`, a Summary table, an `## Observations` section, the
-SAST section (verbatim tail of `sast_path`), and the QA footer described below.
+Write the full round-note markdown to `$qa_scratch/note-round<round>.md`: Contract
+Verification table, `### Finding N` blocks for `relevance != observation`, a Summary
+table, an `## Observations` section, the SAST section (verbatim tail of `sast_path`),
+and the QA footer described below.
+
+**Read `skills/qa-cycle/references/round-note.md` for the exact body template** — it is
+the single source of truth for the format on BOTH paths (you render it here; main renders
+it on the sequential path and when it resolves `post_after_fixes`). Read it rather than
+reproducing the shape from this summary: the next round parses the note it finds, so a
+format that drifts between the two renderers breaks round derivation and fix attribution
+for whichever path did not change.
 
 **Self-inflicted findings are marked, and called out at two or more.** Every finding
 with `qa_introduced:true` carries the marker `↩ on code QA round <N> introduced` in

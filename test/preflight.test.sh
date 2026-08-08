@@ -620,7 +620,20 @@ eq "no trailer -> empty array"     "$(jq -c '.qa_fix_commits' <<<"$out")" "[]"
 two='[{"body":"## QA Round 1\nx\nQA-Fix-Commit: 953e24ea5c4b\ny\nQA-Fix-Commit: 9880c49cdead\n"}]'
 out=$(GLAB_STUB_NOTES="$two" run_preflight "$r" 73 mono); note_scratch "$out"
 eq "two trailers in one note -> both" "$(jq -r '.qa_fix_commits|sort|join(",")' <<<"$out")" "953e24ea5c4b,9880c49cdead"
-eq "  and the spine says one per commit" "$(grep -c 'ONE LINE PER COMMIT' "$REPO_SRC/skills/qa-cycle/SKILL.md")" "1"
+# The WRITER-side rule must exist somewhere a renderer will read, but which file
+# that is has already moved once (the note template left the spine for
+# references/round-note.md). Pin the rule, not its address — the same reasoning
+# the SAST whitelist check uses. Searching only SKILL.md would fail on a pure
+# relocation and, worse, would pass if the rule were deleted from the reference
+# while a stale copy lingered in the spine.
+eq "  and the skill tree says one per commit" \
+  "$(cat "$REPO_SRC/skills/qa-cycle/SKILL.md" "$REPO_SRC"/skills/qa-cycle/references/*.md 2>/dev/null \
+     | grep -c 'ONE LINE PER COMMIT')" "1"
+# ...and the manager, which renders the note on the default path, must be pointed at
+# whichever file holds it. A format that drifts between the two renderers breaks the
+# next round's derivation for whichever path did not change.
+eq "  and the manager is pointed at the template" \
+  "$(grep -c 'references/round-note\.md' "$REPO_SRC/agents/qa-manager.md")" "1"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------
