@@ -3,12 +3,16 @@
 #
 # Usage:  attribute-findings.sh <repo-dir> <fix-commits-json> < findings.json
 #           <fix-commits-json>  JSON array of SHAs, e.g. '["abc1234","def5678"]'
-#           stdin               JSON array of findings, each with .file and
-#                               .line_low (.line_high optional)
+#           stdin               JSON array of findings, each with .area_file
+#                               (the lens schema's name; .file also accepted)
+#                               and .line_low (.line_high optional)
 # Output: the same array on stdout, each finding gaining
 #           .qa_introduced        true|false
 #           .qa_introduced_commit <sha>   (only when true)
-#         plus, on stderr, nothing. Callers read .qa_introduced.
+#         plus, on stderr, a count of findings whose location could not be read
+#         at all — see the note above that warning. Callers read .qa_introduced,
+#         and must NOT report an all-false result as clean when that count is the
+#         whole batch.
 #
 # WHY BLAME AND NOT A LINE-RANGE COMPARISON. The obvious implementation — record
 # the line ranges each fix commit touched, then check whether a later finding
@@ -55,9 +59,19 @@ blame_sha() {  # $1 = file, $2 = line -> full SHA of the commit that last touche
     | head -1 | awk '{print $1}'
 }
 
-out='[]'
+out='[]'; total=0; unresolved=0
 while IFS= read -r finding; do
-  file=$(jq -r '.file // ""'                     <<<"$finding")
+  total=$((total + 1))
+  # BOTH names, and `area_file` FIRST: the lens findings schema
+  # (agents/qa-reviewer.md, agents/qa-manager.md §3.5) calls the location
+  # `area_file`, while this script's own usage header said `.file`. Reading only
+  # `.file` meant that piped the DOCUMENTED way — reviewer findings straight in —
+  # the guard below was never true and every finding came back
+  # `qa_introduced=false`. Measured on observability-stack !14 round 2: 8 of 8
+  # findings sat on code an earlier round of the same cycle wrote; this reported
+  # none of them. Accepting both rather than renaming the schema keeps any caller
+  # already passing `.file` working.
+  file=$(jq -r '.area_file // .file // ""'       <<<"$finding")
   line=$(jq -r '.line_low // .line // "" | tostring' <<<"$finding")
   hit=""
   if [ -n "$file" ] && [ -n "$line" ] && [ "$line" != "null" ] && [ -f "$REPO/$file" ]; then
@@ -65,6 +79,8 @@ while IFS= read -r finding; do
     if [ -n "$b" ]; then
       for f in $FULL; do [ "$f" = "$b" ] && { hit="$b"; break; }; done
     fi
+  else
+    unresolved=$((unresolved + 1))
   fi
   if [ -n "$hit" ]; then
     finding=$(jq -c --arg s "$hit" '.qa_introduced = true | .qa_introduced_commit = $s' <<<"$finding")
@@ -74,4 +90,12 @@ while IFS= read -r finding; do
   out=$(jq -c --argjson f "$finding" '. + [$f]' <<<"$out")
 done < <(jq -c '.[]' <<<"$FINDINGS" 2>/dev/null)
 
+# An unblameable location and "blamed, not ours" both emit qa_introduced=false,
+# so a total field-name/shape mismatch is otherwise indistinguishable from the
+# good news "no finding sits on our own fixes" — which is exactly how the
+# area_file bug survived a whole round. Say so on stderr; the caller reports it
+# rather than reading the all-false result as verified clean.
+if [ "$unresolved" -gt 0 ]; then
+  echo "attribute-findings: $unresolved of $total findings had no usable <file,line> (expected .area_file or .file plus .line_low); their qa_introduced=false means NOT CHECKED, not clean." >&2
+fi
 printf '%s\n' "$out"

@@ -1122,47 +1122,9 @@ CTX_AVAILABLE=false; _probe_registered "context-mode"        && CTX_AVAILABLE=tr
 
 MANDATE_FILE="$QA_SCRATCH/tool-mandate.md"
 : > "$MANDATE_FILE"   # default: empty => spawn prompts inject nothing (silent Read/grep fallback)
-if [ "$CMM_AVAILABLE" = "true" ] || [ "$CTX_AVAILABLE" = "true" ]; then
-  {
-    echo "**Code navigation — MANDATORY. The tools below ARE available in your"
-    echo "session; use them for all code work. Do NOT default to Read + grep.**"
-    echo
-    if [ "$CMM_AVAILABLE" = "true" ]; then
-      echo "- \`search_graph\` (name_pattern=…) — find a function/method/class/module by"
-      echo "  name; this is how you locate a definition. NEVER grep to check a symbol exists."
-      echo "- \`get_code_snippet\` (qualified_name=…) — fetch a symbol's exact source instead"
-      echo "  of opening and scrolling the whole file."
-      echo "- \`trace_path\` (function_name=…) — who-calls-X / what-X-calls; use it for the"
-      echo "  downstream-consumer and caller checks. Do NOT grep for callers."
-      echo "- \`search_code\` (pattern=…) — text search over source (string literals, error"
-      echo "  messages, TODOs) instead of a Bash \`grep\`."
-      echo "- \`get_architecture\` — orient in an unfamiliar package first."
-      echo "  Orient in order: get_architecture → search_graph → get_code_snippet. Every"
-      echo "  symbol-existence / definition-site claim MUST be confirmed via get_code_snippet"
-      echo "  or search_graph — a grep match is not proof a symbol exists."
-    fi
-    if [ "$CTX_AVAILABLE" = "true" ]; then
-      echo "- \`ctx_execute\` / \`ctx_batch_execute\` — run \`git diff\`/\`git log\`, read large"
-      echo "  files, and capture command/test output through these so the raw bytes stay out"
-      echo "  of your context; only your derived findings return. Use \`ctx_search\` first to"
-      echo "  reuse anything already captured this session."
-    fi
-    echo
-    # Without this, a lens calls search_graph, gets "no such tool" because MCP
-    # tools are DEFERRED until fetched, and silently falls back to reading files.
-    # Observed: three of six lenses on one round lost CMM this way while the other
-    # three, which happened to fetch first, kept it. The mandate named the tools
-    # but never said how to obtain them.
-    echo "**These tools may be DEFERRED** — not yet in your schema, so calling one"
-    echo "directly can fail with \"no such tool\". That is NOT evidence the tool is"
-    echo "unavailable. Load them FIRST with a single ToolSearch call, e.g."
-    echo "\`ToolSearch(query=\"select:search_graph,get_code_snippet,trace_path,get_architecture,search_code\")\`,"
-    echo "and only then use them. Batch every tool you expect to need into ONE call."
-    echo
-    echo "Fall back to Read/grep only after a tool call fails on a tool you have"
-    echo "actually loaded."
-  } > "$MANDATE_FILE"
-fi
+# Written further down, once REVIEW_MODE is known — see "Tool mandate" below.
+# _probe_registered answers "is this MCP server INSTALLED", which is NOT the same
+# question as "can the reviewer REACH it", and the two diverge on the manager path.
 
 # ---------------------------------------------------------------------------
 # Fix mandate -> $QA_SCRATCH/fix-mandate.md  (consumed ONLY by Step 3B)
@@ -1224,6 +1186,38 @@ FIX_MANDATE_FILE="$QA_SCRATCH/fix-mandate.md"
     echo "3. **Do not claim the sweep was exhaustive.** Report reconciliation as best-effort in the"
     echo "   round note, so a missed sibling site reads as a known limit and not as a clean pass."
   fi
+  # -- Test-run capture -----------------------------------------------------
+  # Step 3B is the ONLY participant that authors tests and runs the suite, and it
+  # was the only one with no context-mode guidance: tool-mandate.md (lens prompts)
+  # branches on CTX_AVAILABLE, this file did not. Measured across five cycles, the
+  # dominant test defect is not a wrong assertion but a wrong HARNESS, and the
+  # single worst instance is an exit status read off `| tail` instead of the
+  # command under test -- a negative control that passes for free. That idiom is
+  # blocked in plain Bash by the enforcer hook but is only ADVISORY inside a
+  # ctx_execute payload, which is exactly where the fix step runs suites: one
+  # session showed 11 truncating payloads against 1 truncating Bash call.
+  echo
+  echo "**Capturing a test run.**"
+  echo
+  if [ "$CTX_AVAILABLE" = "true" ]; then
+    echo "Context Mode IS available. Run the suite through \`ctx_execute\` /"
+    echo "\`ctx_batch_execute\` and interrogate the result with \`ctx_search\`. The full"
+    echo "output is indexed, so you can re-read a failure WITHOUT re-running the suite —"
+    echo "on a slow suite that is most of what a debug round costs."
+    echo
+    echo "**Never truncate the run.** No \`| tail\`, \`| head\`, \`| grep -m\`, or \`sed -n\`"
+    echo "in the payload. Bytes dropped before capture are gone and unsearchable, and a"
+    echo "pipe REPLACES the exit status of the command under test with the filter's — so a"
+    echo "negative control reports success having proved nothing. Nothing enforces this"
+    echo "inside a sandbox payload; it is on you. Filter in code after capture, not in the"
+    echo "pipeline."
+  else
+    echo "Context Mode is NOT registered in this session. Run the suite in the shell, and"
+    echo "take the exit status from the command under test — never through a pipe. \`cmd |"
+    echo "tail\` reports \`tail\`'s status, so a negative control passes for free and proves"
+    echo "nothing. Use no pipe, or \`\${PIPESTATUS[0]}\`. Write the run to a file and read"
+    echo "the file if the output is large."
+  fi
 } > "$FIX_MANDATE_FILE"
 
 # ---------------------------------------------------------------------------
@@ -1261,6 +1255,126 @@ fi
 # is the routing DEFAULT, not an absolute guarantee.
 REVIEW_MODE="manager"
 [ "$TOTAL" -le "$SEQ_MAX" ] && REVIEW_MODE="sequential"
+
+# ---------------------------------------------------------------------------
+# Tool mandate -> $QA_SCRATCH/tool-mandate.md  (injected into every lens prompt)
+#
+# A SUBAGENT CAN REACH THESE — the thing that once blocked it was a tool GRANT,
+# not the subagent boundary. `agents/qa-reviewer.md` used to declare
+# `tools: [Read, Grep, Glob, Bash, ToolSearch, mcp__*]`, and the `mcp__*` wildcard
+# matched NOTHING because MCP tools are deferred rather than concretely loaded —
+# so the lens came up with no MCP tools at all and `ToolSearch` answered "No
+# matching deferred tools found". That looked exactly like a platform limit and
+# was briefly documented as one here. Deleting the grant fixed it: on the next
+# round every lens loaded ctx_* via ToolSearch and made 5-14 real calls, and four
+# lenses resolved the CMM schemas too — all of them on the MANAGER path, i.e. as
+# subagents. Agents with no `tools:` key (qa-manager, pr-qa-reviewer) never had
+# the problem. Do not re-add a restrictive `tools:` list to a reviewer.
+#
+# So the mandate does NOT branch on review_mode: reachability is the same on both
+# paths. It stays rendered here, after REVIEW_MODE is set, only because nothing
+# needs it earlier.
+#
+# What is still true, and why the disclosure line at the end is not optional:
+# `_probe_registered` answers "is this MCP server INSTALLED", which is not the
+# same question as "did the reviewer use it". Only the lens can answer that, so
+# it is required to say. Invariant #2 — an absent check must never report as a
+# pass — applies to the navigation regime as much as to any gate.
+CMM_PROJECT=""
+if [ "$CMM_AVAILABLE" = "true" ] && [ -n "$REPO_ROOT" ]; then
+  # CMM derives a project name from the indexed path: leading slash dropped, path
+  # separators become dashes (/Users/x/Sources/repo -> Users-x-Sources-repo). Use
+  # REPO_ROOT, which is the SUPERPROJECT root (line ~89) — CMM's monorepo rule is
+  # to index the root, and a subtree index produces a name that will not match.
+  CMM_PROJECT="${REPO_ROOT#/}"; CMM_PROJECT="${CMM_PROJECT//\//-}"
+fi
+if [ "$CMM_AVAILABLE" = "true" ] || [ "$CTX_AVAILABLE" = "true" ]; then
+  {
+    echo "**Code navigation — MANDATORY. The tools below ARE available in your"
+    echo "session; use them for all code work. Do NOT default to Read + grep.**"
+    echo
+    if [ "$CMM_AVAILABLE" = "true" ]; then
+      echo "- \`search_graph\` (name_pattern=…) — find a function/method/class/module by"
+      echo "  name; this is how you locate a definition. NEVER grep to check a symbol exists."
+      echo "- \`get_code_snippet\` (qualified_name=…) — fetch a symbol's exact source instead"
+      echo "  of opening and scrolling the whole file."
+      echo "- \`trace_path\` (function_name=…) — who-calls-X / what-X-calls; use it for the"
+      echo "  downstream-consumer and caller checks. Do NOT grep for callers."
+      echo "- \`search_code\` (pattern=…) — text search over source (string literals, error"
+      echo "  messages, TODOs) instead of a Bash \`grep\`."
+      echo "- \`get_architecture\` — orient in an unfamiliar package first."
+      echo "  Orient in order: get_architecture → search_graph → get_code_snippet."
+      echo "  Every symbol-existence / definition-site claim MUST be confirmed via"
+      echo "  get_code_snippet or search_graph — a grep match is not proof a symbol exists."
+      echo "  If you end up without the graph, that rule does not lapse: open the"
+      echo "  definition site with Read and cite it, rather than citing the grep hit."
+    fi
+    if [ "$CTX_AVAILABLE" = "true" ]; then
+      echo "- \`ctx_execute\` / \`ctx_batch_execute\` — run \`git diff\`/\`git log\`, read large"
+      echo "  files, and capture command/test output through these so the raw bytes stay out"
+      echo "  of your context; only your derived findings return. Use \`ctx_search\` first to"
+      echo "  reuse anything already captured this session."
+    fi
+    echo
+    # Without this, a reviewer calls search_graph, gets "no such tool" because
+    # MCP tools are DEFERRED until fetched, and silently falls back to reading
+    # files. Observed: three of six lenses on one round lost CMM this way while
+    # the other three, which happened to fetch first, kept it. The mandate named
+    # the tools but never said how to obtain them.
+    echo "**These tools are DEFERRED** — not yet in your schema, so calling one"
+    echo "directly fails with \"no such tool\". That is NOT evidence the tool is"
+    echo "unavailable. Load them FIRST with a single ToolSearch call, e.g."
+    echo "\`ToolSearch(query=\"select:search_graph,get_code_snippet,trace_path,get_architecture,search_code\")\`,"
+    echo "and only then use them. Batch every tool you expect to need into ONE call."
+    echo
+    echo "**If they do not load, that is a LENS FAILURE, not a fallback.** Preflight"
+    echo "verified these are registered before this round started, and the environment"
+    echo "does not change mid-round. So a ToolSearch that comes back empty means"
+    echo "something is wrong that a weaker review would only hide: STOP, report"
+    echo "\`tool_unavailable\` with the exact error, and do NOT return findings gathered"
+    echo "by Read+grep instead. A round that silently substituted a weaker instrument"
+    echo "is the same defect class as a gate that reports clean because it never ran."
+    echo
+    echo "This is NOT about whether you end up needing every tool. Loading them and"
+    echo "then judging the graph unnecessary for a two-file diff is a correct call —"
+    echo "say so in the line below. Failing to load them at all is the failure."
+    echo
+    if [ "$CMM_AVAILABLE" = "true" ]; then
+      # The graph tools take a project argument, and a lens that cannot name the
+      # project abandons them. Measured: on one round every lens RESOLVED the CMM
+      # schemas via ToolSearch and then made zero graph calls, one saying outright
+      # that the tools "require a project argument" it did not have. Resolving the
+      # schema is not the last mile — naming the project is.
+      echo "**CMM project for this repo: \`${CMM_PROJECT}\`** — pass it as the"
+      echo "\`project\` argument. It is derived from the repo root, so it is the"
+      echo "MONOREPO root index and already covers every subdirectory; do not index"
+      echo "a subtree. If it does not resolve, call \`list_projects\` and take the"
+      echo "entry whose path is an ANCESTOR of this repo — never a substring match."
+      echo
+    fi
+    # The disclosure is the actual guard. Every degradation here is SILENT — the
+    # lens still returns well-formed findings — so without a required line the
+    # orchestrator cannot tell a graph-verified review from a grep-and-hope one.
+    # A whole round's six lenses degraded unnoticed for exactly this reason.
+    #
+    # The vocabulary is split finer than "did you use the tools" on purpose: the
+    # first round after the fix, every lens reported `read-grep-fallback` while
+    # making 5-14 real ctx_* calls, because one bucket covered both "used ctx,
+    # skipped the graph" and "had nothing". That reads as a failure when it was a
+    # partial success, and it hides which half actually degraded.
+    echo "**REQUIRED — end your report with this line, filled in honestly:**"
+    echo "\`Navigation: <cmm+ctx|cmm|ctx|read-grep-fallback> — <what you attempted, and why anything was skipped>\`"
+    echo "Rules for that line, because it is evidence and will be checked:"
+    echo "- Report what you ACTUALLY used, not what you were asked to use."
+    echo "- \`read-grep-fallback\` means you used NEITHER — and per the rule above that"
+    echo "  is a REPORTED FAILURE, not a quiet answer on this line. If you made even"
+    echo "  one successful \`ctx_*\` call, the answer is \`ctx\` or \`cmm+ctx\`."
+    echo "- The reason clause must match what you attempted. Do NOT write that a"
+    echo "  tool was \"not reachable\" if you never requested it — say you skipped"
+    echo "  it and why. A false unreachability report sends someone chasing a"
+    echo "  platform bug that does not exist."
+  } > "$MANDATE_FILE"
+fi
 
 # ---------------------------------------------------------------------------
 # Deterministic LENS selection. The manager reads this array and spawns exactly
@@ -1396,6 +1510,43 @@ MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
   printf 'status_path=%s\n'            "$STATUS_FILE"
 } > "$MANAGER_BRIEF"
 
+# ⚠ REGRESSION GUARD — expected_qa_user / qa_token_env / qa_token_file.
+#
+# These three are emitted into the JSON body below (search `qa_token_file:`). That
+# emission is UNCOMMITTED as of 2026-08-03: it exists in the working tree, not in
+# HEAD. Commit it. If it is ever dropped again, the failure is silent — jq accepts
+# an unreferenced --arg without complaint, so removing the body line leaves the
+# --arg above looking correct and emits nothing.
+#
+# This is not hypothetical; it is why the guard is here. On the pre-fix version the
+# keys reached only the MANAGER BRIEF, while skills/qa-cycle/SKILL.md's field table
+# listed them as preflight.json fields and told the main loop "Read these; never
+# re-derive them from config." A session that FOLLOWED that instruction looked in
+# preflight.json, found the keys absent, and was left to guess precisely the value
+# the instruction exists to stop it guessing.
+#
+# It recurred on observability-stack !14 (2026-08-03, running the pre-fix version):
+# the main loop guessed `~/.config/claude-qa-manager/qa-token` instead of the real
+# `qa-agent-token`, `cat` on the missing path returned empty, an empty token means
+# "act as the developer", and all three round notes posted under the DEVELOPER's
+# identity while their footers claimed the QA agent. Author and reviewer became the
+# same account — the property the split identity exists to prevent. Nothing errored;
+# every post returned success. See docs/CASE-STUDIES.md §self-approval-fallback and
+# its 2026-08-03 addendum.
+#
+# STILL OPEN after this emission is committed — the emission alone does not close it:
+#
+#  1. The `⚠ Posted with dev credentials` guard keys off QA_TOKEN_OK, which reports
+#     that PREFLIGHT resolved a token, not that the CALLER is holding one. On !14 it
+#     was true while the main loop held an empty string, so the guard never fired in
+#     the one case it exists for. A guard must test the value about to be used.
+#  2. The seam should verify the token resolves to `expected_qa_user` before any
+#     write. An empty token silently meaning "act as the developer" is what converts
+#     each of these slips from an error into a misattribution.
+#  3. Note-posting needs the same after-the-fact identity check that
+#     references/approval.md prescribes for approvals: the API returns the created
+#     note's `author.username`, so it is free. A footer asserting the identity is
+#     written by the same session that got it wrong, and proves nothing.
 PREFLIGHT_JSON=$(jq -n \
   --argjson mr "$MR_NUMBER" \
   --arg target "$TARGET" --arg target_path "$TARGET_PATH" --arg target_abs "$TARGET_ABS" \
@@ -1411,6 +1562,8 @@ PREFLIGHT_JSON=$(jq -n \
   --arg pipeline_status "$PIPELINE_STATUS" \
   --arg dev_user "$DEV_USER" --argjson is_own_branch "$IS_OWN_BRANCH" \
   --argjson qa_token_ok "$QA_TOKEN_OK" --arg qa_auth_user "$QA_AUTH_USER" \
+  --arg expected_qa_user "$EXPECTED_QA_USER" \
+  --arg qa_token_env "$QA_TOKEN_ENV" --arg qa_token_file "$QA_TOKEN_FILE" \
   --argjson mr_approved "$MR_APPROVED" \
   --argjson sync_failed "$SYNC_FAILED" --arg sync_reason "$SYNC_REASON" \
   --argjson sync_uptodate "$SYNC_ALREADY_UPTODATE" --argjson sync_pushed "$SYNC_PUSHED" \
@@ -1456,6 +1609,8 @@ PREFLIGHT_JSON=$(jq -n \
     pipeline_status: $pipeline_status,
     dev_user: $dev_user, is_own_branch: $is_own_branch,
     qa_token_ok: $qa_token_ok, qa_auth_user: $qa_auth_user,
+    expected_qa_user: $expected_qa_user,
+    qa_token_env: $qa_token_env, qa_token_file: $qa_token_file,
     mr_approved: $mr_approved,
     sync: { failed: $sync_failed, reason: $sync_reason, already_up_to_date: $sync_uptodate,
             pushed: $sync_pushed, unexpected_deletions: $unexpected_deletions,

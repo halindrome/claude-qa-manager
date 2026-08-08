@@ -317,6 +317,14 @@ eq "  NO cmm -> file still non-empty"   "$( [ -s "$fm" ] && echo yes || echo no 
 eq "  and names the weaker regime"      "$(grep -q 'TEXT SEARCH' "$fm" && echo yes || echo no)" "yes"
 eq "  and forbids an exhaustive claim"  "$(grep -q 'best-effort' "$fm" && echo yes || echo no)" "yes"
 eq "  cmm_available false"              "$(jq -r '.tooling.cmm_available' <<<"$out")" "false"
+# Test-run capture. Step 3B is the only participant that runs the suite, and the
+# exit-status-through-a-pipe defect turns a NEGATIVE CONTROL into a silent pass —
+# the run whose entire purpose is to fail reports success. Both regimes must name
+# it; neither may leave the section out.
+eq "  NO ctx -> shell capture regime"   "$(grep -q 'PIPESTATUS' "$fm" && echo yes || echo no)" "yes"
+eq "  and forbids status via a pipe"    "$(grep -qi 'never through a pipe' "$fm" && echo yes || echo no)" "yes"
+eq "  and does NOT mandate ctx_execute" "$(grep -q 'ctx_execute' "$fm" && echo yes || echo no)" "no"
+eq "  ctx_available false"              "$(jq -r '.tooling.ctx_available' <<<"$out")" "false"
 rm -rf "$r"
 
 # Same fixture, but with CMM registered in the repo's own .mcp.json.
@@ -331,6 +339,23 @@ eq "  graph regime mandates trace_path" "$(grep -q 'trace_path' "$fm" && echo ye
 eq "  and gates on index freshness"     "$(grep -q 'detect_changes' "$fm" && echo yes || echo no)" "yes"
 eq "  and keeps the non-graph residue"  "$(grep -q 'search_code' "$fm" && echo yes || echo no)" "yes"
 eq "  and does NOT claim text-only"     "$(grep -q 'TEXT SEARCH' "$fm" && echo yes || echo no)" "no"
+rm -rf "$r"
+
+# Same fixture with CONTEXT MODE registered. The fix step runs suites through
+# ctx_execute payloads, where the no-truncation rule is advisory — no hook enforces
+# it inside a sandbox payload, unlike plain Bash. One measured session showed 11
+# truncating payloads against 1 truncating Bash call, so the mandate has to carry
+# the rule itself rather than lean on the enforcer.
+r=$(mkfixture "feature/x" "main")
+echo '{"mcpServers":{"context-mode":{"command":"x"}}}' > "$r/repo/.mcp.json"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+fm=$(jq -r '.tooling.fix_mandate_path' <<<"$out")
+eq "ctx registered -> ctx_available"    "$(jq -r '.tooling.ctx_available' <<<"$out")" "true"
+eq "  ctx regime mandates ctx_execute"  "$(grep -q 'ctx_execute' "$fm" && echo yes || echo no)" "yes"
+eq "  and forbids truncating the run"   "$(grep -q 'Never truncate' "$fm" && echo yes || echo no)" "yes"
+eq "  and names the tail idiom"         "$(grep -q 'tail' "$fm" && echo yes || echo no)" "yes"
+eq "  and says nothing enforces it"     "$(grep -q 'sandbox payload' "$fm" && echo yes || echo no)" "yes"
+eq "  and drops the shell fallback"     "$(grep -q 'PIPESTATUS' "$fm" && echo yes || echo no)" "no"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------
@@ -540,6 +565,26 @@ eq "no fix commits -> all false"   "$(printf '%s' "$F" | bash "$ATTR" "$a/r" '[]
 eq "unknown sha -> all false"      "$(printf '%s' "$F" | bash "$ATTR" "$a/r" '["0000000"]' | jq -c '[.[].qa_introduced]')" "[false,false]"
 eq "missing file -> not attributed" "$(printf '[{"file":"nope.txt","line_low":1}]' | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" | jq -r '.[0].qa_introduced')" "false"
 eq "empty findings -> empty array" "$(printf '[]' | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" | jq -c .)" "[]"
+
+# THE REAL WIRE SHAPE. Everything above uses this script's own `.file` key, which
+# no caller actually sends: the manager pipes LENS findings, whose location key is
+# `area_file`. Reading only `.file` made every finding of a round come back
+# `qa_introduced=false` while all 8 of them sat on the cycle's own fix commit
+# (observability-stack !14 round 2). A test in the `.file` shape passed throughout
+# and proved nothing — so this case is the one that matters.
+FA='[{"area_file":"f.txt","line_low":13,"title":"t1"},{"area_file":"f.txt","line_low":1,"title":"t2"}]'
+res=$(printf '%s' "$FA" | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" 2>/dev/null)
+eq "area_file (lens schema) attributed"    "$(jq -r '.[0].qa_introduced' <<<"$res")" "true"
+eq "  and still discriminates"             "$(jq -r '.[1].qa_introduced' <<<"$res")" "false"
+eq "  .file still accepted (back-compat)"  "$(printf '%s' "$F" | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" | jq -r '.[0].qa_introduced')" "true"
+# An unreadable location must be DISTINGUISHABLE from "blamed, not ours" — both
+# emit qa_introduced=false, so the only signal is the stderr count. Without it,
+# a total shape mismatch reads as the good news "none of these are ours".
+err=$(printf '[{"title":"no location at all"}]' | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" 2>&1 >/dev/null)
+eq "unreadable location warns on stderr" "$(printf '%s' "$err" | grep -c 'no usable <file,line>')" "1"
+eq "  and names the count"               "$(printf '%s' "$err" | grep -c '1 of 1')" "1"
+eq "a fully-resolved batch stays silent" \
+  "$(printf '%s' "$FA" | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" 2>&1 >/dev/null | wc -c | tr -d ' ')" "0"
 rm -rf "$a"
 
 # preflight recovers the cycle's fix commits from prior round-note trailers.
@@ -579,6 +624,16 @@ done
 eq "  paths are absolute"         "$(grep -c '^qa_scratch=/' "$brief")" "1"
 eq "  lenses is the JSON array"   "$(grep '^lenses=' "$brief" | sed 's/^lenses=//' | jq -r 'type')" "array"
 eq "  diff_range is three-part"   "$(grep -c '^diff_range=origin/main\.\.HEAD' "$brief")" "1"
+
+# The same credential NAMES must also be in preflight.json, not only the brief.
+# Step 0.25 and Step 3E do not run in the manager, so brief-only publication left
+# them re-deriving from config — and a wrong guess resolves EMPTY, which the
+# forge reads as "act as the developer".
+for k in qa_token_env qa_token_file expected_qa_user; do
+  eq "  preflight.json has $k" "$(jq -r "has(\"$k\")" <<<"$out")" "true"
+done
+eq "  qa_token_env is non-empty"  "$(jq -r '.qa_token_env  | length > 0' <<<"$out")" "true"
+eq "  qa_token_file is non-empty" "$(jq -r '.qa_token_file | length > 0' <<<"$out")" "true"
 
 # approval_eligible: round-based and tiny-relax paths, plus the negative case.
 # It used to be computed by the model at spawn time; when it was omitted the
@@ -697,6 +752,61 @@ eq "10 lines -> sequential" "$(jq -r '.review_mode' <<<"$out")" "sequential"; rm
 r=$(mkfixture "feature/x" "main"); commit_lines "$r/repo" 200 big.txt
 out=$(run_preflight "$r" 73 mono); note_scratch "$out"
 eq "200 lines -> manager" "$(jq -r '.review_mode' <<<"$out")" "manager"; rm -rf "$r"
+
+# The tool mandate is IDENTICAL on both paths, and that is the assertion: a
+# subagent CAN load deferred MCP tools. A restrictive `tools:` grant on
+# qa-reviewer once made it look otherwise (its `mcp__*` wildcard matched nothing,
+# since MCP tools are deferred rather than concretely loaded), and the mandate was
+# briefly branched on review_mode to describe that as a platform limit. Deleting
+# the grant fixed it: the next round's lenses — all on the MANAGER path, i.e.
+# subagents — loaded ctx_* via ToolSearch and made 5-14 real calls. These cases
+# pin the branch back out, so a future reader does not reintroduce it.
+        # Sets globals; does NOT print the path. `m=$(mandate_for 200)` would run the
+        # whole body in a SUBSHELL and MANDATE_MODE/MANDATE_FIXTURE would never escape
+        # it — the same subshell trap forge_approvers documents.
+mandate_for() { # $1 lines changed -> sets $m, $MANDATE_MODE, $MANDATE_FIXTURE
+  MANDATE_FIXTURE=$(mkfixture "feature/x" "main")
+  commit_lines "$MANDATE_FIXTURE/repo" "$1" big.txt
+  echo '{"mcpServers":{"codebase-memory-mcp":{"command":"x"}}}' > "$MANDATE_FIXTURE/repo/.mcp.json"
+  local out; out=$(run_preflight "$MANDATE_FIXTURE" 73 mono); note_scratch "$out"
+  MANDATE_MODE=$(jq -r '.review_mode' <<<"$out")
+  m=$(jq -r '.tooling.mandate_path' <<<"$out")
+}
+mandate_for 200
+eq "manager path renders a mandate"        "$( [ -s "$m" ] && echo yes || echo no )" "yes"
+eq "  (and it really is the manager path)" "$MANDATE_MODE" "manager"
+eq "  asserts availability"                "$(grep -c 'ARE available' "$m")" "1"
+eq "  orders the ToolSearch bootstrap"     "$(grep -c 'Load them FIRST' "$m")" "1"
+eq "  requires the disclosure line"        "$(grep -c 'Navigation: <cmm' "$m")" "1"
+# The last mile: resolving the CMM schema is not enough — the graph tools take a
+# `project`, and a lens that cannot name it abandons them. Every lens on one round
+# resolved the schemas and then made ZERO graph calls for exactly this reason.
+eq "  names the CMM project"               "$(grep -c 'CMM project for this repo' "$m")" "1"
+# Derive the expectation from the fixture's own repo root rather than hardcoding a
+# prefix — the fixture lives under a temp root, so a literal `Users-` passed only on
+# this machine and would have failed in CI. Ask git for the toplevel rather than
+# building the path by hand: on macOS mktemp -d hands back /var/... while git
+# reports the physical /private/var/..., and the two do not compare equal.
+want_root=$(git -C "$MANDATE_FIXTURE/repo" rev-parse --show-toplevel)
+want_cmm="${want_root#/}"; want_cmm="${want_cmm//\//-}"
+eq "  and the name is path-derived"        "$(grep -c "CMM project for this repo: \`${want_cmm}" "$m")" "1"
+eq "  and warns off subtree indexes"       "$(grep -c 'ANCESTOR' "$m")" "1"
+# Vocabulary must separate "used ctx, skipped the graph" from "had nothing":
+# collapsing them made 6 lenses self-report a fallback while making real ctx calls.
+eq "  ctx-only is its own verdict"         "$(grep -c 'answer is `ctx` or `cmm+ctx`' "$m")" "1"
+eq "  forbids a false unreachable claim"   "$(grep -c 'never requested it' "$m")" "1"
+# Compare with the CMM project line dropped: the two fixtures are different temp
+# dirs, so that ONE line is legitimately different and everything else must not be.
+strip_proj() { grep -v 'CMM project for this repo' "$1"; }
+MANAGER_MANDATE=$(strip_proj "$m"); rm -rf "$MANDATE_FIXTURE"
+
+mandate_for 10
+eq "sequential path renders a mandate"     "$( [ -s "$m" ] && echo yes || echo no )" "yes"
+eq "  (and it really is sequential)"       "$MANDATE_MODE" "sequential"
+# Identical apart from the path-derived project name. A per-path difference is what
+# encoded the wrong conclusion last time; comparing whole files catches its return.
+eq "  is IDENTICAL to the manager mandate" "$( [ "$MANAGER_MANDATE" = "$(strip_proj "$m")" ] && echo yes || echo no )" "yes"
+rm -rf "$MANDATE_FIXTURE"
 # Fallback: with .review_mode absent, SEQ_MAX must fall back to the APPROVAL knob.
 # Set that knob to 500 so the fallback is OBSERVABLE: 200 lines <= 500 -> sequential.
 # The previous version asserted "manager" here, which is also the default answer —
@@ -764,6 +874,64 @@ git -C "$r/repo" remote set-url origin 'git@git.example.invalid:grp/proj.git'
 out=$(QA_FORGE=github run_preflight "$r" 73 mono); note_scratch "$out"
 eq "QA_FORGE beats the .forge config key" "$(jq -r '.forge // "<none>"' <<<"$out")" "github"
 rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+echo "[approval is not degradable — an empty token must never reach the forge]"
+# An empty token makes glab/gh act as the DEFAULT (developer) identity. For a
+# round NOTE that degradation is deliberate; for an APPROVAL it manufactures a
+# self-approval on a self-authored MR, which passes an approvals check and reads
+# as independent review. See CASE-STUDIES.md §self-approval-fallback.
+#
+# This drives the REAL lib/forge.sh through forge_init, with glab/gh replaced by
+# a stub that logs its argv — so "no API call" is asserted from the absence of a
+# log line, not from re-implementing the guard here.
+forge_guard_case() { # $1 forge, $2 cli, $3 remote url
+  local forge="$1" cli="$2" url="$3"
+  local d; d=$(mktemp -d); local log="$d/calls"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$log" > "$d/$cli"
+  chmod +x "$d/$cli"; : > "$log"
+  local out rc
+  # QA_FORGE is exported =gitlab suite-wide; without overriding it here the
+  # github case would source the GITLAB backend, look for `glab`, find no stub,
+  # and pass every "no call reached gh" assertion VACUOUSLY.
+  out=$(QA_FORGE="$forge" PATH="$d:$PATH" bash -c '
+    set -u
+    . "$1/lib/forge.sh"
+    forge_init "$2" "$1/lib" || exit 90
+    forge_approve   grp/proj 73 "" ; echo "approve_rc=$?"
+    forge_unapprove grp/proj 73 "" ; echo "unapprove_rc=$?"
+    forge_post_note grp/proj 73 /dev/null "" >/dev/null 2>&1 ; echo "note_rc=$?"
+  ' _ "$REPO_SRC" "$url" 2>/dev/null); rc=$?
+  eq "$forge: harness ran"                "$rc" "0"
+  eq "$forge: approve refuses empty token"   "$(sed -n 's/^approve_rc=//p'   <<<"$out")" "3"
+  eq "$forge: unapprove refuses empty token" "$(sed -n 's/^unapprove_rc=//p' <<<"$out")" "3"
+  # The asymmetry, asserted rather than described: post_note still degrades.
+  eq "$forge: post_note still degrades"      "$(sed -n 's/^note_rc=//p'      <<<"$out")" "0"
+  # No approve/revoke/review ever reached the CLI; only the note did.
+  # `grep -c` PRINTS 0 and RETURNS 1 on no match, so a `|| echo 0` fallback here
+  # emits "0\n0" and the comparison fails on a passing case. Let it print alone.
+  eq "$forge: no approval call reached $cli" \
+    "$(grep -cE 'approve|revoke|review|dismissal' "$log"; true)" "0"
+  eq "$forge: the note DID reach $cli" \
+    "$(grep -cE 'note|comment' "$log"; true)" "1"
+  rm -rf "$d"
+}
+forge_guard_case gitlab glab 'git@gitlab.com:grp/proj.git'
+forge_guard_case github gh   'git@github.com:grp/proj.git'
+
+# Non-vacuity: with a token present the same calls MUST reach the CLI. Without
+# this, a guard that refused unconditionally would pass every assertion above.
+d=$(mktemp -d); log="$d/calls"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$log" > "$d/glab"; chmod +x "$d/glab"; : > "$log"
+out=$(QA_FORGE=gitlab PATH="$d:$PATH" bash -c '
+  set -u
+  . "$1/lib/forge.sh"
+  forge_init "git@gitlab.com:grp/proj.git" "$1/lib" || exit 90
+  forge_approve grp/proj 73 tok-abc; echo "approve_rc=$?"
+' _ "$REPO_SRC" 2>/dev/null)
+eq "with a token, approve DOES call glab" "$(grep -c 'mr approve' "$log"; true)" "1"
+eq "  and returns the CLI's status"       "$(sed -n 's/^approve_rc=//p' <<<"$out")" "0"
+rm -rf "$d"
 
 # ---------------------------------------------------------------------------
 echo "[SAST classifier — every helper exit-0 path]"

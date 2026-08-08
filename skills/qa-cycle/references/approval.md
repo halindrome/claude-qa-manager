@@ -239,16 +239,40 @@ fi
 
 printf '%s\n' "$APPROVE_NOTE" > "$QA_SCRATCH/approve-note.md"
 if forge_approve "$PROJECT" <MR_NUMBER> "$QA_TOKEN"; then
-  if forge_post_note "$PROJECT" <MR_NUMBER> "$QA_SCRATCH/approve-note.md" "$QA_TOKEN" >/dev/null; then
+  # VERIFY WHO APPROVED. `forge_approve` returning 0 only means the forge accepted
+  # an approval — not that the QA agent is the one who gave it. This check is the
+  # one that actually caught the self-approval incident, so it belongs here rather
+  # than in an operator's habits (CASE-STUDIES.md §self-approval-fallback).
+  ACTUAL=$(forge_approvers "$PROJECT" <MR_NUMBER> "$QA_TOKEN" || true)
+  if ! printf '%s\n' "$ACTUAL" | grep -qxF -- "$expected_qa_user"; then
+    echo "error: approve returned success but $expected_qa_user is NOT among the approvers ($(printf '%s' "$ACTUAL" | tr '\n' ' ')). The approval was recorded under the wrong identity — if it is the MR author's, it is a self-approval. Withdraw it and re-run Step 0.25 before approving again." >&2
+    MR_APPROVED=false
+  elif printf '%s\n' "$ACTUAL" | grep -qxF -- "$MR_AUTHOR" && [ "$MR_AUTHOR" != "$expected_qa_user" ]; then
+    echo "warn: the MR author ($MR_AUTHOR) appears among the approvers alongside the QA agent. If the author did not approve by hand, an action degraded to the dev identity — investigate before trusting this audit trail." >&2
     MR_APPROVED=true
   else
-    echo "warn: approve succeeded but the approval-comment POST failed; the MR/PR is approved on the forge but the audit comment was not recorded." >&2
     MR_APPROVED=true
   fi
+  if [ "$MR_APPROVED" = "true" ] \
+     && ! forge_post_note "$PROJECT" <MR_NUMBER> "$QA_SCRATCH/approve-note.md" "$QA_TOKEN" >/dev/null; then
+    echo "warn: approve succeeded but the approval-comment POST failed; the MR/PR is approved on the forge but the audit comment was not recorded." >&2
+  fi
 else
-  echo "warn: forge_approve failed; leaving MR_APPROVED=$MR_APPROVED unchanged." >&2
+  rc=$?
+  # rc 3 = the seam REFUSED because QA_TOKEN was empty. That is not an outage:
+  # approving with an empty token would act as the DEVELOPER, so it is a hard
+  # stop by design. Fix the credential (Step 0.25); do not retry without a token.
+  if [ "$rc" -eq 3 ]; then
+    echo "error: forge_approve refused — no QA agent token. NOT approving; re-run Step 0.25." >&2
+  else
+    echo "warn: forge_approve failed (rc=$rc); leaving MR_APPROVED=$MR_APPROVED unchanged." >&2
+  fi
 fi
 ```
+
+`expected_qa_user` and `MR_AUTHOR` both come from `preflight.json`. `grep -qxF`:
+whole-line literal match, so a bot name that is a substring of another username
+cannot satisfy the check.
 
 **Unapprove on a dirty re-round** is handled in Step 3B.6 (it must run before
 the round note posts so the new findings are not posted on an approved MR).

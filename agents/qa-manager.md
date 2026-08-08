@@ -149,10 +149,31 @@ once as a standalone `qa-reviewer`. If it fails again, do NOT treat its axis as
 clean — record it in `failed_lenses` and, if `contract-security` is the one
 lost, render NO contract table and flag it. A failed lens is never a clean review.
 
+**Degraded lens:** every lens must end its report with a
+`Navigation: <regime>` line. Collect them into `lens_navigation`.
+
+`read-grep-fallback` means the lens could not load the navigation tools at all.
+**Treat that as a FAILED lens**, not a weaker-but-acceptable one: re-run it once
+like any other failure, and if it fails again record it in `failed_lenses`. Preflight
+confirmed those tools were registered before the round started and the environment
+does not change mid-round, so an empty `ToolSearch` is a real fault — and a review
+that silently swapped in a weaker instrument is the same defect class as a gate
+reporting clean because it never ran.
+
+`ctx` or `cmm` alone is NOT a failure — loading the tools and then judging the graph
+unnecessary for a small diff is a correct call. A lens that OMITS the line is
+`unknown`: you cannot tell which review you got, so never assume the good case.
+
+Say so in one clause of `blocking_summary` when any lens is `unknown` or failed this
+way — that is what stops a degraded panel from reading as a clean one.
+
 ### 1.4 Bracket the panel with a working-tree check — MANDATORY
 
-Lenses are read-only and may not modify a file even transiently. `Write`/`Edit` are
-withheld from them, but `Bash` is not, so enforcement cannot rest on the tool list.
+Lenses are read-only and may not modify a file even transiently. **No tool grant
+enforces that** — a lens holds `Write`, `Edit` and `Bash` like you do, so this check is
+the only enforcement there is. It used to be described as "`Write`/`Edit` are withheld,
+but `Bash` is not"; the withholding grant was removed (it stopped nothing, since `Bash`
+alone makes the tree writable, and it silently cost the lens its `mcp__*` tooling).
 Record the tree **before** you fan out and verify it **after** every lens returns:
 
 ```bash
@@ -284,6 +305,12 @@ With no recorded fix commits (round 1, or a cycle that predates the trailer) eve
 finding comes back `qa_introduced:false`. That is "not known", not "verified clean" —
 do not describe it as the latter.
 
+Pass the findings in the **lens schema shape** (`area_file`, `line_low`) — do not
+rewrite the keys. If the helper prints a `had no usable <file,line>` line on stderr,
+that many findings were NOT checked; report the count rather than treating the
+all-false result as clean. That warning exists because a field-name mismatch once
+made every finding of a round read as "not ours" when all 8 were.
+
 ### 4. Render the round note
 
 Write the full round-note markdown to `$qa_scratch/note-round<round>.md` in the
@@ -315,12 +342,32 @@ write `Claude Code` with no parenthetical rather than guessing.
 
 ### 5. Post — only when ALL of these hold
 
-Post **only if** `post_note=true` AND `qa_token_ok=true` AND **NOT** the
-withhold condition:
+Post **only if** `post_note=true` AND `qa_token_ok=true` AND **NEITHER** withhold
+condition holds:
 
 ```
-withhold = mr_approved AND round_has_critical_or_major AND unapprove_on_dirty_reround
+withhold_dirty  = mr_approved AND round_has_critical_or_major AND unapprove_on_dirty_reround
+withhold_trailer = (counts.critical + counts.major + counts.minor) > 0
 ```
+
+`withhold_trailer` is the **fix-trailer ordering rule** (skill Step 3C): the note
+must carry one `QA-Fix-Commit: <sha>` trailer per fix commit, and the next round's
+`qa_fix_commits` is derived by reading those trailers back off the posted notes. You
+run at panel completion — *before* main triages findings in Step 3B, so before any
+fix commit exists. Posting here means the note can never carry a trailer, the next
+round's `qa_fix_commits` comes back empty, and `attribute-findings.sh` reports every
+finding as not-ours. Observed on the first live cycle: both rounds posted trailerless
+and the operator had to hand-post an addendum for round 2 to attribute anything.
+
+So when this round produced ANY confirmed finding: render the note, **do not post**,
+set `note_posted=false`, and add
+`{"kind":"post_after_fixes","reason":"round <N> has <k> confirmed findings; main posts note_path after Step 3B so it can carry QA-Fix-Commit trailers"}`
+to `decisions_needed`. A **clean** round has no fix commits to attribute, so it posts
+here as normal — the hands-free path is unchanged for exactly the rounds that end the
+cycle.
+
+The dirty-re-round rule below is a separate condition; when both hold, emit both
+decisions — main unapproves, fixes, then posts once.
 
 That is the **dirty-re-round ordering rule** (skill Step 3B.6): when a prior round
 approved the MR and *this* round found new confirmed critical/major findings, the
@@ -377,6 +424,7 @@ posting; the caller will post from `$qa_scratch/note-round<round>.md`.
   "contract_all_pass": true,
   "schema_change_detected": false,
   "failed_lenses": [],
+  "lens_navigation": { "<lens>": "cmm|ctx|cmm+ctx|read-grep-fallback|unknown" },
   "note_path": "<qa_scratch>/note-round<n>.md",
   "note_posted": true,
   "note_url": "<url or empty>",
@@ -400,6 +448,7 @@ into the object — a `//` comment makes the return value unparseable):
 | `contract_disambiguation` | `{"kind":"contract_disambiguation","candidates":["PROJ-1","PROJ-2"]}` |
 | `sast_wait` | `{"kind":"sast_wait","reason":"approval-eligible round; SAST pipeline running"}` |
 | `unapprove_before_post` | `{"kind":"unapprove_before_post","reason":"..."}` (see step 5) |
+| `post_after_fixes` | `{"kind":"post_after_fixes","reason":"..."}` (see step 5) |
 | `diminishing_returns` | `{"kind":"diminishing_returns","reason":"9 of 11 blocking findings target code an earlier QA round introduced","self_referential":9,"blocking_total":11}` |
 
 Rules for `decisions_needed`:
@@ -407,6 +456,12 @@ Rules for `decisions_needed`:
   AND the caller told you the round is approval-eligible. Never approve yourself.
 - Add `fixes` when it is the author's own branch and there are actionable
   confirmed findings — include the finding list so main can present them.
+- Add `post_after_fixes` whenever you withheld the post because the round has
+  confirmed findings (step 5). `note_posted` must be `false` when you do, and
+  `note_path` must point at the rendered note — main posts it after Step 3B with the
+  `QA-Fix-Commit` trailers appended. Emitting the decision while reporting
+  `note_posted=true` would make main post the round twice and inflate the round
+  counter, so the two must agree.
 - Add `diminishing_returns` when one or more lenses report that most of their blocking
   findings target code an **earlier QA round** introduced rather than the change the MR
   exists to make. This is the precondition for the Step 3E deferred-findings exit — if

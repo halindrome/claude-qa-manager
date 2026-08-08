@@ -150,6 +150,157 @@ and `forge` / `forge_cli` added.
   by hand afterwards. Extending it to prompt for targets would be welcome.
 - **Consider a `hooks/` component.** The plugin manifest supports hooks and ships none.
 
+### Field defects from the first end-to-end run (2026-08-03)
+
+The round *has* now been executed end-to-end from this repo — GitLab, `rest-api` MR !712,
+a 214-line diff, two rounds, six lenses each, both clean, ending in a QA-agent approval.
+The prediction in *Known gaps* held exactly: the first live run is where the latent path
+and config bugs surfaced. Four did. **D1 is a correctness defect in the approval gate and
+should be fixed before anyone else runs a cycle**; the rest are ordered by severity after
+it. Rationale for D1 is written up as `CASE-STUDIES.md` §self-approval-fallback.
+
+Each item below states how it was observed, so a session can reproduce rather than trust.
+
+1. **D1 — an approval can fall back to the developer (author) identity, silently.**
+   `forge_approve()` (`lib/forge-gitlab.sh:113`) passes `${3:-}` to `_glab`, so an empty
+   token means "use the default identity". On a self-authored MR that turns *no QA
+   approval* into *author approved* — it passes an approvals check and reads as review.
+   The empty token arose because `references/approval.md`'s Step 3E snippet uses
+   `$QA_TOKEN` while **nothing in the main loop assigns it**: `qa_token_env` /
+   `qa_token_file` are emitted only into the manager brief (`lib/preflight.sh:1380-1381`),
+   and Step 3E does not run in the manager. `preflight.json` carries `qa_token_ok` and
+   `qa_auth_user` but not the names to resolve from.
+   *Observed:* approve reported success; `forge_approvers` then returned the **author's**
+   username. Nothing in preflight, the seam, or the skill reported an error.
+   *Fix, three parts:* (a) `forge_approve` / `forge_unapprove` **refuse an empty token**
+   (non-zero, no call) on both forges — and say at the definition why `forge_post_note`
+   deliberately does *not*, so the asymmetry survives future tidying; (b) publish
+   `qa_token_env` / `qa_token_file` in `preflight.json` and have Step 3E read them instead
+   of re-deriving; (c) after approving, assert the approver equals `expected_qa_user` and
+   is not `mr_author`, failing the step otherwise.
+   *Acceptance:* a preflight fixture with no token available must make the approval step
+   exit non-zero with the MR unapproved — today it exits zero with the MR approved by the
+   author. Worth a `test/` case, since this is the one defect that manufactures a false
+   audit record.
+
+2. **D2 — the forge seam's documented argument form disagrees with three of its four
+   implementations.** `lib/forge.sh:35-39` documents `forge_approvers`, `forge_post_note`,
+   `forge_approve` and `forge_unapprove` as all taking `<enc>` (the URL-encoded slug). Only
+   `forge_approvers` accepts it — it re-normalizes via `forge_project_enc` at
+   `lib/forge-gitlab.sh:100`. The other three pass the argument to `glab -R`, which requires
+   `OWNER/REPO` and rejects `owner%2Frepo`.
+   *Observed:* `forge_unapprove owner%2Frepo <n>` — the documented form — failed with
+   `Expected the "[HOST/]OWNER/[NAMESPACE/]REPO" format`. SKILL.md's own
+   samples pass the *unencoded* `$PROJECT`, so the code is right and the header comment is
+   wrong.
+   *Fix:* either normalize in all four (cheapest: call `forge_project_enc` / a matching
+   `forge_project_slug` at the top of each) or correct the header to state which form each
+   takes. Normalizing is better — a seam whose members disagree on their argument form is a
+   trap for exactly the caller who read the docs.
+
+3. **D3 — lens subagents cannot load the CMM / `ctx_*` tooling they are mandated to use.**
+   All six lenses reported it in **both** rounds. Where those tools are *deferred* in the
+   host session, they must be loaded with `ToolSearch` before first use — and inside a
+   `qa-reviewer` subagent `ToolSearch` returns **"No matching deferred tools found"**. So
+   the deferred-tool registry is not reachable from a subagent at all, and the mandate in
+   `agents/qa-reviewer.md` (and the CMM preamble the host injects) describes tooling the
+   lens cannot obtain.
+   *Observed:* round 1 lenses fell back to `Read` + standalone `perl` probes; round 2
+   explicitly instructed each lens to call `ToolSearch` first, and that mitigation **failed
+   the same way** — so this is not fixable by prompt wording.
+   *Impact:* reviews still executed real experiments and produced grounded findings, so
+   this degrades quality rather than breaking it. But the mandate currently *claims* a
+   navigation regime the lens does not have, which is its own kind of false record.
+
+   **RE-VERIFIED DIRECTLY, 2026-08-03 — fixed.** The field report was confirmed from
+   inside a live `qa-reviewer`, after restarting the context-mode MCP server so a server
+   fault could be ruled out. From the subagent: calling `search_graph` directly returns
+   `No such tool available`; `ToolSearch(select:…)` for four CMM/ctx tools returns
+   `No matching deferred tools found`; no `mcp__*` tool is present at startup despite
+   `tools: [… mcp__*]` in the frontmatter. It is a platform limit, not a wording problem.
+
+   Two things the original note did not have, both from that run:
+   - **The root cause is in `preflight.sh`, not the agent prompt.** `_probe_registered`
+     answers *"is this MCP server installed"*, and the mandate turned that into *"the
+     tools below ARE available in your session"*. Those are different claims, and the
+     second is false for a subagent. That is invariant #2 — an absent capability
+     reporting as present — aimed at the lens. It also explains why the round-2
+     mitigation could never work: the `ToolSearch` instruction was added for an earlier,
+     genuinely different failure (main-loop reviewers that never fetched deferred tools),
+     where it is correct.
+   - **Reachability depends on `review_mode`, which preflight already knows.** A lens on
+     the *manager* path is a subagent and cannot reach them; a reviewer on the
+     *sequential* path runs in the main loop and can. Same probe, opposite truth — so the
+     mandate is now rendered after `REVIEW_MODE` is set and states the truth for the path
+     it is going into. Both paths now require a closing
+     `Navigation: <regime>` disclosure line, and the manager records it as
+     `lens_navigation` (a missing line is `unknown`, never assumed good) and reports any
+     degraded lens in `blocking_summary`. Pinned by tests asserting the manager mandate
+     does **not** claim availability and does **not** order a `ToolSearch`, while the
+     sequential one keeps both.
+
+   *Still open:* a lens on the manager path has no graph tooling at all, so this is
+   mitigated and disclosed, not solved. Recovering it needs one of: the host resolving
+   queries and passing results in, or the `skills:` frontmatter preload (untested). Do
+   that only if a real round produces a finding a graph query would have caught.
+
+   **Two further platform facts from the same run, both contradicting things this
+   project's notes assert.** Neither is fixed; both are worth knowing before trusting a
+   subagent's environment:
+   - **`PreToolUse` hooks DO fire inside a subagent.** `.claude/rules/cmm-rules.md` and
+     `cmm-agent-preamble.md` both state they do not, citing Claude Code issue #34692. In
+     the test, `ctx-execute-enforcer.sh` blocked the lens's `grep -c …` `Bash` call with
+     its full message, and allowed `git status --short` — i.e. it fired, selectively, via
+     its exemption list. The combination is worse than either fact alone: a hook can
+     order a lens to route through `ctx_execute` while the lens is unable to load
+     `ctx_execute`. That is a deadlock, not a degradation. (This hook is local to this
+     repo and unshipped, but any adopter installing context-mode the same way inherits
+     the shape.) The remedy belongs in the hook, not here: it should **fail open** when
+     `ctx_execute` is unreachable, since a reviewer with no `ctx_execute` and no `Bash`
+     is left with `Read` alone.
+
+     Note the clause that is false is *only* the subagent one. `agent-cmm-gate.sh`
+     (`PreToolUse:Agent`) behaved exactly as documented on a main-thread `Agent` call,
+     blocking a probe that omitted the preamble.
+   - **A wildcard in a `tools:` grant can match nothing.** The lens had
+     `tools: [Read, Grep, Glob, Bash, ToolSearch, mcp__*]` and came up with no `mcp__*`
+     tool at all. `Grep`/`Glob` were also absent, but that is **not** attributable to the
+     grant — they are absent from the host session too, so the lens inherited their
+     absence. `ToolSearch` DID survive the grant and was callable; it simply returned
+     `No matching deferred tools found`. Working hypothesis, not yet isolated: a grant
+     resolves against *concretely loaded* tools, so `mcp__*` matches nothing while the
+     MCP tools are deferred, where a bare `*` (or no `tools:` key at all) would not
+     narrow anything and so cannot drop them.
+
+     This is why `qa-manager` and `pr-qa-reviewer` never hit it: neither declares
+     `tools:`, so both get the full set — the breakage was specific to the one agent type
+     carrying a restrictive list, not to subagents in general.
+
+     **Fixed by deleting the `tools:` line from `agents/qa-reviewer.md`.** The grant was
+     not buying read-only enforcement either: it left `Bash` in place, so the tree was
+     always writable. Read-only is now stated as a rule in the prompt and enforced by the
+     manager's before/after tree check (§1.4), which was always the real guard. Both
+     files that described the old grant were corrected — do not re-add it.
+
+4. **D4 — on the manager path, the round note cannot carry its own `QA-Fix-Commit`
+   trailers.** SKILL.md Step 3C requires one trailer per fix commit, and the next round's
+   attribution reads them back (`qa_fix_commits`). But Step 3B (fixes) precedes Step 3C
+   (post) only on the *sequential* path. With `post_note=true` the manager posts at panel
+   completion — before the operator has triaged findings, so before any fix commit exists.
+   *Observed:* both rounds posted a clean note with no trailers; the operator had to post a
+   separate addendum carrying `QA-Fix-Commit:` so round 2's `qa_fix_commits` would populate.
+   It did populate, which confirms the read-back works — but only because of a manual step
+   the skill never asks for.
+   *Fix:* either have the manager return `note_path` unposted when the round produced
+   actionable findings (let main post after 3B), or define an addendum step so the trailer
+   requirement is satisfied by something the skill actually prescribes. A cycle whose
+   attribution depends on an undocumented operator habit will lose it.
+
+**One thing that worked and is worth keeping:** round derivation from posted notes survived
+a fresh process across four separate invocations, and `qa_fix_commits` correctly recovered
+the round-1 commit from its trailer. The round-2 panel then used it to attribute findings to
+QA-introduced code rather than to the MR — the mechanism did what it was designed for.
+
 ### Before the first push
 
 1. All three suites green + `claude plugin validate .`.
@@ -164,10 +315,15 @@ and `forge` / `forge_cli` added.
 
 ## Known gaps and honest caveats
 
-- **The round has never been executed end-to-end from this repo.** Preflight, init and the
-  manifest are tested; a full `/qa-cycle` against a live MR using *this* plugin has not been
-  run. Now that Phase 3 has landed this is *the* outstanding validation, and the most likely
-  place for a latent path or config bug to surface.
+- ~~**The round has never been executed end-to-end from this repo.**~~ **Done, 2026-08-03**
+  — GitLab, `rest-api` MR !712: `init.sh check`/`config`, two full rounds (six lenses each,
+  both clean), fix commits, SAST wait-gate, and a QA-agent approval. The prediction here was
+  right: the first live run was where the latent bugs surfaced, and it produced four —
+  including one that **approved an MR as its own author**. See *Field defects from the first
+  end-to-end run* above; D1 should be fixed before the next cycle. Still unexercised on this
+  path: the deferred-findings exit, the dirty-re-round revocation (`Step 3B.6`), the
+  sequential/tiny-MR route, `--double`/`--triple`, and any schema-change MR (the gate ran and
+  correctly reported *no* change, so the armed branch is still untested).
 - **The GitHub path has never touched a real GitHub PR.** `forge-github.sh` and
   `fetch-sast-github.sh` are exercised only against the suite's `gh` stub, which emits
   GitHub's native shape so the normalization is genuinely under test — but a stub cannot

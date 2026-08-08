@@ -199,3 +199,160 @@ project that documents no procedure — not for editorialising one that does. Wh
 project's own rules describe how its suite is run, those rules are the source of
 truth, and reading them is the correct behaviour; a config key that restates part of
 them is a fork that drifts from the moment it is written.
+
+## §green-first-tests — why a new test must be seen to fail before the fix exists
+
+Across five QA cycles in one week, the fix step repeatedly authored a test, found it
+broken, and spent the rest of that round — sometimes the next one — debugging it. The
+cycles ran long, and the length bought very little.
+
+**Not one of those was a wrong assertion.** Every instance was a harness or environment
+defect: a constructor that `chdir`s, so a later `system()` resolved nothing; an exit
+status taken off `| tail` rather than the command under test; zsh's builtin `echo`
+interpreting escapes for a `#!/bin/bash` script; a `PREPARE FROM "…"` harness adding a
+second SQL parsing layer the real path never performs; a guard that short-circuited
+before the branch under test was reached. Two more cost a round each on scope alone — a
+local run covering 5 of N suites that went red in CI, and tests written to the suite root
+instead of the subsystem folder.
+
+**The load-bearing mutation check does not catch these.** It asks whether the result flips
+when the source changes. A broken harness can flip, fail both ways, or pass both ways, all
+for reasons unrelated to the behaviour under test.
+
+**What went wrong was the order, not the checks.** The rule was "write the test, confirm
+it passes, then revert the source and confirm it fails". Both runs happen either way — but
+green-first means a harness defect only surfaces *after* the fix, the assertions, and the
+author's confidence are already stacked on top of it, so the instinct is to debug forward
+rather than discard. Red-first surfaces it on run one, as *the wrong failure message*,
+when the test is still free to throw away.
+
+**The `| tail` case deserves its own note**, because it is the only defect here that does
+not announce itself. A pipe replaces the exit status of the command under test with the
+filter's, which is almost always `0` — so the negative control, the run whose entire
+purpose is to fail, reports success. In plain `Bash` the context-mode enforcer hook blocks
+that idiom. Inside a `ctx_execute` payload the rule is only advisory, and the fix step runs
+suites through exactly those payloads: one measured session recorded 11 truncating payloads
+against 1 truncating `Bash` call.
+
+**What this plugin does about it.** The spine inverts the order at Step 3B.4 and requires
+the failure message to name the behaviour under test, not merely to be red. `fix-mandate.md`
+gained a capture section that branches on `ctx_available` exactly as it already branched on
+`cmm_available` — the fix step was previously the only participant with no context-mode
+guidance at all, while every lens got it via `tool-mandate.md`. Depth lives in
+`skills/qa-cycle/references/test-authoring.md`.
+
+**General lesson.** A verification step has an order as well as a content, and the order
+decides what a failure costs you. Run the check that can invalidate the work *before* you
+build on the work.
+
+## §self-approval-fallback — why an approval may never degrade to the dev identity
+
+On the **first end-to-end `/qa-cycle` run from this repo** (GitLab, a 214-line MR, two
+rounds, both clean), the cycle approved the MR **as its own author**. The gate that
+exists to keep author and approver distinct did not fail loudly — it produced a green
+"approved" line and a correctly-worded approval comment, under the wrong identity.
+
+**The chain, in order.**
+
+1. `Step 3E`'s snippet in `references/approval.md` uses `$QA_TOKEN`, but nothing in the
+   **main loop** ever assigns it. The token names are resolved by preflight and written
+   only into the **manager brief** (`qa_token_env`, `qa_token_file`) — and the manager is
+   a different context from the one Step 3E runs in. `preflight.json` itself carries
+   `qa_token_ok` and `qa_auth_user`, which report that a token *resolved*, but not what to
+   resolve it *from*.
+2. Facing an undefined variable with no documented source, the operator did the natural
+   thing and reconstructed it — using the env-var name and token path from the
+   **predecessor skill this plugin was extracted from**, rather than this plugin's
+   (`QA_AGENT_TOKEN`, `~/.config/claude-qa-manager/qa-agent-token`). The two differ by a
+   prefix and a filename. Both reconstructions resolved **empty**. This is a predictable
+   failure for any adopter migrating from a private ancestor, not a one-off slip.
+3. `forge_approve` treats an empty token as "use the default identity". For
+   `forge_post_note` that is a deliberate, documented degradation — losing a round note
+   entirely is worse than posting it under the developer's name, and SKILL.md requires a
+   `⚠ Posted with dev credentials` line when it happens. `forge_approve` inherited the
+   same behaviour without inheriting the reasoning.
+
+**Why the degradation is not equivalent.** A note under the wrong name is mislabelled
+evidence. An approval under the wrong name is a **different fact**: on a self-authored MR
+it converts *"QA has not approved"* into *"the author approved"* — which passes an
+approvals check, appears in the audit trail as review, and is strictly worse than no
+approval at all. Degrading a note preserves information; degrading an approval fabricates
+it.
+
+**Nothing in the run reported a problem.** `preflight.json` said `qa_token_ok: true` and
+named the QA agent in `qa_auth_user` — correctly, because *preflight* resolved the token
+fine; only the approval step's own re-derivation failed.
+The seam returned success, because approving as the developer is a successful approve. The
+misattribution was caught only because the operator ran `forge_approvers` afterwards and
+read the name. Had they trusted the tool's own success message, an MR would carry a
+self-approval that reads as an independent one.
+
+**What this argues for.**
+
+- **`forge_approve` / `forge_unapprove` must refuse an empty token** — non-zero, no API
+  call. Approval is not a degradable action. `forge_post_note` should keep degrading:
+  the asymmetry is the point, and it should be stated at both definitions so neither is
+  "tidied" into consistency with the other later.
+- **A step must not re-derive a credential preflight already resolved.** Publish
+  `qa_token_env` / `qa_token_file` in `preflight.json` (not only in the manager brief) and
+  have Step 3E read them. A re-derivation can fail *open*; a read cannot.
+- **Verify the approver after approving**, against `expected_qa_user`, and fail the step if
+  it does not match or if it equals the MR author. This is the check that actually caught
+  the incident, and it belongs in the skill rather than in an operator's habits.
+
+The general shape is worth naming, because it is not specific to tokens: **a fallback that
+is correct for one action can be catastrophic for another, and inheriting it by proximity
+is how that happens.** When two operations share a helper, the question is not "what does
+this helper do on missing input" but "what does *each caller* mean by missing input".
+
+### Addendum — it recurred on 2026-08-03, with the remedy still unimplemented
+
+**observability-stack !14**, a two-round cycle. Same root cause, different blast radius: the
+notes, not the approval.
+
+The second bullet under *What this argues for* — publish `qa_token_env` / `qa_token_file` in
+`preflight.json`, not only in the manager brief — **had not been implemented at the time of
+the run.** `preflight.sh` passed all three values to `jq`, but the object body never referenced
+them, and jq drops an unreferenced `--arg` without complaint. So the keys stayed brief-only,
+while `skills/qa-cycle/SKILL.md`'s field table listed them as `preflight.json` fields and
+instructed the main loop to *"Read these; never re-derive them from config."*
+
+*(Now fixed: the emission landed on 2026-08-03, after this incident. The rest of this
+addendum describes the pre-fix behaviour and the lessons that outlive it — items 1–3 under
+"Two further lessons" below are **not** closed by that emission.)*
+
+That combination is worse than the original gap. A session that **follows the instruction**
+looks in `preflight.json`, finds the keys absent, and is left to reconstruct the path anyway —
+having just been told not to. The documentation now points at a value that is not there, which
+is a stronger invitation to guess than saying nothing would have been.
+
+The guess landed on `~/.config/claude-qa-manager/qa-token`; the real file is `qa-agent-token`.
+`cat` on the missing path returned empty, empty means "act as the developer", and **all three
+round notes posted under the developer's account while their footers claimed the QA agent.**
+On a self-authored MR that made author and reviewer the same account — the property the split
+identity exists to prevent — with no visible signal: every post returned success, and the
+footer is text the same session wrote.
+
+Two further lessons this run adds:
+
+- **`QA_TOKEN_OK` is not a guard on the caller.** It reports that *preflight* resolved a
+  token. Here it was `true`, and `qa_auth_user` correctly named the QA agent, while the main
+  loop held an empty string. The `⚠ Posted with dev credentials` line is gated on
+  `QA_TOKEN_OK` and therefore never fired in the one situation it exists for. **A guard must
+  test the value actually about to be used, not a report that some earlier step succeeded.**
+- **The third bullet generalises beyond approval.** *Verify the actor after acting* was scoped
+  to approvals. Notes need it too — the API returns the created note's `author.username`, so
+  the check costs nothing and is the only thing that distinguishes a correctly attributed note
+  from a misattributed one. A footer asserting the identity is not evidence of it.
+
+Cost of the recurrence: the misattribution is permanent. Note authorship cannot be rewritten,
+and the MR merged before anyone noticed, so the approval could not be recorded afterwards
+either — `POST /merge_requests/:iid/approve` returns 401 once merged. Corrections had to be
+posted as follow-up comments admitting the earlier ones were wrong.
+
+**The meta-lesson.** This case study was already written, already correct, and already
+prescribed the fix. It did not prevent the recurrence, because the prescription lived in a
+document while the defect lived in code that still behaved the old way — and the skill's own
+field table had drifted into actively contradicting the implementation. **A documented remedy
+that is not implemented is not a remedy; the write-up can make things worse by implying the
+hole is closed.** Where a fix is deferred, say so at the code, not only in the retrospective.

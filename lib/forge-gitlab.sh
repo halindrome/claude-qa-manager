@@ -109,6 +109,11 @@ forge_notes() {
 #
 # stdout is NOT swallowed: the CLI prints the new note's URL there, and the
 # deferred-findings approval path must link that note in its approval comment.
+#
+# Empty token REFUSED by approve/unapprove but tolerated by forge_post_note —
+# see _forge_require_token in forge.sh for why the asymmetry is deliberate.
 forge_post_note() { _glab "${4:-}" mr note "$2" -R "$1" --message "$(cat "$3")"; }
-forge_approve()   { _glab "${3:-}" mr approve "$2" -R "$1" >/dev/null; }
-forge_unapprove() { _glab "${3:-}" mr revoke  "$2" -R "$1" >/dev/null; }   # GitLab calls it "revoke"
+forge_approve()   { _forge_require_token forge_approve   "${3:-}" || return 3
+                    _glab "$3" mr approve "$2" -R "$1" >/dev/null; }
+forge_unapprove() { _forge_require_token forge_unapprove "${3:-}" || return 3
+                    _glab "$3" mr revoke  "$2" -R "$1" >/dev/null; }   # GitLab calls it "revoke"

@@ -120,13 +120,17 @@ forge_notes() {
 # stdout is NOT swallowed: `gh pr comment` prints the new comment's URL there,
 # and the deferred-findings approval path must link that note.
 forge_post_note() { _gh "${4:-}" pr comment "$2" -R "$1" --body-file "$3"; }
-forge_approve()   { _gh "${3:-}" pr review  "$2" -R "$1" --approve >/dev/null; }
+# Empty token REFUSED here but tolerated by forge_post_note — see
+# _forge_require_token in forge.sh for why the asymmetry is deliberate.
+forge_approve()   { _forge_require_token forge_approve "${3:-}" || return 3
+                    _gh "$3" pr review  "$2" -R "$1" --approve >/dev/null; }
 
 # GitHub has no "unapprove" — an approval is withdrawn by DISMISSING the review,
 # which needs the review id and a message. Find this identity's latest approval
 # and dismiss that one; if there is none, there is nothing to withdraw and that
 # is a success, not an error.
 forge_unapprove() {
+  _forge_require_token forge_unapprove "${3:-}" || return 3
   local slug="$1" n="$2" token="${3:-}" me id
   me=$(forge_auth_user "$token") || return 1
   id=$(_gh "$token" api --paginate "repos/${slug}/pulls/${n}/reviews" 2>/dev/null \

@@ -131,7 +131,21 @@ git diff <remote>/<target-branch>..<remote>/<feature-branch> --stat 2>/dev/null 
 
 Before any QA round runs, resolve credentials for **QA-attributed GitLab actions** (posting round notes, approving the MR). Fix commits and branch syncs continue to use the user's normal `glab`/dev token — only the actions enumerated below use the QA agent token.
 
-1. **Load the `qa_agent` block** from the merged config. Capture `token_env`, `token_file`, `expected_username`, and the `approval` sub-block.
+1. **Read the names from `preflight.json`, do not re-derive them.** Preflight already
+   resolved the merged config; it publishes `qa_token_env`, `qa_token_file` and
+   `expected_qa_user`. Take them from there:
+
+   ```bash
+   token_env=$(jq -r '.qa_token_env'     "$QA_SCRATCH/preflight.json")
+   token_file=$(jq -r '.qa_token_file'   "$QA_SCRATCH/preflight.json")
+   expected_username=$(jq -r '.expected_qa_user' "$QA_SCRATCH/preflight.json")
+   ```
+
+   Re-merging the config here — or reconstructing the names from memory — can fail
+   *open*: a wrong env-var name or token path resolves EMPTY, and an empty token makes
+   the forge act as the DEVELOPER. That is how this repo's first live cycle approved an
+   MR as its own author (`CASE-STUDIES.md` §self-approval-fallback). A read cannot fail
+   that way. The `approval` sub-block still comes from the merged config.
 
 2. **Resolve the token.** First check the env var named by `token_env` (default `QA_AGENT_TOKEN`):
 

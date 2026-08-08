@@ -63,6 +63,7 @@ it:
 | `mr_title`,`mr_author`,`source_branch`,`target_branch`,`state`,`draft`,`changes_count`,`pipeline_status` | MR facts |
 | `dev_user`,`is_own_branch` | `IS_OWN_BRANCH` (Step 3B ownership gate) |
 | `qa_token_ok`,`qa_auth_user` | `QA_TOKEN_OK` (Steps 0.25/3C/3E) |
+| `qa_token_env`,`qa_token_file`,`expected_qa_user` | how Step 0.25 resolves `QA_TOKEN` (env var first, then file) and who it must resolve to. **Read these; never re-derive them.** A guessed name resolves EMPTY, empty means "act as the developer", and both misattributions that caused are in `CASE-STUDIES.md` §self-approval-fallback. |
 | `mr_approved` | `MR_APPROVED` (Step 3B.6/3E) |
 | `diff_scope.total_changed`,`diff_scope.is_tiny` | tiny-MR relax (Steps 2.5/3E) |
 | `review_mode` (`manager`\|`sequential`) | Step 3A.1 routing (deterministic) |
@@ -315,11 +316,16 @@ it returns those as `decisions_needed`. The main loop:
 - reads the compact verdict;
 - if `post_note=false` **or `note_posted=false`**, posts `note_path` itself
   (Step 3C); otherwise the manager already posted — record `note_url`. A
-  `note_posted=false` on a `post_note=true` round is expected in exactly one
-  case: the `unapprove_before_post` decision below;
+  `note_posted=false` on a `post_note=true` round is expected in exactly two
+  cases: the `unapprove_before_post` and `post_after_fixes` decisions below;
 - resolves `unapprove_before_post` FIRST when present — run the Step 3B.6
   revocation, *then* post `note_path`. This ordering is the whole point of the
   decision: the findings must not appear on a still-approved MR;
+- resolves `post_after_fixes` by running Step 3B, appending one `QA-Fix-Commit`
+  trailer per commit it made to `note_path`, and posting *that* — the manager runs
+  before any fix commit exists, so a note it posted could never carry the trailers
+  and the next round's `qa_fix_commits` would come back empty. With
+  `unapprove_before_post` too: revoke, fix, append, post — one post, not two;
 - sets `SCHEMA_CHANGE_DETECTED=true` when the verdict's
   `schema_change_detected` is true (arms the Step 3E the schema-drift case gate);
 - sets `ROUND_HAS_CRITICAL_OR_MAJOR` from `counts` (Step 3B.6);
@@ -339,7 +345,9 @@ it returns those as `decisions_needed`. The main loop:
   `diminishing_returns` → surface it and **stop the cycle**, but defer NOTHING
   and do not approve (deferral is a human decision; see Step 3E),
   `unapprove_before_post` → just do it (revoke, then post; it needs no human
-  judgment). **`approval` is NOT defaultable** — skip it unless `--auto-approve`
+  judgment), `post_after_fixes` → also just do it (the ordering is mechanical;
+  with `fixes` defaulted to report-only there are no trailers to append, so the
+  note posts unchanged). **`approval` is NOT defaultable** — skip it unless `--auto-approve`
   was also passed. This is what lets a clean, non-approval round run fully
   hands-free: the manager does everything and `decisions_needed` resolves to
   no-op.
@@ -436,10 +444,21 @@ Do NOT apply fixes automatically. Instead:
    claim in it rests on reading. If the detected command is unsafe to run at this
    point, that is what `targets.<name>.verify.command` is for: say so and ask,
    rather than skipping silently. See `docs/CASE-STUDIES.md` §unrun-suite.
-   - **A new or changed test must be shown to fail without the fix.** Stash or revert the
-     source change, run the test, confirm it FAILS, restore. A test that passes either way
-     verifies nothing while looking like proof, and it is what lets a bad fix survive into
-     the next round wearing a green tick.
+   - **A new or changed test must be shown to fail without the fix — and you must see it
+     fail FIRST.** Author the test against the unfixed source (revert the fix if you already
+     made it), run it, and **read the failure message**: it has to name the behaviour under
+     test. Only then apply the fix and confirm it passes. A test that passes either way
+     verifies nothing while looking like proof. Running it green-first inverts that: you are
+     debugging a harness you have already built on, which is the loop that eats whole rounds.
+   - **The harness is where these tests actually break, not the assertions.** A wrong exit
+     status, a `chdir` in a constructor, a shell that is not the script's shebang, an extra
+     parsing layer — each looks like a code defect and costs a round. `fix-mandate.md` gives
+     the capture rule for this session's tooling. Traps and the failure catalogue:
+     `references/test-authoring.md`.
+   - **Put a new test where that subsystem's siblings already live**, never at the suite root
+     — a suite organised by folder exists so subsets can be run, and a stray file breaks that.
+   - **Say in the round note which command you ran, verbatim.** If it was narrower than what
+     CI runs, say so: a subset that passes locally and goes red in CI buys a whole extra round.
    - If `verify.state` is `none-found`, do **not** treat that as clean: say in the round note
      that this round's fixes are unverified and why. That is a finding about the project, not
      a passing gate.
@@ -474,6 +493,12 @@ See `references/dirty-reround.md`.
 
 
 ### Step 3C — Post the QA report to the MR
+
+**Step 3B runs FIRST, always** — the trailers below name commits that must already
+exist, and the next round reads them off the *posted* note. On the manager path the
+manager withholds the post on any round with findings and returns `post_after_fixes`;
+fix, append the trailers to `note_path`, then post. `note_posted=true` means a clean
+round already posted — do not post again, or the round counter advances twice.
 
 Post the QA report as a **single comment** on the MR. The report body is:
 
@@ -546,6 +571,31 @@ cd <target-path>
 . "${CLAUDE_PLUGIN_ROOT}/lib/forge.sh"
 forge_init "$(git remote get-url "$REMOTE")" "${CLAUDE_PLUGIN_ROOT}/lib"
 
+# ⚠ $QA_TOKEN IS NOT ASSIGNED ANYWHERE ELSE IN THE MAIN LOOP. Assign it HERE from
+# the values preflight resolved — do NOT reconstruct the env-var name or the path
+# from memory or from a predecessor skill; a wrong guess resolves EMPTY, and empty
+# means "act as the developer".
+#
+#   QA_TOKEN_ENV=$(jq  -r '.qa_token_env'  "$QA_SCRATCH/preflight.json")
+#   QA_TOKEN_FILE=$(jq -r '.qa_token_file' "$QA_SCRATCH/preflight.json")
+#   QA_TOKEN="${!QA_TOKEN_ENV:-}"
+#   [ -n "$QA_TOKEN" ] || QA_TOKEN=$(tr -d '[:space:]' < "${QA_TOKEN_FILE/#\~/$HOME}" 2>/dev/null)
+#
+# Env var FIRST, then file — a file-only lookup yields empty when the token comes
+# purely from the environment. (Pre-2026-08-03 builds have those keys in the
+# manager brief only: `grep '^qa_token_env=' "$MANAGER_BRIEF" | cut -d= -f2-`.)
+#
+# THEN VERIFY BEFORE THE WRITE, because every failure here is silent:
+#
+#   [ -n "$QA_TOKEN" ] || echo "WARNING: QA token empty -> posting as the developer"
+#
+# `forge_post_note` returning 0 does NOT mean the QA agent posted, and the
+# `QA_TOKEN_OK` guard below does not protect you — it reports that PREFLIGHT
+# resolved a token, not that YOU hold one. Both were true while the main loop held
+# an empty string and three notes posted as the developer under a footer claiming
+# the QA agent (CASE-STUDIES.md §self-approval-fallback). The created note's author
+# is the ground truth; the footer you write is not evidence of anything.
+#
 # Pass the QA token when it verified, an empty token to fall back to the dev
 # identity. The warning line above already explains the fallback in the comment.
 if forge_post_note "$PROJECT" <MR_NUMBER> "$QA_SCRATCH/note-round<N>.md" \

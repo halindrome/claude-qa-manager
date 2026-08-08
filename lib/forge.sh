@@ -32,13 +32,20 @@
 #   forge_auth_user            [token]       -> username of that identity
 #   forge_project_enc          <slug>        -> the slug in API-path form
 #   forge_view_mr              <dir> <n>     -> normalized JSON (see above)
-#   forge_approvers            <enc> <n> [token] -> usernames, one per line
-#   forge_notes                <enc> <n> [token] -> JSON array of {body: "..."}
-#   forge_post_note            <enc> <n> <body-file> [token]
-#   forge_approve              <enc> <n> [token]
-#   forge_unapprove            <enc> <n> [token]
+#   forge_approvers            <slug> <n> [token] -> usernames, one per line
+#   forge_notes                <slug> <n> [token] -> JSON array of {body: "..."}
+#   forge_post_note            <slug> <n> <body-file> [token]
+#   forge_approve              <slug> <n> [token]
+#   forge_unapprove            <slug> <n> [token]
 #
-# forge_project_slug and forge_detect are shared and live here.
+# Every one of those takes the PLAIN `owner/repo` slug, NOT the output of
+# forge_project_enc. The API-path members encode internally; the members that
+# shell out to `glab -R` / `gh -R` need the unencoded form and REJECT
+# `owner%2Frepo`. This header said `<enc>` once and a caller who believed it hit
+# `Expected the "[HOST/]OWNER/[NAMESPACE/]REPO" format`. forge_project_enc is
+# exported for the skill's own raw `api` calls, not for these.
+#
+# forge_project_slug, forge_detect and _forge_require_token are shared and live here.
 
 # --------------------------------------------------------------------------
 # forge_detect <remote-url> -> gitlab | github | unknown
@@ -94,6 +101,32 @@ forge_project_slug() {
   slug="${slug#/}"              # leading slash from ssh://host/…
   [ -n "$slug" ] && printf '%s' "$slug" | grep -q '/' || return 1
   printf '%s' "$slug"
+}
+
+# --------------------------------------------------------------------------
+# _forge_require_token <caller> <token> -> 0 if non-empty, else 1 (and warns)
+#
+# An empty token makes `glab`/`gh` fall back to the DEFAULT (developer)
+# identity. For forge_post_note that degradation is deliberate and documented:
+# losing a round note entirely is worse than posting it under the developer's
+# name, and SKILL.md requires a "⚠ Posted with dev credentials" line when it
+# happens. Degrading a note mislabels evidence; it still preserves it.
+#
+# For forge_approve / forge_unapprove the same fallback is NOT equivalent. On a
+# self-authored MR it converts "QA has not approved" into "the author approved"
+# — which satisfies an approvals check and enters the audit trail as review.
+# That is strictly worse than no approval: degrading a note preserves
+# information, degrading an approval FABRICATES it. It happened on this repo's
+# first live cycle and nothing reported an error, because approving as the
+# developer is a successful approve. See CASE-STUDIES.md §self-approval-fallback.
+#
+# So the asymmetry is the point. Do not "tidy" post_note into refusing, and do
+# not tidy approve/unapprove into degrading.
+# --------------------------------------------------------------------------
+_forge_require_token() {
+  [ -n "${2:-}" ] && return 0
+  echo "error: $1 refused — no QA agent token. Approving with an empty token would act as the DEFAULT (developer) identity, which on a self-authored MR manufactures a self-approval that reads as review. Not calling the forge." >&2
+  return 1
 }
 
 # --------------------------------------------------------------------------

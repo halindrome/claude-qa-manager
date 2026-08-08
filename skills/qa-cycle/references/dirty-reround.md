@@ -98,7 +98,12 @@ if [ "$QA_TOKEN_OK" = "true" ] \
       MR_APPROVED=false
     fi
   else
-    echo "warn: forge_unapprove failed; leaving MR_APPROVED=true and proceeding." >&2
+    rc=$?
+    # rc 3 = the seam refused an empty token. `QA_TOKEN_OK=true` above should
+    # make that unreachable; if it fires, QA_TOKEN was lost between Step 0.25 and
+    # here, and dismissing as the DEVELOPER is not the action this block wants.
+    [ "$rc" -eq 3 ] && echo "error: forge_unapprove refused — QA_TOKEN is empty despite QA_TOKEN_OK=true. Step 0.25 and this step disagree; do not proceed on the assumption the approval was revoked." >&2
+    echo "warn: forge_unapprove failed (rc=$rc); leaving MR_APPROVED=true and proceeding." >&2
   fi
 fi
 ```
