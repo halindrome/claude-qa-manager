@@ -116,9 +116,11 @@ forge_approvers() {
 # block approval on advisory scans, contradicting the deliberate decision that
 # `skipped:pipeline-running` is an acceptable SAST state.
 #
-# `canceled` maps to unknown, not failed: it carries no verdict, and the caller
-# must not approve on it either way. A project with no CI at all yields `none`,
-# which the caller must REPORT rather than silently treat as a pass.
+# `canceled` maps to `did-not-run`, not `failed`: it carries no verdict, and
+# telling the operator to "fix it" sends them after a defect that does not exist.
+# Same distinction the SAST helpers draw with `skipped:runner-unavailable`.
+# A project with no CI at all yields `none`, which the caller must REPORT rather
+# than silently treat as a pass. Neither is approvable.
 forge_head_ci() {
   local enc; enc=$(forge_project_enc "$1")
   local n="$2" token="${3:-}" raw st sha
@@ -129,6 +131,7 @@ forge_head_ci() {
     success)                                              st=success ;;
     failed)                                               st=failed  ;;
     created|waiting_for_resource|preparing|pending|running|scheduled|manual) st=running ;;
+    canceled|cancelled)                                   st=did-not-run ;;
     none|null|"")                                         st=none    ;;
     *)                                                    st=unknown ;;
   esac

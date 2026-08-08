@@ -113,13 +113,23 @@ forge_approvers() {
 # commit and would certify a commit no CI ever saw.
 #
 # GitHub has no single "blocking outcome" field, so it is derived. The order is
-# load-bearing: a failure anywhere outranks anything still in flight, and pending
-# outranks success, so a rollup that is half-green never reports `success`.
-# NEUTRAL and SKIPPED are NOT failures — they are how a conditional workflow
-# reports "did not apply", and treating them as red would block approval on every
+# load-bearing: a check that never produced a verdict outranks a real failure,
+# a real failure outranks anything still in flight, and in-flight outranks
+# success — so a rollup that is half-green never reports `success`.
+#
+# `did-not-run` is its OWN state, not a failure. cancelled / timed_out / stale /
+# action_required mean the check reached a terminal state without judging the
+# code; calling that `failed` tells the operator "fix it" about a job that never
+# ran, which sends them looking for a defect that does not exist. It ranks
+# FIRST because it is the least actionable-by-fixing and the most likely to be
+# mistaken for a verdict — the same reasoning that gives the SAST helpers a
+# `skipped:runner-unavailable` state instead of letting an unrun scan read clean.
+#
+# NEUTRAL and SKIPPED are neither: they are how a conditional workflow reports
+# "did not apply", and treating them as red would block approval on every
 # path-filtered job. Unlike GitLab there is no allow_failure equivalent in the
-# rollup, so an advisory check that reports FAILURE will hold approval; that is
-# the safe direction, and the operator can act on it.
+# rollup, so an advisory check reporting FAILURE will hold approval; that is the
+# safe direction, and the operator can act on it.
 forge_head_ci() {
   local slug="$1" n="$2" token="${3:-}" raw sha rollup
   raw=$(_gh "$token" api "repos/${slug}/pulls/${n}" 2>/dev/null) || return 1
@@ -129,9 +139,10 @@ forge_head_ci() {
   printf '%s %s\n' "$(printf '%s' "$rollup" | jq -r '
     [ .check_runs[]? | { s: (.status // ""), c: (.conclusion // "") } ] as $r
     | if   ($r | length) == 0                                              then "none"
-      elif ($r | map(select(.c=="failure" or .c=="timed_out"
-                         or .c=="cancelled" or .c=="action_required"))
-               | length) > 0                                              then "failed"
+      elif ($r | map(select(.c=="cancelled" or .c=="timed_out"
+                         or .c=="stale"     or .c=="action_required"))
+               | length) > 0                                              then "did-not-run"
+      elif ($r | map(select(.c=="failure")) | length) > 0                 then "failed"
       elif ($r | map(select(.s!="completed")) | length) > 0               then "running"
       elif ($r | map(select(.c=="success" or .c=="neutral" or .c=="skipped"))
                | length) == ($r | length)                                 then "success"

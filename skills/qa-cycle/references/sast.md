@@ -28,6 +28,14 @@ SAST_REPORT="$QA_SCRATCH/sast.md"
 #   skipped:no-pipeline        — no pipeline exists on the MR yet. ROUTINE right
 #                                after preflight pushes the sync merge.
 #   skipped:pipeline-running   — security jobs still in progress (waitable)
+#   skipped:runner-unavailable — security jobs reached a terminal state WITHOUT
+#                                running: no runner, cluster out of capacity,
+#                                scheduler failure. NOT waitable (a human must
+#                                retry the job) and NOT a finding. It exists
+#                                because an unrun job uploads no artifact, and a
+#                                missing artifact used to read as "likely no NEW
+#                                findings" under a "## NEW SAST findings" header
+#                                — an unrun scan classifying as `clean`.
 #   skipped:helper-failed      — helper exited non-zero
 #   skipped:unknown            — helper exited 0 but emitted output preflight
 #                                could not positively classify. Never treated as

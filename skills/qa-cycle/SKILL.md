@@ -196,7 +196,19 @@ round note verbatim.
 If `sast.running=true` **and** the round is approval-eligible, prompt before continuing —
 approving with a running scan means the round certifies a security delta it never saw.
 
-Detail, including the wait-gate and the six-value contract: `references/sast.md`.
+`skipped:runner-unavailable` means the scan jobs never got a runner. **Not waitable** — the
+operator must retry them — and not a finding either: report it as "did not run", never as a
+failure to fix. It exists because an unrun job uploads no artifact, and a missing artifact
+used to print *"likely no NEW findings"* under a `## NEW SAST findings` header, so a scan
+that never executed classified as `clean`.
+
+**The security claim must name the commit it rests on.** preflight ran before this round's
+fix commit existed, so `sast.*` describes the *pre-fix* head. If Step 3B commits, say so in
+the note — quote the pipeline id and its sha — rather than writing an unqualified "no new
+security findings". A round once asserted security-clean citing a pipeline for a commit two
+ahead of the one it approved.
+
+Detail, including the wait-gate and the state contract: `references/sast.md`.
 
 ---
 

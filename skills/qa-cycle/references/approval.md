@@ -111,8 +111,15 @@ path for non-schema MRs.
   | `success` + sha match | gate satisfied |
   | `running` | **wait**, then re-probe. Do not approve, and do not "approve pending CI". |
   | `failed` | do not approve. Fix it — this round put the commit there. |
+  | `did-not-run` | the pipeline was cancelled / timed out / never got a runner. **Do not tell the operator to fix anything** — there is no verdict to act on. Ask them to re-run it, then re-probe. |
   | `none` | no CI exists for this MR. Record `ci: none-found`; that is a finding about the project, **never** a pass. |
   | `unknown`, probe failed, or sha mismatch | do not approve. A sha mismatch means CI ran on different code, which is worse than no answer. |
+
+  `did-not-run` is deliberately separate from `failed`. Reporting an unrun job as a failure
+  sends someone hunting a defect that does not exist; reporting it as a pass certifies code
+  nothing examined. It is the same distinction the SAST helpers draw with
+  `skipped:runner-unavailable`, and it came from a real cluster capacity outage
+  (`runner_system_failure`: *"0/2 nodes are available … timed out waiting for pod to start"*).
 
   **Why live, and why the sha.** `preflight.json .pipeline_status` describes the head as it
   was *before* this round's fix commit existed, so consuming it here certifies a commit no
@@ -244,7 +251,7 @@ cd <target-path>
 # is a ROUTINE state (preflight pushes the sync merge; GitLab has not created the
 # pipeline yet), so this was reachable on the normal path.
 case "${SAST_GATE_STATE:-}" in
-  clean|skipped:no-stage|skipped:no-pipeline|skipped:pipeline-running|skipped:helper-failed|skipped:unknown) ;;
+  clean|skipped:no-stage|skipped:no-pipeline|skipped:pipeline-running|skipped:runner-unavailable|skipped:helper-failed|skipped:unknown) ;;
   *)
     echo "error: SAST_GATE_STATE='${SAST_GATE_STATE:-<unset>}' is not a terminal state preflight can emit. Producer/consumer drift — reconcile this list with preflight.sh's shape assertion. Refusing to approve." >&2
     exit 7

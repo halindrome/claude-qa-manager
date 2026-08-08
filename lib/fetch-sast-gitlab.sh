@@ -118,7 +118,7 @@ JOBS_JSON=$(glab api "projects/${PROJECT_ENC}/pipelines/${PIPE_ID}/jobs" 2>/dev/
 # by the shared .gitlab-ci-security.yml template.
 SECURITY_PATTERN='^(semgrep|osv_scan|trivy_fs|trivy_config|gitleaks_scan|retire_js|cpan_audit|sbom_publish)$'
 SECURITY_JOBS=$(printf '%s' "$JOBS_JSON" \
-  | jq -r --arg re "$SECURITY_PATTERN" '.[] | select(.name | test($re)) | "\(.id)|\(.name)|\(.status)"')
+  | jq -r --arg re "$SECURITY_PATTERN" '.[] | select(.name | test($re)) | "\(.id)|\(.name)|\(.status)|\(.failure_reason // "")"')
 
 if [ -z "$SECURITY_JOBS" ]; then
   # No security jobs detected. If the pipeline is still spinning up they may not
@@ -144,6 +144,35 @@ fi
 # ready yet, so defer — regardless of the overall pipeline status.
 UNFINISHED_SEC=$(printf '%s' "$SECURITY_JOBS" \
   | awk -F'|' '$3 ~ /^(created|pending|running|preparing|scheduled|waiting_for_resource)$/ { print "- " $2 " (" $3 ")" }')
+
+# ...but "terminal" is not the same as "ran". A job killed before its script
+# started -- no runner, cluster out of capacity, scheduler failure -- is `failed`
+# with a `failure_reason` from GitLab's SYSTEM set, and it uploads nothing.
+#
+# That case used to fall straight through to the artifact loop, where a missing
+# artifact is reported as "no artifact (likely no NEW findings...)" while the
+# report header already said "## NEW SAST findings" -- which preflight classifies
+# as gate_state=clean. A security job that never executed therefore certified the
+# MR as scanned. Observed for real: `gitleaks_scan` died with
+# `runner_system_failure` ("0/2 nodes are available: Insufficient cpu/memory,
+# timed out waiting for pod to start") and the pipeline stayed green around it,
+# because these jobs are `allow_failure: true`.
+#
+# `script_failure` is deliberately NOT in this set: that job RAN, and its findings
+# (or its uploaded artifact) are real evidence. This set is only "never executed".
+INFRA_FAILED_SEC=$(printf '%s' "$SECURITY_JOBS" \
+  | awk -F'|' '$4 ~ /^(runner_system_failure|stuck_or_timeout_failure|scheduler_failure|runner_unsupported|api_failure|insufficient_resources|no_matching_runner)$/ { print "- " $2 " (" $4 ")" }')
+
+if [ -n "$INFRA_FAILED_SEC" ]; then
+  emit "## SAST review skipped"
+  emit ""
+  emit "Security jobs did not run — the runner never started them, so there is no scan result to report. This is **not** a clean scan and **not** a finding:"
+  emit ""
+  emit "$INFRA_FAILED_SEC"
+  emit ""
+  emit "Retry the job(s) in pipeline #${PIPE_ID}, then re-run \`/qa-cycle\`."
+  exit 0
+fi
 
 if [ -n "$UNFINISHED_SEC" ]; then
   emit "## SAST review skipped"
@@ -199,11 +228,17 @@ fetch_artifact() {
   return 1
 }
 
+# A per-scanner skip is NOT a per-scanner pass, and the wording has to say so.
+# "no artifact (likely no NEW findings)" read as reassurance for a condition that
+# also covers a scanner that produced nothing because it never ran. The infra
+# gate above now catches the never-ran case wholesale, so anything reaching here
+# is a genuine empty-artifact — but the line still must not imply a verdict it
+# does not have.
 print_skipped() {
   local scanner="$1" reason="$2"
   emit "### ${scanner}"
   emit ""
-  emit "_Skipped: ${reason}_"
+  emit "_No result: ${reason}. This scanner contributed no evidence either way._"
   emit ""
 }
 

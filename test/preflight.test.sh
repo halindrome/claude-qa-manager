@@ -972,8 +972,10 @@ head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl success)" success 
 head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl failed)"  failed  cafe123
 head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl running)" running cafe123
 head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl pending)" running cafe123
-# `canceled` carries no verdict: it must not read as pass OR as a fixable failure.
-head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl canceled)" unknown cafe123
+# `canceled` carries no verdict: not a pass, and NOT a failure either. Reporting
+# it as failed tells the operator to fix a defect that does not exist.
+head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl canceled)" did-not-run cafe123
+head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' "$(_gl weird_new_status)" unknown cafe123
 # No pipeline at all -> `none`, which the caller must REPORT, never treat as clean.
 head_ci_case gitlab glab 'git@gitlab.com:grp/proj.git' \
   '*"merge_requests/73"*) echo "{\"sha\":\"cafe123\"}" ;;' none cafe123
@@ -998,6 +1000,17 @@ head_ci_case github gh 'git@github.com:grp/proj.git' \
 head_ci_case github gh 'git@github.com:grp/proj.git' \
   "$(_ghp '[{"status":"completed","conclusion":"skipped"},{"status":"completed","conclusion":"neutral"}]')" success cafe123
 head_ci_case github gh 'git@github.com:grp/proj.git' "$(_ghp '[]')" none cafe123
+# A check that ended without judging the code is its OWN state — and it outranks a
+# real failure, because "fix it" is the wrong instruction for a job that never ran.
+head_ci_case github gh 'git@github.com:grp/proj.git' \
+  "$(_ghp '[{"status":"completed","conclusion":"cancelled"}]')" did-not-run cafe123
+head_ci_case github gh 'git@github.com:grp/proj.git' \
+  "$(_ghp '[{"status":"completed","conclusion":"timed_out"}]')" did-not-run cafe123
+head_ci_case github gh 'git@github.com:grp/proj.git' \
+  "$(_ghp '[{"status":"completed","conclusion":"failure"},{"status":"completed","conclusion":"cancelled"}]')" did-not-run cafe123
+# ...but a plain failure with everything else green is still `failed`, not swallowed.
+head_ci_case github gh 'git@github.com:grp/proj.git' \
+  "$(_ghp '[{"status":"completed","conclusion":"failure"},{"status":"completed","conclusion":"success"}]')" failed cafe123
 
 # Non-vacuity: with a token present the same calls MUST reach the CLI. Without
 # this, a guard that refused unconditionally would pass every assertion above.
@@ -1038,7 +1051,25 @@ Security scans are still in progress (overall pipeline #1: **canceled**).' 'skip
 sast_case "marker-only running stub" '## SAST review skipped
 
 Pipeline #1 is **running** and no security jobs have been created yet.' 'skipped:pipeline-running' 'true'
+# THE defect this state exists for. An unrun job uploads no artifact, and a
+# missing artifact printed "likely no NEW findings" UNDER a "## NEW SAST findings"
+# header — so a scan that never executed classified as `clean` and got written
+# into a permanent approval comment. Observed live: gitleaks_scan died with
+# runner_system_failure ("0/2 nodes are available … timed out waiting for pod to
+# start") while the pipeline stayed green around it, because the security jobs are
+# allow_failure. running=false is part of the assertion: unlike pipeline-running
+# this does NOT resolve by waiting, and a true here would make the cycle sit
+# forever on a job that needs a human to retry it.
+sast_case "runner never started" '## SAST review skipped
+
+Security jobs did not run — the runner never started them.' 'skipped:runner-unavailable' 'false'
 sast_case "unrecognized stub" 'something the helper never says' 'skipped:unknown' 'false'
+
+# Non-vacuity for the case above: the classifier must key on the "did not run"
+# sentence, not merely on "## SAST review skipped" (which every skip path emits).
+sast_case "skip heading alone is NOT runner-unavailable" '## SAST review skipped
+
+Some other reason entirely.' 'skipped:unknown' 'false'
 
 echo "[SAST helper failure is surfaced, never swallowed]"
 r=$(mkfixture "feature/x" "main" '.targets.mono.security_stage = true')
@@ -1061,7 +1092,8 @@ for helper_forge in gitlab github; do
   HELPER="$REPO_SRC/lib/fetch-sast-${helper_forge}.sh"
   if [ -f "$HELPER" ]; then
     for phrase in "No pipeline associated with MR" "No security stage detected" \
-                  "Security scans are still in progress" "## NEW SAST findings"; do
+                  "Security scans are still in progress" "## NEW SAST findings" \
+                  "Security jobs did not run"; do
       if grep -qF -- "$phrase" "$HELPER"; then ok "$helper_forge helper emits: $phrase"
       else bad "$helper_forge helper emits: $phrase" "not found in $HELPER — stubs are stale, SAST cases prove nothing"; fi
     done

@@ -839,6 +839,15 @@ else
         # state moments after preflight's own sync push above.
         SAST_GATE_STATE="skipped:no-pipeline"
         SAST_RUNNING=true
+      elif grep -q 'Security jobs did not run' "$SAST_REPORT"; then
+        # A job the runner never started. Distinct from pipeline-running (which
+        # resolves by waiting) and from a scan that ran and found nothing. It
+        # used to reach the artifact loop, where a missing artifact printed
+        # "likely no NEW findings" under a "## NEW SAST findings" header — so a
+        # scan that never executed classified as `clean`. Not waitable: the
+        # operator has to retry the job, so SAST_RUNNING stays false.
+        SAST_GATE_STATE="skipped:runner-unavailable"
+        WARNINGS+=("sast_runner_unavailable")
       elif grep -q 'Security scans are still in progress' "$SAST_REPORT" \
            || grep -Eq "$RUNNING_MARKER_RE" "$SAST_REPORT"; then
         # Match the helper's own sentence first, THEN the status marker. The
@@ -1705,7 +1714,7 @@ printf '%s' "$PREFLIGHT_JSON" | jq -e '
   (.lenses | contains(["contract-security","regression-edges","test-quality"])) and
   # This clause IS reachable and IS locked (the enum-drift test).
   (.lenses | all(test("^(contract-security|regression-edges|test-quality|schema-propagation|api-envelope|ui-styling|performance)$"))) and
-  (.sast.gate_state | test("^(clean|skipped:(no-stage|no-pipeline|pipeline-running|helper-failed|unknown))$")) and
+  (.sast.gate_state | test("^(clean|skipped:(no-stage|no-pipeline|pipeline-running|runner-unavailable|helper-failed|unknown))$")) and
   # A round of 0 or a non-number means the notes probe or the arithmetic broke.
   # Round drives the proportionality tier (>=3 tightens it) and the round-1-only
   # prompts in Step 3, so a silent 0 would both re-ask round-1 questions on a

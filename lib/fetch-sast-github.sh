@@ -123,6 +123,33 @@ if [ "$SEC_RUNNING" -gt 0 ]; then
   exit 0
 fi
 
+# A check that reached a terminal state without producing a verdict — cancelled,
+# stale, timed out, never started. Twin of the GitLab helper's infra gate; see the
+# rationale there. Not waitable, so the operator must re-run the check, and this
+# must never fall through to the alert query, where "no open alerts" would be
+# indistinguishable from "the scanner never ran".
+#
+# `failure` is deliberately EXCLUDED: that check ran and its result is evidence.
+SEC_NORAN=$(jq -r --arg re "$SEC_RE" '
+  [ .[]
+    | select(.name | ascii_downcase | test($re))
+    | select((.state // "") | ascii_downcase
+             | . == "cancelled" or . == "canceled" or . == "stale"
+               or . == "startup_failure" or . == "timed_out" or . == "action_required")
+    | "- \(.name) (\(.state))"
+  ] | .[]' "$CHK")
+
+if [ -n "$SEC_NORAN" ]; then
+  emit "## SAST review skipped"
+  emit ""
+  emit "Security jobs did not run — the check reached a terminal state without producing a result, so there is no scan to report. This is **not** a clean scan and **not** a finding:"
+  emit ""
+  emit "$SEC_NORAN"
+  emit ""
+  emit "Re-run the check(s) on \`${HEAD_REF}\`, then re-run \`/qa-cycle\`."
+  exit 0
+fi
+
 # -----------------------------------------------------------------------------
 # Gate 2 — code scanning availability.
 # -----------------------------------------------------------------------------
