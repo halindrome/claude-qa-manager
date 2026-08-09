@@ -77,7 +77,7 @@ it:
 | `forge` (`gitlab`\|`github`), `forge_cli` (`glab`\|`gh`) | which backend `lib/forge.sh` dispatches to, and which CLI it drives. Everything that touches the forge goes through `forge_*` — never call `glab`/`gh` directly, or the step works on one forge only. |
 | `project`,`project_enc`,`qa_scratch` | as named |
 | `commit_subject` | the Step 3B fix-commit subject, already rendered — scopeless in a single-project repo |
-| `verify.command`,`verify.source`,`verify.state`,`verify.build_command` | the target's OWN test/build entry point, discovered from its Makefile / package.json / tox.ini / …. Step 3B runs it before committing. `state=none-found` means the project has no discoverable tests — report that, never treat it as a pass. |
+| `verify.command`,`verify.source`,`verify.state`,`verify.kind`,`verify.build_command` | the target's OWN test/build entry point, discovered from its Makefile / package.json / tox.ini / …. Step 3B runs it before committing. `state=none-found` means the project has no discoverable tests — report that, never treat it as a pass. `kind=lint` means what was found is a linter, **not** a behavioural suite: run it, and still report that nothing behavioural ran. |
 | `layout.multi_target`,`layout.target_is_submodule` | whether this project HAS subprojects, and whether this target is one. Gate subproject wording (Step 4) on these; never assume a repo has parts. |
 
 > `scope` is the target token; `diff_scope` is the diff numbers. preflight asserts the
@@ -460,6 +460,12 @@ Do NOT apply fixes automatically. Instead:
    - If `verify.state` is `none-found`, do **not** treat that as clean: say in the round note
      that this round's fixes are unverified and why. That is a finding about the project, not
      a passing gate.
+   - **`verify.kind == "lint"` is not behavioural verification.** Run it — a linter catches
+     real defects — but the note must still say no behavioural suite was found, exactly as
+     `none-found` would. `state:detected` answers "is there something to run", which is not
+     the question. If the project has a behavioural job the detector cannot derive (one
+     needing an inventory, fixtures, or credentials), name it and say it did not run, or
+     point `targets.<name>.verify.command` at it.
    - If the checks fail, fix that before committing. Do not commit a red tree and leave it to
      the next round.
 5. Each QA round's fixes must be committed as a **single, separate commit** — do not amend previous commits:

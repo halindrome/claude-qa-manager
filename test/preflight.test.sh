@@ -726,6 +726,12 @@ mkdir -p "$d/ans"; touch "$d/ans/.ansible-lint" "$d/ans/.yamllint"
 eq "ansible-lint config detected"    "$(dv "$d/ans" .command)" "ansible-lint --offline"
 eq "  source names the config"       "$(dv "$d/ans" .source)"  ".ansible-lint"
 eq "  yamllint is the build side"    "$(dv "$d/ans" .build_command)" "yamllint ."
+# THE correction. Adding this detector turned an honest none-found into a `detected`
+# that runs a LINTER while reading as though the project's suite passed — a reviewer
+# spotted it within one round ("a linter, not the behavioural suite"). `state` answers
+# "is there something to run"; `kind` answers the question Step 3B actually needs.
+eq "  and is labelled kind=lint"     "$(dv "$d/ans" .kind)" "lint"
+eq "  real suites are kind=suite"    "$(dv "$d/mk" .kind)"  "suite"
 # Keyed on the LINT config, never on ansible.cfg: every Ansible repo has one whether
 # or not anything lints it, so keying there emits a command for repos that never run
 # it — rule 1, presence must prove the entry point exists.
@@ -737,10 +743,18 @@ eq "  Makefile outranks ansible-lint" "$(dv "$d/ansmk" .command)" "make test"
 # ...and molecule, the stronger Ansible signal, outranks the lint config too.
 mkdir -p "$d/ansmol/molecule"; touch "$d/ansmol/.ansible-lint"
 eq "  molecule outranks ansible-lint" "$(dv "$d/ansmol" .command)" "molecule test"
+eq "  and molecule is behavioural"    "$(dv "$d/ansmol" .kind)" "suite"
 
 mkdir -p "$d/empty"
 eq "bare directory -> none-found"    "$(dv "$d/empty" .state)" "none-found"
 eq "missing directory -> none-found" "$(bash "$DETECT" "$d/nope" | jq -r .state)" "none-found"
+# `kind` must be absent-shaped wherever `command` is empty. A consumer that reads
+# kind without first checking state would otherwise conclude the opposite of the
+# truth — and BOTH no-command paths must agree, including the early exit for a
+# missing directory, which builds its JSON by hand rather than through jq.
+eq "  bare dir -> kind=none"         "$(dv "$d/empty" .kind)" "none"
+eq "  missing dir -> kind=none"      "$(bash "$DETECT" "$d/nope" | jq -r .kind)" "none"
+eq "  build-only -> kind=none"       "$(dv "$d/ft2" .kind)" "none"
 rm -rf "$d"
 
 # End to end: preflight must carry the result, and an undiscoverable project must

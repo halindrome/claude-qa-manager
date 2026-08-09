@@ -3,7 +3,18 @@
 #
 # Usage:  detect-verify.sh <dir>
 # Output: one JSON object on stdout:
-#   {"state":"detected|none-found","command":"…","source":"…","build_command":"…","build_source":"…"}
+#   {"state":"detected|none-found","kind":"suite|lint|none","command":"…","source":"…",
+#    "build_command":"…","build_source":"…"}
+#
+# WHY `kind` EXISTS. `state:detected` answers "did I find something to run", which is
+# NOT the question Step 3B needs answered — that one is "were this round's fixes
+# behaviourally verified". Conflating them regressed a real repo: adding ansible-lint
+# detection turned an honest `none-found` (which forces the round to say its fixes are
+# unverified) into a `detected` that runs a LINTER and reads as though the project's
+# suite passed. A reviewer caught it immediately — "a linter, not the behavioural
+# suite… I'll run the full CI set rather than trusting that field" — which is the right
+# call and exactly the call the field should not have required them to make.
+# `kind:lint` means: run it, and still say no behavioural suite was found.
 #
 # WHY DISCOVERY AND NOT CONFIGURATION. Any project worth QA-ing already declares
 # how it is tested — a Makefile target, an npm script, a tox env. Restating that
@@ -27,9 +38,14 @@
 set -uo pipefail
 
 DIR="${1:-}"
-[ -n "$DIR" ] && [ -d "$DIR" ] || { printf '{"state":"none-found","command":"","source":"","build_command":"","build_source":""}\n'; exit 0; }
+[ -n "$DIR" ] && [ -d "$DIR" ] || { printf '{"state":"none-found","kind":"none","command":"","source":"","build_command":"","build_source":""}\n'; exit 0; }
 
 CMD=""; SRC=""; BUILD=""; BUILD_SRC=""
+# Default "suite": every detector below this line finds a real behavioural runner.
+# Only a detector that finds a LINT gate overrides it — so a new detector that
+# forgets to set KIND claims behavioural coverage it may not have. Adding one?
+# Decide which it is deliberately.
+KIND="suite"
 
 has_make_target() {  # $1 = makefile, $2 = target
   grep -qE "^$2:" "$1" 2>/dev/null
@@ -94,7 +110,7 @@ elif [ -d "$DIR/molecule" ]; then
 # fetches galaxy dependencies, so the check's outcome depends on the network. It
 # also matches what the CI of the repo this came from actually runs.
 elif [ -f "$DIR/.ansible-lint" ] || [ -f "$DIR/.ansible-lint.yml" ] || [ -f "$DIR/.ansible-lint.yaml" ]; then
-  CMD="ansible-lint --offline"; SRC=".ansible-lint"
+  CMD="ansible-lint --offline"; SRC=".ansible-lint"; KIND="lint"
 fi
 # NOT derived: a playbook-level test job (e.g. `ansible-playbook -i tests/inventory.ini
 # tests/assert-logic.yml`). The invocation is repo-specific — inventory path, limits,
@@ -118,5 +134,8 @@ elif [ -f "$DIR/.yamllint" ] || [ -f "$DIR/.yamllint.yml" ] || [ -f "$DIR/.yamll
 fi
 
 STATE="none-found"; [ -n "$CMD" ] && STATE="detected"
-jq -n --arg s "$STATE" --arg c "$CMD" --arg src "$SRC" --arg b "$BUILD" --arg bsrc "$BUILD_SRC" \
-  '{state:$s, command:$c, source:$src, build_command:$b, build_source:$bsrc}'
+# No command means no kind. Leaving KIND="suite" on a none-found result would let a
+# consumer that reads kind without checking state conclude the opposite of the truth.
+[ -n "$CMD" ] || KIND="none"
+jq -n --arg s "$STATE" --arg k "$KIND" --arg c "$CMD" --arg src "$SRC" --arg b "$BUILD" --arg bsrc "$BUILD_SRC" \
+  '{state:$s, kind:$k, command:$c, source:$src, build_command:$b, build_source:$bsrc}'

@@ -278,14 +278,19 @@ if [ -z "$VERIFY_OVERRIDE" ]; then
   VERIFY_SRC="config verify.command"
 fi
 if [ -n "$VERIFY_OVERRIDE" ]; then
+  # kind:suite on the override path is a CLAIM BY THE OPERATOR, not a detection.
+  # Someone who points verify.command at a lint-only invocation gets a round that
+  # believes it ran the suite — but a config override is a deliberate act with a
+  # human behind it, and inventing a third kind for "the operator might have lied"
+  # buys nothing the round note's verbatim-command rule does not already surface.
   VERIFY_JSON=$(jq -n --arg c "$VERIFY_OVERRIDE" --arg s "$VERIFY_SRC" \
-    '{state:"configured", command:$c, source:$s, build_command:"", build_source:""}')
+    '{state:"configured", kind:"suite", command:$c, source:$s, build_command:"", build_source:""}')
 else
   VERIFY_JSON=$(bash "$PLUGIN_ROOT/lib/detect-verify.sh" "$TARGET_ABS" 2>/dev/null || true)
   # A detector that crashed must not read as "this project has no tests" — that
   # is the same class of lie as a skipped gate reporting clean.
   jq -e . >/dev/null 2>&1 <<<"${VERIFY_JSON:-}" || \
-    VERIFY_JSON='{"state":"none-found","command":"","source":"detector failed to run","build_command":"","build_source":""}'
+    VERIFY_JSON='{"state":"none-found","kind":"none","command":"","source":"detector failed to run","build_command":"","build_source":""}'
 fi
 
 # ---------------------------------------------------------------------------
