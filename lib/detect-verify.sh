@@ -78,7 +78,28 @@ elif [ -f "$DIR/composer.json" ] && [ -n "$(json_script "$DIR/composer.json" tes
   CMD="composer test"; SRC="composer.json (scripts.test)"
 elif [ -d "$DIR/molecule" ]; then
   CMD="molecule test"; SRC="molecule/"
+# An Ansible repo with no molecule/ still has a real gate, and missing it is not
+# harmless: one such repo reported state=none-found on EVERY round while its CI ran
+# yamllint, ansible-lint, syntax-check and a playbook assert job — so Step 3B's
+# "run the project's own checks" was nominally unsatisfied every time, and the
+# session hand-rolled ansible-lint 516 times and yamllint 323 times instead, none
+# of it recorded as verify evidence in a note.
+#
+# Gated on the LINT CONFIG, not on ansible.cfg. Rule 1 at the top of this file:
+# presence must prove the entry point exists. Every Ansible repo has an
+# ansible.cfg whether or not anything lints it, so keying on that would emit a
+# command for repos that never run it. `.ansible-lint` IS the declaration.
+#
+# `--offline` because a QA gate must be deterministic: without it ansible-lint
+# fetches galaxy dependencies, so the check's outcome depends on the network. It
+# also matches what the CI of the repo this came from actually runs.
+elif [ -f "$DIR/.ansible-lint" ] || [ -f "$DIR/.ansible-lint.yml" ] || [ -f "$DIR/.ansible-lint.yaml" ]; then
+  CMD="ansible-lint --offline"; SRC=".ansible-lint"
 fi
+# NOT derived: a playbook-level test job (e.g. `ansible-playbook -i tests/inventory.ini
+# tests/assert-logic.yml`). The invocation is repo-specific — inventory path, limits,
+# extra vars — and rule 1 forbids emitting a command that would always fail. That case
+# is what `targets.<name>.verify.command` is for.
 
 # --- build entry point (optional; a compile error is a defect a test may miss) -
 if [ -n "$MK" ] && has_make_target "$MK" build; then
@@ -89,6 +110,11 @@ elif [ -f "$DIR/Cargo.toml" ]; then
   BUILD="cargo build"; BUILD_SRC="Cargo.toml"
 elif [ -f "$DIR/go.mod" ]; then
   BUILD="go build ./..."; BUILD_SRC="go.mod"
+# yamllint is the build-side twin of the ansible-lint gate above: a separate CI job
+# in practice, catching what a lint of Ansible semantics does not (indentation, key
+# duplication, truthy spellings). Keyed on its own config for the same reason.
+elif [ -f "$DIR/.yamllint" ] || [ -f "$DIR/.yamllint.yml" ] || [ -f "$DIR/.yamllint.yaml" ]; then
+  BUILD="yamllint ."; BUILD_SRC=".yamllint"
 fi
 
 STATE="none-found"; [ -n "$CMD" ] && STATE="detected"

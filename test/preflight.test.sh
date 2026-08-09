@@ -717,6 +717,27 @@ eq "no test entry anywhere -> none"  "$(dv "$d/ft2" .state)"  "none-found"
 eq "  and command is empty"          "$(dv "$d/ft2" .command)" ""
 eq "  but build is still reported"   "$(dv "$d/ft2" .build_command)" "npm run build"
 
+# Ansible. A real repo reported none-found on EVERY round while its CI ran yamllint,
+# ansible-lint, syntax-check and a playbook assert job; the session then hand-rolled
+# ansible-lint 516 times and yamllint 323 times, none of it recorded as verify
+# evidence. The gate was honest — it never claimed clean — but Step 3B's "run the
+# project's own checks" was nominally unsatisfied on every round.
+mkdir -p "$d/ans"; touch "$d/ans/.ansible-lint" "$d/ans/.yamllint"
+eq "ansible-lint config detected"    "$(dv "$d/ans" .command)" "ansible-lint --offline"
+eq "  source names the config"       "$(dv "$d/ans" .source)"  ".ansible-lint"
+eq "  yamllint is the build side"    "$(dv "$d/ans" .build_command)" "yamllint ."
+# Keyed on the LINT config, never on ansible.cfg: every Ansible repo has one whether
+# or not anything lints it, so keying there emits a command for repos that never run
+# it — rule 1, presence must prove the entry point exists.
+mkdir -p "$d/anscfg"; touch "$d/anscfg/ansible.cfg"
+eq "ansible.cfg ALONE is not a gate" "$(dv "$d/anscfg" .state)" "none-found"
+# Stronger signals still win: a Makefile test target outranks the lint config.
+mkdir -p "$d/ansmk"; touch "$d/ansmk/.ansible-lint"; printf 'test:\n\techo hi\n' > "$d/ansmk/Makefile"
+eq "  Makefile outranks ansible-lint" "$(dv "$d/ansmk" .command)" "make test"
+# ...and molecule, the stronger Ansible signal, outranks the lint config too.
+mkdir -p "$d/ansmol/molecule"; touch "$d/ansmol/.ansible-lint"
+eq "  molecule outranks ansible-lint" "$(dv "$d/ansmol" .command)" "molecule test"
+
 mkdir -p "$d/empty"
 eq "bare directory -> none-found"    "$(dv "$d/empty" .state)" "none-found"
 eq "missing directory -> none-found" "$(bash "$DETECT" "$d/nope" | jq -r .state)" "none-found"
