@@ -304,6 +304,47 @@ a fresh process across four separate invocations, and `qa_fix_commits` correctly
 the round-1 commit from its trailer. The round-2 panel then used it to attribute findings to
 QA-introduced code rather than to the MR — the mechanism did what it was designed for.
 
+### Field defects from the first GitHub / fork run (2026-08-10)
+
+The first run on **GitHub** — and the first on a **fork** — was `halindrome/jcode` PR #1, a
+390-line Rust/TypeScript/Python/shell diff, two rounds, three lenses each, ending in a
+deliberate `diminishing_returns`-shaped stop rather than an approval. One defect surfaced,
+and it is the most dangerous class this plugin has produced so far: **the round reviewed the
+wrong pull request and said nothing.** Written up as `CASE-STUDIES.md` §wrong-repo.
+
+1. **D9 — `forge_view_mr` ignores the resolved project slug, so a fork checkout reviews the
+   upstream PR of the same number.** `lib/forge-github.sh:57-61` calls
+   `gh pr view "$n" --json …` with **no `--repo`**, so `gh` falls back to its own remote
+   resolution — which in a fork prefers the **parent** repository. Every other `forge_*`
+   function in that file takes the plain `owner/repo` slug as `$1` and interpolates it into
+   an explicit `repos/${slug}/…` API path; this one function is the outlier, and it is the
+   one that decides *which change the entire round reviews*.
+   *Observed:* in a checkout whose `origin` is `1jehuang/jcode` and whose `fork` remote is
+   `halindrome/jcode`, `preflight.sh 1 fork` correctly resolved
+   `project=halindrome/jcode` from the target's `remote` key, then emitted
+   `mr_title="Add auto-update system for release builds"`, `mr_author=1jehuang`,
+   `source_branch=feature/auto-update`, `state=closed` — upstream's PR #1, a different,
+   closed PR by another author. The run survived only by luck: sync then failed at
+   `git checkout feature/auto-update` (exit 4, hard stop) because that branch did not exist
+   locally. **Had a same-named branch existed, a full panel would have reviewed the wrong
+   diff and posted a note about it under the operator's identity.** Workaround for the whole
+   cycle was `GH_REPO=halindrome/jcode` in front of every invocation.
+   *Fix, pick one:* (a) narrowest — `forge_view_mr` takes the slug like its siblings and
+   passes `--repo "$slug"`; costs a signature change at both implementations and the one
+   caller. (b) belt-and-braces — `preflight.sh` exports `GH_REPO="$FORGE_PROJECT"` once,
+   immediately after Step 0.3 resolves the slug (it is resolved *before* the MR fetch, so
+   the ordering already works). `GH_REPO` does not disturb the explicit `repos/${slug}/…`
+   API paths. (a) is the real fix — the seam's contract is "every function takes the slug"
+   and this one silently does not — and (b) is worth doing anyway as a backstop.
+   *Acceptance:* a fixture whose `origin` and target `remote` point at different slugs must
+   make `forge_view_mr` return the PR from the **target's** remote. Today it returns the
+   `origin` one. This belongs in `test/` — it is the second defect after D1 that
+   manufactures a false record rather than merely failing.
+   *Also worth adding regardless of which fix lands:* preflight already knows
+   `source_branch` and could assert that the fetched PR's head branch exists on the target
+   remote before proceeding. That check would have converted this from a silent
+   wrong-PR review into a clear error, independently of the root cause.
+
 ### Before the first push
 
 1. All three suites green + `claude plugin validate .`.

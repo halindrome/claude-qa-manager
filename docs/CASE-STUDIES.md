@@ -356,3 +356,51 @@ document while the defect lived in code that still behaved the old way — and t
 field table had drifted into actively contradicting the implementation. **A documented remedy
 that is not implemented is not a remedy; the write-up can make things worse by implying the
 hole is closed.** Where a fix is deferred, say so at the code, not only in the retrospective.
+
+---
+
+## §wrong-repo — why the MR fetch must name the project explicitly
+
+A QA round was started against pull request **#1** in a fork checkout. Preflight resolved
+the project correctly — `halindrome/jcode`, from the target's `remote` key — and then
+fetched, described, and prepared to review **upstream's** PR #1: a different pull request,
+by a different author, on a different branch, already closed.
+
+Nothing reported a problem. `preflight.json` carried a coherent-looking object throughout:
+a title, an author, a branch, a diff scope. Every field was internally consistent. They
+simply described the wrong change.
+
+**Why no check caught it.** The forge seam's contract is that every function takes the
+plain `owner/repo` slug and interpolates it into an explicit API path. One function did
+not: `forge_view_mr` called `gh pr view "$n"` with no `--repo`, leaving the choice to
+`gh`'s own remote resolution — which, in a fork, prefers the **parent**. The slug was
+resolved correctly and then not used. A validation of the *shape* of the fetched MR passes
+here, because the shape is perfect; only the identity is wrong, and nothing compared the
+fetched PR against what was asked for.
+
+**What actually stopped it**, and it was luck rather than design: the branch-sync step then
+tried to check out the fetched PR's source branch, that branch did not exist in this
+checkout, and preflight exited 4 (hard stop). Had a branch of that name existed locally —
+in a fork of an active repo, entirely plausible — a full lens panel would have reviewed a
+diff nobody asked about and posted a round note about it, under the operator's identity,
+on the correct PR. The note would have been fluent, specific, and about the wrong code.
+
+**The generalisable rule.** *Resolving an identifier and using it are two different steps,
+and only the second one matters.* Preflight had the right answer in `FORGE_PROJECT` and
+passed it to fourteen call sites; the fifteenth re-derived it from ambient context and got
+a different answer. Where a seam's contract says "every function takes the slug", the
+function that quietly does not is worth more scrutiny than the ones that do — it is
+invisible in every code review that spot-checks a couple of implementations and finds them
+conforming.
+
+**Second-order lesson: prefer failures that are loud in the same step.** The fix is
+one-line-ish either way (`--repo "$slug"`, or exporting `GH_REPO` once after resolution).
+But the check with the most value here is not the fix — it is asserting that the fetched
+PR's head branch exists on the target remote *before* the round runs. That converts an
+entire class of wrong-target bugs, whatever their cause, from a silent confident review
+into an error message. **A validation that ties the fetched object back to the thing you
+asked for catches causes you have not thought of yet.**
+
+Status: **open** as of 2026-08-10 — see `ROADMAP.md` D9. Per the §self-approval-fallback
+meta-lesson, the deferral is also recorded at the code in `lib/forge-github.sh`, not only
+here, because a documented remedy that is not implemented is not a remedy.

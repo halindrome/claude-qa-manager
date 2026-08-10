@@ -54,6 +54,19 @@ forge_project_enc() { printf '%s' "$1"; }
 # "success", and an empty array means no checks are configured, which is
 # "unknown" and NOT success. Reporting "success" for a PR that ran no checks
 # would let the security-scan delta certify a scan that never happened.
+# KNOWN DEFECT — ROADMAP.md D9, CASE-STUDIES.md §wrong-repo. Open as of 2026-08-10.
+#
+# This is the ONLY forge_* function that does not take the resolved `owner/repo`
+# slug. Without `--repo`, `gh` falls back to its own remote resolution, which in a
+# FORK checkout prefers the PARENT repository — so a round started against PR #1 of
+# a fork fetches, describes, and reviews upstream's PR #1 instead. Observed live:
+# preflight resolved `halindrome/jcode` correctly and then emitted a different,
+# closed PR by another author, with every field internally consistent. Only a
+# failed branch checkout stopped the panel from reviewing the wrong diff.
+#
+# Fix: take the slug as $1 like every sibling and pass `--repo "$slug"` (and/or
+# export GH_REPO="$FORGE_PROJECT" in preflight after Step 0.3). Until then, callers
+# in a fork checkout must set GH_REPO themselves.
 forge_view_mr() {
   local dir="$1" n="$2" raw
   raw=$(cd "$dir" && gh pr view "$n" \
