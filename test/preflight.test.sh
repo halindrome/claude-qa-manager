@@ -1173,6 +1173,33 @@ git -C "$r/repo" add -A >/dev/null; git -C "$r/repo" commit -qm "touch the schem
 out=$(run_preflight "$r" 73 mono)
 eq "nested configured schema path -> detected" "$(jq -r '.schema.detected' <<<"$out")" "true"
 rm -rf "$r"
+# THE FRAME MISMATCH, from a real round. When the target is its own repo (a
+# submodule), `git diff` runs inside it and prints SUBMODULE-relative paths --
+# `db/template.sql`, never `apps/api/db/template.sql`. An operator who configures
+# the superproject-relative path (the path they see in their editor, and the path
+# examples/monorepo-submodules.json used to show) then gets a gate that CANNOT
+# match anything: schema.detected=false with state=checked, on an MR that did
+# change the schema. That is invariant 2 -- an absent check reporting as a pass --
+# on the one gate that arms mandatory human approval. Preflight strips the target's
+# own path prefix so both spellings work.
+r=$(mkfixture "feature/x" "main" '.targets.api = {path:"apps/api", base_branch:"main", remote:"origin", scope:"api", security_stage:false}
+                                 | .schema.files = ["apps/api/db/template.sql"]')
+git init -q --bare "$r/sub-remote.git"
+git init -q -b main "$r/repo/apps/api"
+git -C "$r/repo/apps/api" config user.email t@t.t; git -C "$r/repo/apps/api" config user.name t
+git -C "$r/repo/apps/api" remote add origin "$r/sub-remote.git"
+mkdir -p "$r/repo/apps/api/db"; echo sub-base > "$r/repo/apps/api/base.txt"
+git -C "$r/repo/apps/api" add -A >/dev/null; git -C "$r/repo/apps/api" commit -qm base
+git -C "$r/repo/apps/api" push -q origin main
+git -C "$r/repo/apps/api" checkout -q -b feature/x
+printf -- '-- the schema\n' > "$r/repo/apps/api/db/template.sql"
+git -C "$r/repo/apps/api" add -A >/dev/null; git -C "$r/repo/apps/api" commit -qm "touch the schema"
+out=$(run_preflight "$r" 73 api)
+eq "superproject-relative config, submodule-relative diff -> detected" \
+   "$(jq -r '.schema.detected' <<<"$out")" "true"
+eq "  and the evidence names the file"          \
+   "$(jq -r '.schema.state' <<<"$out")" "checked"
+rm -rf "$r"
 # An UNCONFIGURED gate must report that it did not run -- never a clean pass.
 r=$(mkfixture "feature/x" "main" 'del(.schema)'); mkdir -p "$r/repo/db"
 printf -- '-- the schema\n' > "$r/repo/db/template.sql"

@@ -59,6 +59,12 @@ schema. Matching is by path only — never by content — because content scanni
 DDL in test fixtures, comments, and even test labels. See
 [CASE-STUDIES.md](CASE-STUDIES.md) §schema-drift for what that cost.
 
+**Either spelling of a monorepo path works.** For a target rooted at `apps/api`, both
+`apps/api/db/template.sql` and `db/template.sql` match — the target's own path prefix is
+stripped before matching. This used to matter: a submodule target's `git diff` prints
+`db/template.sql`, so a superproject-relative config matched nothing and the gate reported
+`detected=false, state=checked` on an MR that *did* change the schema.
+
 **Leaving it empty is a real choice with a real consequence.** The gate reports
 `schema.state = skipped:not-configured`, which is an *absent* check, not a passing one.
 Nothing silently claims to have verified your schema.

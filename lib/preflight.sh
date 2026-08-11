@@ -718,9 +718,21 @@ if [ "$SYNC_FAILED" != "true" ]; then
   # positive is impossible by construction rather than guarded against.
   # See docs/CASE-STUDIES.md #schema-drift.
   #
-  # `(^|/)<path>$` covers both shapes: a monorepo target sees
-  # `apps/api/db/template.sql` while the component target sees `db/template.sql`
-  # (git diff paths are relative to the target repo root).
+  # PATH FRAME. `git diff` runs in $TARGET_ABS, so the paths it prints are
+  # relative to the TARGET repo root — for a submodule target that is
+  # `db/template.sql`, not `apps/api/db/template.sql`. A config naming the
+  # superproject-relative path therefore could NEVER match, and the gate reported
+  # `detected=false, state=checked` on an MR that did change the schema: invariant
+  # 2 exactly (an absent check reporting as a pass), on the one gate that arms
+  # mandatory human approval. `(^|/)…$` only tolerates EXTRA LEADING segments, so
+  # it forgives a short config against a long path and not the reverse.
+  #
+  # So strip the target's own path prefix before matching. After stripping, one
+  # pattern covers both frames: config `apps/api/db/template.sql` with target
+  # `apps/api` becomes `db/template.sql`, which matches the submodule's
+  # `db/template.sql` AND a root target's `apps/api/db/template.sql`. Both spellings
+  # of the config now work, which is the point — an operator should not have to know
+  # which cwd git was invoked from to configure this gate.
   #
   # COVERAGE NOTE: the incident this gate exists for was a CODE-ONLY dependency —
   # code reading a column that never reached the schema file. This detector does not
@@ -745,7 +757,12 @@ if [ "$SYNC_FAILED" != "true" ]; then
     # error would be swallowed by a `|| echo ""` fallback, leaving an empty pattern
     # and a gate that reports "checked" while matching nothing. Hence the explicit
     # emptiness check below rather than a silent fallback.
-    _schema_re=$(jq -r '[.schema.files[]? | select(type == "string")
+    # ltrimstr runs BEFORE the escape: it strips literal path text, and escaping
+    # first would leave backslashes in the way of the prefix comparison. With
+    # TARGET_PATH "." the prefix "./" never matches a git path, so it is a no-op.
+    _schema_re=$(jq -r --arg tp "$TARGET_PATH" \
+                       '[.schema.files[]? | select(type == "string")
+                         | ltrimstr($tp + "/")
                          | gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\])"; "\\" + .c)]
                         | map("(^|/)" + . + "$") | join("|")' "$BB" 2>/dev/null || true)
     [ -n "$_schema_re" ] || die_internal "schema.files is non-empty ($SCHEMA_CONFIGURED entries) but the path pattern came out empty; refusing to report an unchecked gate as checked"
