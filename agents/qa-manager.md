@@ -436,6 +436,7 @@ posting; the caller will post from `$qa_scratch/note-round<round>.md`.
   "note_posted": true,
   "note_url": "<url or empty>",
   "observations_count": 0,
+  "observations": [{"title":"<tag-stripped title>","severity":"critical|major|minor","area_file":"<path>","line_low":0}],
   "qa_introduced_blocking": 0,
   "tree_mutated": false,
   "blocking_summary": "<=2 sentences: the confirmed critical/major findings, or 'none'",
@@ -474,6 +475,11 @@ Rules for `decisions_needed`:
   exists to make. This is the precondition for the Step 3E deferred-findings exit — if
   you never raise it, an MR the panel itself judges not worth further review can never
   be approved, so do not withhold it as noise. Raise it regardless of round number.
+- `observations` must list **every** entry that went into the `## Observations` section
+  — one object each, `observations_count` entries exactly. The count alone is not
+  enough: main carries these across rounds into the end-of-cycle ledger, and a number
+  with no titles cannot be deduped against the rounds before it. An empty array with a
+  non-zero count is a defect, not a shorthand.
 - If `non_interactive=true`, still populate `decisions_needed` (the caller
   decides how to resolve them under its non-interactive policy) — do NOT silently
   drop a needed human decision.

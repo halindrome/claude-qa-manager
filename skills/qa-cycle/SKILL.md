@@ -24,6 +24,7 @@ reference file is a rule someone deletes later without knowing what it bought.
 | `review_mode == "sequential"`, no Agent nesting, or `--double`/`--triple` | `references/sequential-and-multimodel.md` |
 | `MR_APPROVED=true` and this round found new blocking findings | `references/dirty-reround.md` |
 | the round is approval-eligible | `references/approval.md` |
+| a round produced observations | `references/observations.md` |
 | changing any of this | `references/design-notes.md`, `../../docs/CASE-STUDIES.md` |
 
 ---
@@ -526,6 +527,23 @@ failed post is not a posted note**: say so and stop rather than continuing to St
 Body template, the token recipe, and the posting block: `references/round-note.md`.
 
 
+### Step 3C.5 — carry this round's observations forward
+
+Append every `relevance: observation` finding this round produced to
+`$QA_SCRATCH/observations.md`, one line each, skipping a tag-stripped title already there:
+
+```
+- [R<round>] **<severity>** <title> — <area_file>:<line_low>
+```
+
+Manager path: its `observations` array. Sequential: your own merged report. Select on the
+`relevance` axis, never on a heading — the two renderers do not spell that heading alike.
+
+Why a ledger at all: an observation lives only in the round note that found it, so a
+five-round cycle scatters them across five comments and round 1's is the least likely to
+be read. This file is what Step 4 reports. Depth: `references/observations.md`.
+
+
 ### Step 3D — Assess whether to continue
 
 After each round, evaluate the findings:
@@ -536,6 +554,18 @@ After each round, evaluate the findings:
 `.layout.multi_target` is true.)
 - **After 4 rounds**: if findings persist beyond round 4, present a summary of remaining open issues and ask the user how to proceed.
 - **On a `diminishing_returns` decision** (any round): stop and ask, regardless of round number. Do not roll into another round on the assumption that more review is always safer — the failure mode this catches is the opposite one. A useful check when deciding: **if most of this round's blocking findings target code an earlier QA round introduced rather than the change the MR exists to make, the cycle has stopped adding value.** Ending it there, with the remaining findings explicitly deferred and enumerated in a note, is a legitimate and complete outcome — see the Step 3E deferred-findings exit.
+
+**Under `--non-interactive` the *"Ready to run QA round N+1?"* prompt is auto-answered
+yes** — continuing after findings were found and fixed is what the policy already
+prescribes, so a human confirming it adds nothing. Everything the bullet requires after
+the prompt (post the note first, re-run `preflight.sh`) is unchanged and still mandatory.
+
+Yes only while **all** of these hold; the first failure stops the cycle at Step 4:
+the round is not clean; fixes were actually applied (report-only pauses — re-reviewing an
+unchanged diff yields the same findings forever); `round < 4` (the *After 4 rounds* rule
+asks the human, and an unaskable question may not be assumed answered); and no
+`diminishing_returns`. A run therefore ends **approved** or **stopped with the Step 4
+debrief**, never stranded. Per-decision policy: `references/non-interactive.md`.
 
 > **Staying in sync during QA rounds:** If the target branch advances while QA rounds are in progress, re-run Step 2 (sync) before each new round to keep the diff clean.
 
@@ -578,6 +608,10 @@ After the QA cycle ends (clean round or user decision to stop), output a summary
 - Fix commits added: N
 - QA reports posted to MR: N
 - Approval status: approved-by-qa-agent / not-approved / skipped (token unavailable)
+- Stopped because: clean round / user stopped / diminishing returns / round cap / <gate>
+
+### Carried forward — found, not fixed by this cycle
+<the contents of $QA_SCRATCH/observations.md, verbatim — or the single line `none reported`>
 
 Next steps:
 - Mark the MR as ready for review (remove Draft status if applicable)
@@ -587,6 +621,15 @@ Next steps:
 The two gated lines come from `preflight.json`'s `layout` block. Naming a target in a repo
 that has exactly one, or mentioning a parent workspace to someone whose repo has no parent,
 describes a structure the reader does not have — omit them rather than hedging them.
+
+**Print the Carried-forward heading even when the ledger is empty**, with `none reported`
+under it — unlike the two gated lines, which are omitted. A missing section reads as
+"nothing was found", which is the same claim as "nothing ran", and an absent check must
+never report as a pass. Nothing listed there blocks the MR; each entry is a ticket
+candidate, and handing the reader that list is how the cycle ends.
+
+What belongs there, why `hypothetical` findings deliberately do not, and the end-of-cycle
+comment option: `references/observations.md`.
 
 ---
 

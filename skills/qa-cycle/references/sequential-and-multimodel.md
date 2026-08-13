@@ -357,6 +357,9 @@ entries). Each `r ∈ R` has a tag prefix `[<tag-r>]` already applied.
 7. **Observations** (pre-existing bugs in touched files) from any reviewer
    go into a dedicated `## Pre-existing issues discovered` section of the
    merged report, so the orchestrator (and ultimately the user) can decide
-   whether to file a ticket.
+   whether to file a ticket. On this path **you** also owe Step 3C.5 the
+   ledger append the manager would otherwise hand over — the end-of-cycle
+   "Carried forward" report is built from that file, so skipping it here
+   makes a sequential cycle end by reporting no observations at all.
 
 The merged report replaces the Claude-only report for posting in Step 3C.

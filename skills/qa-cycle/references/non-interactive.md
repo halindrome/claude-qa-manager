@@ -22,6 +22,19 @@ below is one or the other, and which one it is has a reason.
 That set is what lets a clean, non-approval round run fully hands-free: the manager does
 everything and `decisions_needed` resolves to a no-op.
 
+## Not a `decisions_needed` entry: the round-continuation prompt
+
+Step 3D's *"Ready to run QA round N+1?"* is asked by the main loop, not returned by the
+manager, so it is in neither table above and was for that reason the one prompt that
+stalled an otherwise hands-free run. It **is** defaultable — continuing after findings
+were found and fixed is what the policy already prescribes — under the four conditions
+the spine lists at Step 3D: the round is not clean, fixes were actually applied,
+`round < 4`, and no `diminishing_returns`. The first failure stops the cycle and goes to
+Step 4.
+
+The `round < 4` bound is why this is mechanical rather than invented: the *After 4 rounds*
+rule asks the human what to do, and this flag may never answer that. It stops instead.
+
 ## Never auto-answered
 
 Two prompts stay unanswered no matter what, because a default here would fabricate consent:
