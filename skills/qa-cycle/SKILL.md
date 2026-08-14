@@ -1,5 +1,6 @@
 ---
 name: qa-cycle
+argument-hint: "<mr|pr-number> [target] [--double|--triple] [--reviewer=qwen-local] [--non-interactive] [--auto-approve] [--help]"
 description: "Run a structured QA review cycle on a merge request or pull request: one round, then as many further rounds as the findings justify, up to approval. Takes the MR/PR number and an optional target name (e.g. /qa-cycle 123, or /qa-cycle 123 api in a monorepo). Each round runs a deterministic preflight (branch sync, ownership, round derivation, security-scan delta), fans out a 3-6 lens reviewer panel, posts a round note, and gates approval behind an explicit policy. Every finding is grounded in a linked ticket's acceptance criteria or a regression the diff introduces. Proportionality escalates with the round number and the panel can declare diminishing returns, so the cycle ends rather than looping forever. Branches derive from the MR/PR at runtime, so no configuration is required for a single repo; targets, schema paths, and QA-agent credentials come from optional layered config."
 ---
 
@@ -25,7 +26,18 @@ reference file is a rule someone deletes later without knowing what it bought.
 | `MR_APPROVED=true` and this round found new blocking findings | `references/dirty-reround.md` |
 | the round is approval-eligible | `references/approval.md` |
 | a round produced observations | `references/observations.md` |
+| `--help`, or no MR/PR number was given | `references/usage.md` |
 | changing any of this | `references/design-notes.md`, `../../docs/CASE-STUDIES.md` |
+
+---
+
+## Step -1 — `--help`, or no MR/PR number
+
+If argv has `--help`/`-h` or names no MR/PR number: print `references/usage.md` verbatim
+and **stop** — no preflight, no spawn, no branch touched. It precedes Step 0.0 because
+flags are parsed at Step 0, one step *after* preflight: in argv order a `--help` would
+first sync a branch for a number nobody gave. Asking a question is not consenting to a
+checkout.
 
 ---
 
@@ -118,9 +130,11 @@ the value from `preflight.json`.
 ## Step 0 — parse your own flags
 
 Everything mechanical is preflight's; read its fields. Yours to parse from argv:
-`--double`, `--triple`, `--reviewer=`, `--non-interactive`, `--auto-approve`.
+`--double`, `--triple`, `--reviewer=`, `--non-interactive`, `--auto-approve`
+(`--help` was already handled at Step -1).
 
-Policy detail: `references/preflight-internals.md`.
+Policy detail: `references/preflight-internals.md`. The user-facing wording of every flag
+is `references/usage.md`; change one and change both.
 
 ---
 
@@ -303,7 +317,7 @@ Agent-grandchild concurrency ceiling, so the panel stays single-wave. The full
 contract + the lens catalog live in `agents/qa-manager.md`; this step is
 the main-loop side — how to invoke it and what to do with the verdict.
 
-**Invoke it** with the Agent tool (`subagent_type: "qa-manager"`,
+**Invoke it** with the Agent tool (`subagent_type: "claude-qa-manager:qa-manager"`,
 `run_in_background: true`), passing:
 
 ```
@@ -313,6 +327,10 @@ non_interactive=<true|false>  # from --non-interactive; it still returns decisio
 DOUBLE=<t|f>  TRIPLE=<t|f>  reviewer_override=<qwen-local|"">
 skip_contract_verification=<true|false>
 ```
+
+**Always the plugin-qualified `claude-qa-manager:` prefix**, here and wherever else an
+agent is spawned: a bare name resolves only while no sibling QA plugin claims it, and
+where one does the spawn fails outright — observed on a live round 1.
 
 Everything else the manager needs — branches, diff range, lens panel, forge, every
 scratch path, the token env/file pair, `mr_approved`, `approval_eligible` — is already
@@ -555,17 +573,13 @@ After each round, evaluate the findings:
 - **After 4 rounds**: if findings persist beyond round 4, present a summary of remaining open issues and ask the user how to proceed.
 - **On a `diminishing_returns` decision** (any round): stop and ask, regardless of round number. Do not roll into another round on the assumption that more review is always safer — the failure mode this catches is the opposite one. A useful check when deciding: **if most of this round's blocking findings target code an earlier QA round introduced rather than the change the MR exists to make, the cycle has stopped adding value.** Ending it there, with the remaining findings explicitly deferred and enumerated in a note, is a legitimate and complete outcome — see the Step 3E deferred-findings exit.
 
-**Under `--non-interactive` the *"Ready to run QA round N+1?"* prompt is auto-answered
-yes** — continuing after findings were found and fixed is what the policy already
-prescribes, so a human confirming it adds nothing. Everything the bullet requires after
-the prompt (post the note first, re-run `preflight.sh`) is unchanged and still mandatory.
-
-Yes only while **all** of these hold; the first failure stops the cycle at Step 4:
-the round is not clean; fixes were actually applied (report-only pauses — re-reviewing an
-unchanged diff yields the same findings forever); `round < 4` (the *After 4 rounds* rule
-asks the human, and an unaskable question may not be assumed answered); and no
-`diminishing_returns`. A run therefore ends **approved** or **stopped with the Step 4
-debrief**, never stranded. Per-decision policy: `references/non-interactive.md`.
+**Under `--non-interactive` that *"Ready to run round N+1?"* prompt is auto-answered yes**
+— continuing after findings were fixed is what the policy already prescribes — but only
+while the round is not clean, fixes were applied, `round < 4`, and no
+`diminishing_returns`; the first failure stops the cycle at Step 4. The `round < 4` bound
+is what keeps the default mechanical rather than invented: the *After 4 rounds* rule asks
+the human, and an unaskable question may not be assumed answered. Everything the bullet
+requires after the prompt still applies. Conditions in full: `references/non-interactive.md`.
 
 > **Staying in sync during QA rounds:** If the target branch advances while QA rounds are in progress, re-run Step 2 (sync) before each new round to keep the diff clean.
 

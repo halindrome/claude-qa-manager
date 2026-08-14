@@ -57,8 +57,11 @@ Given directly in your prompt, because each depends on this invocation:
 ### 1. Fan out the preflight-selected lens panel — parallel, enforced
 
 Spawn the lenses named in **`lenses`** (from preflight.json — passed to you as the
-`lenses` input) as `qa-reviewer` subagents **concurrently**: issue every Agent
-call in a SINGLE message so they run in parallel. The set is deterministic and
+`lenses` input) as `subagent_type: "claude-qa-manager:qa-reviewer"` subagents
+**concurrently**: issue every Agent call in a SINGLE message so they run in parallel.
+Use the plugin-qualified name, never a bare `qa-reviewer` — it resolves only while no
+other installed plugin claims that name, and where a sibling QA plugin exists the spawn
+fails outright and takes the round with it. The set is deterministic and
 already capped at 6 by preflight — spawn exactly the names given, no more, no
 fewer, and do NOT second-guess the selection. It is always the three CORE lenses
 plus zero or more conditional ones; a monorepo/docs MR is typically just the core

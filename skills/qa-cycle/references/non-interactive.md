@@ -27,13 +27,26 @@ everything and `decisions_needed` resolves to a no-op.
 Step 3D's *"Ready to run QA round N+1?"* is asked by the main loop, not returned by the
 manager, so it is in neither table above and was for that reason the one prompt that
 stalled an otherwise hands-free run. It **is** defaultable — continuing after findings
-were found and fixed is what the policy already prescribes — under the four conditions
-the spine lists at Step 3D: the round is not clean, fixes were actually applied,
-`round < 4`, and no `diminishing_returns`. The first failure stops the cycle and goes to
-Step 4.
+were found and fixed is what the policy already prescribes, so a human confirming it adds
+no information. Auto-answered yes while **all four** hold; the first failure stops the
+cycle and goes to Step 4:
 
-The `round < 4` bound is why this is mechanical rather than invented: the *After 4 rounds*
-rule asks the human what to do, and this flag may never answer that. It stops instead.
+| Condition | Why it bounds the default |
+|---|---|
+| the round is not clean | a clean round ends the cycle on its own, by Step 3D's first bullet |
+| fixes were actually applied | report-only mode pauses instead. Re-reviewing an unchanged diff yields the same findings forever — that is a loop, not a cycle. |
+| `round < 4` | the *After 4 rounds* rule asks the human what to do, and this flag may never answer that. It stops instead. |
+| no `diminishing_returns` | already `stop` in the table above; continuing would contradict it |
+
+Everything Step 3D requires *after* the prompt is unchanged and still mandatory — post
+this round's note first (it is what makes the next derivation return N+1), then re-run
+`preflight.sh` for the new `round` and a freshly rendered `proportionality.md`.
+
+**The consequence worth stating: a `--non-interactive` run has exactly two terminal
+states** — approved, or stopped with the Step 4 debrief. It never strands mid-cycle
+waiting for an answer nobody is there to give, and it never approves its way past a gate:
+`--auto-approve` is still required for the approval itself, and the two entries below are
+still never defaulted.
 
 ## Never auto-answered
 

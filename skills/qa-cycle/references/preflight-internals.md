@@ -46,9 +46,13 @@ manager's `decisions_needed` are resolved):
   confirm. Never implied by `--non-interactive` — approval is a safety invariant.
 
 Documented argument surface:
-`<MR_NUMBER> <TARGET> [--double | --triple] [--reviewer=qwen-local] [--non-interactive] [--auto-approve]`. All flags
+`<MR_NUMBER> <TARGET> [--double | --triple] [--reviewer=qwen-local] [--non-interactive] [--auto-approve] [--help]`. All flags
 are per-invocation — nothing is persisted between rounds; callers must pass the
 flags again on subsequent rounds to keep multi-model QA active.
+
+`--help` is handled at Step -1, before preflight runs. The user-facing wording of every
+flag above lives in `references/usage.md`; change a flag here and change it there in the
+same commit, or the skill documents behaviour it no longer has.
 
 Load the merged config (shipped defaults → user → project, later winning) and look up `targets.<TARGET>`. Resolve `<target-path>`, `<remote>`, and `<scope>` from that entry. If the target is not present, ask the user for the path and offer to add the entry.
 

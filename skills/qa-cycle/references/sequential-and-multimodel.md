@@ -71,9 +71,12 @@ a retry on a file you rewrite several times.
 > cost is one line of evidence per finding; the avoided cost is rubber-stamping
 > fabricated bugs.
 
-Use `subagent_type: "qa-reviewer"` (the project-local agent defined in
-`agents/qa-reviewer.md`). Pass a prompt constructed from the
-template below (fill in all placeholders before calling the Agent tool):
+Use `subagent_type: "claude-qa-manager:qa-reviewer"` — the agent defined in
+`agents/qa-reviewer.md`, named with its plugin prefix. The bare `qa-reviewer` resolves
+only while nothing else on the machine claims that name; where a sibling QA plugin is
+installed the spawn fails outright, which is a hard stop mid-round. Pass a prompt
+constructed from the template below (fill in all placeholders before calling the Agent
+tool):
 
 ```
 You are a read-only QA reviewer. Do NOT modify any files, make commits, or push code.
