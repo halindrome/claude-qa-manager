@@ -345,6 +345,30 @@ wrong pull request and said nothing.** Written up as `CASE-STUDIES.md` §wrong-r
    remote before proceeding. That check would have converted this from a silent
    wrong-PR review into a clear error, independently of the root cause.
 
+### Field defect from the MR !735 run (2026-08-14) — FIXED
+
+1. **D10 — every Agent spawn used a bare `subagent_type`, which stops resolving the moment
+   a sibling plugin claims the name.** *Observed:* round 1 on GitLab MR !735
+   (`plc-thresholds`, `apps/rest-api` target, sequential path) returned
+   `Agent type 'qa-reviewer' not found. Available agents: … claude-qa-manager:qa-manager,
+   claude-qa-manager:qa-reviewer, … mr-qa-manager, mr-qa-reviewer, … pr-qa-reviewer`.
+   The machine had three sibling QA agents installed, so the bare name was ambiguous.
+   *Why it is worth recording even though it was survivable:* the round only continued
+   because the model re-read the error's own list and retried with the qualified name.
+   Nothing in this plugin told it to, so the recovery was luck of the runtime, not a
+   designed fallback — and on the manager path the failure lands inside a **subagent**
+   fanning out 3-6 lenses, where a retry is neither guaranteed nor visible. A silent
+   partial panel is a round that reviews less than it claims.
+   *Fixed:* `f66a174` — all three spawn sites carry the `claude-qa-manager:` prefix
+   (`SKILL.md` main→manager, `agents/qa-manager.md` manager→lenses,
+   `references/sequential-and-multimodel.md` sequential reviewer).
+   *Acceptance:* `grep -rn subagent_type skills/ agents/` returns three hits, all
+   qualified, none bare. Worth a test-suite assertion — it is a grep, and D10 is the
+   second defect (after D1) where the plugin's own text named something that did not
+   resolve at runtime.
+   *Not fixed, and deliberately:* nothing verifies at runtime that the qualified name
+   resolves. A spawn failure is still a hard stop; it is just no longer a predictable one.
+
 ### Before the first push
 
 1. All three suites green + `claude plugin validate .`.
