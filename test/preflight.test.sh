@@ -1504,9 +1504,26 @@ if [ -z "$TAGS_RE" ]; then
   bad "  tag vocabulary extracted from preflight.sh" "extraction returned nothing — update the extractor, do NOT paste a copy"
 else
   ok "  tag vocabulary extracted from preflight.sh (not a hardcoded copy)"
-  bad_tags=$(jq -r --arg re "$TAGS_RE" '[.targets[].lens_tags[]?] | unique | map(select(test($re) | not)) | join(",")' "$BB_REAL")
-  if [ -z "$bad_tags" ]; then ok "  no unknown tags in the shipped registry"
-  else bad "  no unknown tags in the shipped registry" "found: $bad_tags"; fi
+  # Loop the EXAMPLES too, not just defaults.json. This check ran on $BB_REAL
+  # alone, whose lens_tags are all `[]` — so it passed vacuously for the whole
+  # life of the file while examples/monorepo-submodules.json shipped
+  # ["api-envelope"] and ["ui-styling"] (the LENS names, not the tags). An
+  # operator copied it and got a silently inert lens. Invariant 4: the two loops
+  # directly above already iterated the examples; this one did not.
+  for f in "$BB_REAL" "$REPO_SRC/examples/"*.json; do
+    bad_tags=$(jq -r --arg re "$TAGS_RE" '[.targets[].lens_tags[]?] | unique | map(select(test($re) | not)) | join(",")' "$f")
+    if [ -z "$bad_tags" ]; then ok "  no unknown tags: $(basename "$f")"
+    else bad "  no unknown tags: $(basename "$f")" "found: $bad_tags"; fi
+  done
+  # Same for the JSON snippets in the docs — users copy those verbatim, and the
+  # one in CONFIGURING.md carried "api-envelope" alongside the example file.
+  for f in "$REPO_SRC/docs/"*.md; do
+    doc_tags=$(grep -oE '"lens_tags"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$f" \
+      | grep -oE '"[a-z][a-z0-9-]*"' | grep -v '^"lens_tags"$' | sort -u | tr -d '"')
+    doc_bad=$(printf '%s\n' "$doc_tags" | jq -Rr --arg re "$TAGS_RE" 'select(length>0) | select(test($re)|not)' | tr '\n' ',')
+    if [ -z "$doc_bad" ]; then ok "  no unknown tags in doc snippets: $(basename "$f")"
+    else bad "  no unknown tags in doc snippets: $(basename "$f")" "found: ${doc_bad%,}"; fi
+  done
 fi
 
 echo "[lens enum <-> qa-manager catalog agreement]"

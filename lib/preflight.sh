@@ -486,7 +486,15 @@ declare -a WARNINGS=()
 # JSON. (It did exactly that on the first attempt; the new test caught it.)
 # A typo'd tag is otherwise silently inert: the target just never gains the lens.
 if [ -n "${UNKNOWN_LENS_TAGS:-}" ]; then
-  WARNINGS+=("unknown_lens_tags:${UNKNOWN_LENS_TAGS}")
+  # Name the vocabulary in the warning. The tags are `ui`/`api`/`perf` while the
+  # LENSES they enable are `ui-styling`/`api-envelope`/`performance`, and writing
+  # the lens name is the mistake operators actually make (our own example config
+  # shipped it). A warning that only echoes the bad tag costs a human round-trip.
+  # DERIVED from KNOWN_LENS_TAGS_RE, never restated: a hardcoded list here would
+  # start lying the day the regex is widened, and the regex is the declared
+  # single source of truth.
+  _valid_tags=${KNOWN_LENS_TAGS_RE#'\A('}; _valid_tags=${_valid_tags%')\z'}
+  WARNINGS+=("unknown_lens_tags:${UNKNOWN_LENS_TAGS} (valid tags: ${_valid_tags//|/ } — the tag, not the lens name)")
 fi
 
 # The MR's source branch is what we merge INTO and push. Refuse outright if that

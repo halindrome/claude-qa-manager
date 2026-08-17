@@ -6,14 +6,14 @@
       "remote": "origin",
       "scope": "api",
       "security_stage": true,
-      "lens_tags": ["schema", "api-envelope"]
+      "lens_tags": ["schema", "api"]
     },
     "webapp": {
       "path": "apps/webapp",
       "remote": "origin",
       "scope": "webapp",
       "security_stage": true,
-      "lens_tags": ["ui-styling"]
+      "lens_tags": ["ui"]
     },
     "monorepo": {
       "path": ".",

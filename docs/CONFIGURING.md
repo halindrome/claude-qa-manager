@@ -82,14 +82,25 @@ commit-message token used for fix commits (`fix(<scope>): address QA round N`).
 {
   "targets": {
     "api": { "path": "apps/api", "remote": "origin", "scope": "api",
-             "security_stage": true, "lens_tags": ["schema", "api-envelope"] }
+             "security_stage": true, "lens_tags": ["schema", "api"] }
   }
 }
 ```
 
 `lens_tags` must be an **array**. A scalar silently disables every conditional lens for
-that target, so preflight rejects it rather than degrading quietly. Known tags:
-`schema`, `api-envelope`, `ui-styling`, `performance`.
+that target, so preflight rejects it rather than degrading quietly. Known tags — these
+are **tags, not lens names**; each enables the lens beside it:
+
+| tag | enables lens |
+|---|---|
+| `schema` | `schema-propagation` |
+| `api` | `api-envelope` |
+| `ui` | `ui-styling` |
+| `perf` | `performance` |
+
+Writing the lens name (`ui-styling`) instead of the tag (`ui`) is the common mistake: it
+is not fatal, but the tag is inert and preflight warns `unknown_lens_tags`. The
+authoritative list is `KNOWN_LENS_TAGS_RE` in `lib/preflight.sh`.
 
 ## `qa_agent` — optional second identity
 
