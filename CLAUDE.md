@@ -27,6 +27,14 @@ verified across three sessions' transcripts, none of which reference the plugin 
 all. Practical consequence: a live run picks up uncommitted edits immediately. There is no
 deploy step to forget, and an experiment left half-finished in the tree is live.
 
+**So `git checkout` is a deploy too** — it rewrites the files the next `/qa-cycle` will
+source. Branching away from an unmerged fix silently reverts it in the running plugin,
+which is exactly how a `lib/preflight.sh` schema-gate fix left the live plugin the moment
+a feature branch was cut from `main`. Uncommitted edits going live is the documented
+half; the mirror image is that *committed* work goes dead when you check out a branch
+without it. Run `git branch --no-merged main` before branching, and land or cherry-pick
+anything the live plugin should not lose.
+
 Do not generalise this. It holds because the source is a `directory`. A **git**-source
 marketplace copies into
 `~/.config/claude-code/plugins/cache/<marketplace>/<plugin>/<version>/` at install time,
