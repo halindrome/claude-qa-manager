@@ -104,6 +104,46 @@ and `forge` / `forge_cli` added.
 
 ### Smaller, independent items
 
+- **The manager never rewrites `status` as lenses return — progress is dead and
+  the stall fuse measures the wrong thing. BUG, observed live.**
+  `agents/qa-manager.md` §1.5 marks the per-return status rewrite MANDATORY. It
+  does not happen. Observed on a live round (4 lenses, round 2): all four
+  `lens-*.json` landed over a 100-second window while `status` sat unchanged at
+  `0/4` for 521s and counting — last written 6m41s before the first lens even
+  arrived.
+
+  Two consequences, and the second is measurable:
+
+  1. **No progress feedback for the entire fan-out.** `watch-round.sh` and the
+     statusline read that counter, so they show `0/N` for a median 11m28s (p90
+     22m). This is very likely a large part of why rounds *feel* far longer than
+     they are — there is nothing to watch.
+  2. **The stall fuse is applied to a statistic it was not tuned for.**
+     `statusline-fragment.sh` computes staleness as `now - <newest status
+     mtime>` against 1200s, and `config/defaults.json` states the premise
+     plainly: *"The status file is rewritten when a lens RETURNS, so the
+     legitimate silence between writes is however long your slowest lens
+     takes."* With no rewrite, the silence is the whole fan-out instead.
+     Across the 281 recorded rounds that actually fanned out:
+
+     | statistic | median | p90 | max |
+     |---|---|---|---|
+     | max gap between lens returns (the documented model) | 399s | 771s | 3204s |
+     | whole fan-out silence (what is actually measured) | 688s | 1317s | 3600s |
+
+     **21 of 281 rounds (7%) would be flagged stalled while perfectly healthy** —
+     their longest genuine silence was under the fuse, but the un-refreshed
+     status file was not. p90 fan-out (1317s) already exceeds the 1200s default.
+
+  `lib/record-timing.sh` is NOT affected and its 297 rows are sound: it reads
+  `lens-*.json` mtimes directly, never the status file.
+
+  Fix is in the manager, not the fuse — raising the threshold would paper over
+  a progress signal that simply is not being emitted. Whether the rewrite is
+  unreliable because it is prose in an agent definition rather than a
+  deterministic step is the question worth answering first; if a subagent cannot
+  be relied on to emit it, the writer should move somewhere that can.
+
 - **End-of-cycle cost report — where the time and tokens actually went.** Rounds
   feel very long and nothing reports why. Measured over 1,497 real lens runs
   (180h of lens agent time) and 297 recorded rounds, the answer is that **it is
