@@ -104,6 +104,45 @@ and `forge` / `forge_cli` added.
 
 ### Smaller, independent items
 
+- **End-of-cycle cost report — where the time and tokens actually went.** Rounds
+  feel very long and nothing reports why. Measured over 1,497 real lens runs
+  (180h of lens agent time) and 297 recorded rounds, the answer is that **it is
+  inference, not local execution**:
+
+  | inside a lens's 5.2-min median run | share |
+  |---|---|
+  | model think time | **80.0%** |
+  | other tools (incl. `ToolSearch` schema loads) | 10.7% |
+  | ctx sandbox | 8.2% |
+  | bash — scripts, tests, git | **0.4%** |
+  | file I/O | 0.4% |
+  | CMM graph queries | 0.2% |
+
+  Lens duration median 5.2m, p90 14.4m, max 47.6m; because the panel is parallel
+  the fan-out phase is median 11m24s, p90 22m, max 60m. Cost is roughly 335k
+  billable tokens per lens (16k output, 318k cache-creation) plus 3.3M cache
+  reads — a 5-lens round ≈ 1.7M billable / 16.7M cache-read, a 3-round cycle
+  ≈ 5M / 50M.
+
+  **Consequence for anyone optimising this: do not tune the scripts.** Local
+  execution is ~1% of lens time. The levers are panel width, `lens_tags`, and
+  how much the lens is asked to read — the same levers invariant 6 already
+  points at, and the reason it forbids reaching for a cheaper model instead.
+
+  What exists: `lib/record-timing.sh` writes one row per round
+  (`~/.config/claude-qa-manager/timings/<key>.tsv`) carrying only `max_gap` and
+  `lens_phase`, for tuning the stall detector — and by its own header, nothing
+  reads it. There is **no token accounting anywhere**, and no per-phase split
+  (preflight / contract / SAST / fan-out / fix / verify / post).
+
+  What a report needs, cheapest first: (1) per-lens duration and token usage —
+  already present in each subagent transcript's `usage`, so this is a
+  correlation problem (round → its subagent transcripts), not an instrumentation
+  one; (2) phase stamps around the existing steps, which is a few `date +%s`
+  writes into `$QA_SCRATCH`; (3) a reporter at Step 4 reading both. Give it a
+  did-not-run state per invariant 2 — a cycle whose timing file is missing must
+  say so, not print a confident zero.
+
 - **Every `gh` call is pinned to the resolved slug. DONE.** `preflight.sh` exports
   `GH_REPO` (respecting a caller's existing value) once the forge is resolved as
   GitHub. A `gh` invocation that omits `--repo` otherwise falls back to gh's own
