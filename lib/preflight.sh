@@ -212,6 +212,35 @@ NONSTRING_LENS_TAGS=$(jq -r --arg t "$TARGET" \
 if [ "${NONSTRING_LENS_TAGS:-0}" -gt 0 ]; then
   die_usage "targets.$TARGET.lens_tags contains $NONSTRING_LENS_TAGS non-string element(s); tags must be strings."
 fi
+
+# review.model / review.lens_models -- the upgrade path invariant 6 leaves open
+# (never DOWNgrade the model; nothing stops an operator spending a STRONGER one).
+# Empty/absent means every lens inherits the session model, same as before this
+# existed. lens_models keys are LENS NAMES (contract-security, ui-styling, ...),
+# not lens_tags (schema/api/ui/perf) -- that exact mix-up shipped in this repo's
+# own example once (fe0d99a), so validate against the real lens vocabulary
+# rather than trust it was typed right.
+REVIEW_MODEL_TYPE=$(jq -r '.review.model | type' "$BB" 2>/dev/null || echo "null")
+case "$REVIEW_MODEL_TYPE" in
+  string|null) ;;
+  *) die_usage "review.model must be a string (found: $REVIEW_MODEL_TYPE)." ;;
+esac
+REVIEW_MODEL=$(jq -r '.review.model // ""' "$BB")
+
+LENS_MODELS_TYPE=$(jq -r '.review.lens_models | type' "$BB" 2>/dev/null || echo "null")
+case "$LENS_MODELS_TYPE" in
+  object|null) ;;
+  *) die_usage "review.lens_models must be an object (found: $LENS_MODELS_TYPE), e.g. {\"contract-security\":\"opus\"}." ;;
+esac
+NONSTRING_LENS_MODELS=$(jq -r '[.review.lens_models // {} | to_entries[] | select(.value | type != "string")] | length' "$BB" 2>/dev/null || echo 0)
+if [ "${NONSTRING_LENS_MODELS:-0}" -gt 0 ]; then
+  die_usage "review.lens_models contains $NONSTRING_LENS_MODELS non-string value(s); each entry must be a model id string."
+fi
+KNOWN_LENS_NAMES_RE='\A(contract-security|regression-edges|test-quality|schema-propagation|api-envelope|ui-styling|performance)\z'
+UNKNOWN_LENS_MODEL_KEYS=$(jq -r --arg re "$KNOWN_LENS_NAMES_RE" \
+  '[.review.lens_models // {} | keys[] | select(test($re) | not)] | join(" ")' "$BB" 2>/dev/null || echo "")
+LENS_MODELS_JSON=$(jq -c '.review.lens_models // {}' "$BB")
+
 EXPECTED_QA_USER=$(jq -r '.qa_agent.expected_username // ""' "$BB")
 QA_TOKEN_ENV=$(jq -r     '.qa_agent.token_env // "QA_AGENT_TOKEN"'    "$BB")
 QA_TOKEN_FILE=$(jq -r    '.qa_agent.token_file // "~/.config/claude-qa-manager/qa-agent-token"' "$BB")
@@ -495,6 +524,14 @@ if [ -n "${UNKNOWN_LENS_TAGS:-}" ]; then
   # single source of truth.
   _valid_tags=${KNOWN_LENS_TAGS_RE#'\A('}; _valid_tags=${_valid_tags%')\z'}
   WARNINGS+=("unknown_lens_tags:${UNKNOWN_LENS_TAGS} (valid tags: ${_valid_tags//|/ } — the tag, not the lens name)")
+fi
+
+# Same class of mistake, the other direction: review.lens_models keys must be
+# LENS NAMES, not lens_tags. An unrecognized key is silently inert (no lens
+# ever matches it), so name it rather than letting the override do nothing.
+if [ -n "${UNKNOWN_LENS_MODEL_KEYS:-}" ]; then
+  _valid_lenses=${KNOWN_LENS_NAMES_RE#'\A('}; _valid_lenses=${_valid_lenses%')\z'}
+  WARNINGS+=("unknown_lens_model_keys:${UNKNOWN_LENS_MODEL_KEYS} (valid lens names: ${_valid_lenses//|/ } — the lens name, not the lens_tag)")
 fi
 
 # The MR's source branch is what we merge INTO and push. Refuse outright if that
@@ -1556,6 +1593,11 @@ MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
   printf 'target_branch=%s\n'          "$TARGET_BRANCH"
   printf 'diff_range=%s\n'             "$REMOTE/$TARGET_BRANCH..HEAD"
   printf 'lenses=%s\n'                 "$(printf '%s' "$LENSES_JSON" | jq -c .)"
+  # Model override for the lens panel -- see config/defaults.json `review.model`
+  # / `review.lens_models`. Empty review_model and lens_models={} mean "inherit
+  # the session model", exactly today's behaviour.
+  printf 'review_model=%s\n'           "$REVIEW_MODEL"
+  printf 'lens_models=%s\n'            "$(printf '%s' "$LENS_MODELS_JSON" | jq -c .)"
   printf 'forge=%s\n'                  "$FORGE"
   printf 'project=%s\n'                "$FORGE_PROJECT"
   printf 'project_enc=%s\n'            "$FORGE_PROJECT_ENC"
@@ -1655,6 +1697,7 @@ PREFLIGHT_JSON=$(jq -n \
   --argjson is_tiny "$IS_TINY" \
   --arg review_mode "$REVIEW_MODE" \
   --argjson lenses "$LENSES_JSON" \
+  --arg review_model "$REVIEW_MODEL" --argjson lens_models "$LENS_MODELS_JSON" \
   --argjson schema_detected "$SCHEMA_DETECTED" \
   --arg schema_state "$SCHEMA_STATE" \
   --arg schema_evidence "$QA_SCRATCH/schema-change.md" \
@@ -1700,6 +1743,7 @@ PREFLIGHT_JSON=$(jq -n \
     diff_scope: { insertions: $insertions, deletions: $deletions, total_changed: $total_changed, is_tiny: $is_tiny },
     review_mode: $review_mode,
     lenses: $lenses,
+    review_model: $review_model, lens_models: $lens_models,
     schema: { detected: $schema_detected, state: $schema_state, evidence_path: $schema_evidence },
     sast: { gate_state: $sast_gate_state, running: $sast_running, report_path: $sast_report,
             helper_reason: $sast_helper_reason },

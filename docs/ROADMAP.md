@@ -104,6 +104,18 @@ and `forge` / `forge_cli` added.
 
 ### Smaller, independent items
 
+- **Model override — upward, not downward. DONE.** `config/defaults.json`
+  `review.model` (global) and `review.lens_models` (per lens name, wins over
+  `review.model`) let an operator spend a stronger model than the session's on
+  the panel or on individual lenses; empty/absent means every lens inherits the
+  session model, unchanged from before this existed. Resolved in `preflight.sh`
+  into the manager brief (`review_model`, `lens_models`); `agents/qa-manager.md`
+  resolves per-lens and passes it to the `Agent` spawn. Not runtime-enforced
+  upward: this plugin does not rank model strength, so a config that names a
+  weaker model than the session's silently defeats invariant 6 — that is a
+  config-authoring responsibility. A model the runtime cannot resolve fails the
+  spawn like any other lens failure (retried once, then `failed_lenses`) rather
+  than silently falling back to the session model.
 - **Consider `effort` on the agent definitions — upward, not downward.** Subagent
   frontmatter supports `effort: low|medium|high|xhigh|max` ("Overrides the session effort
   level. Default: inherits from session"; available levels depend on the model). Nothing

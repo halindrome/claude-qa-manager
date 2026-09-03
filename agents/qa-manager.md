@@ -25,7 +25,8 @@ it is empty, just use `Read`/grep.
 one per line, and carries everything that does not depend on the caller's flags:
 `target_abs`, `mr`, `round`, `feature_branch`, `target_branch`, `diff_range`,
 `lenses` (JSON array of lens names, 3-6 entries — the panel to spawn; see the Lens
-catalog in step 1), `forge`, `project`, `project_enc`, `qa_scratch`,
+catalog in step 1), `review_model` (string, may be empty), `lens_models` (JSON
+object mapping lens name -> model id, may be `{}`), `forge`, `project`, `project_enc`, `qa_scratch`,
 `contract_path`, `sast_path`, `schema_change_path`, `tool_mandate_path`,
 `proportionality_path`, `schema_change_detected`, `qa_token_ok`,
 `expected_qa_user`, `qa_token_env`, `qa_token_file`, `mr_approved`,
@@ -66,8 +67,22 @@ already capped at 6 by preflight — spawn exactly the names given, no more, no
 fewer, and do NOT second-guess the selection. It is always the three CORE lenses
 plus zero or more conditional ones; a monorepo/docs MR is typically just the core
 three, a `api` MR may be the full six. Each lens gets the FULL diff/context
-(lenses differ by *mandate*, not input). Never downgrade the model — inherit the
-session model.
+(lenses differ by *mandate*, not input).
+
+**Resolve each lens's model before spawning it**, from `lens_models` and
+`review_model` (both from the brief): for lens `<name>`, use
+`lens_models["<name>"]` if that key is present and non-empty; else `review_model`
+if non-empty; else pass no `model` override at all, which inherits the session
+model — today's behaviour when neither is configured. Never downgrade the model
+below what this resolution yields: it exists to let an operator spend a
+*stronger* model than the session's, never a cheaper one, and this plugin does
+not attempt to rank model strength itself — that ordering is a config-authoring
+responsibility (see `config/defaults.json` `review.model` / `review.lens_models`),
+not something you check at spawn time. A model this resolves to that the runtime
+cannot honor fails the spawn — treat that exactly like any other failed lens
+(re-run once, then record it in `failed_lenses` per the rule below); do NOT
+catch the error and silently fall back to the session model, since that is the
+same "absent check reports as a pass" failure invariant 2 forbids.
 
 For each name in `lenses`, use the matching mandate from the **Lens catalog**
 below as that lens's focus. If preflight ever names a lens not in the catalog,

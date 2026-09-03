@@ -1463,6 +1463,48 @@ r=$(mkfixture "feature/x" "main" '.targets.mono.lens_tags = ["api", 42]')
 run_preflight "$r" 73 mono >/dev/null; eq "non-string tag element -> exit 2" "$?" "2"
 rm -rf "$r"
 
+echo "[review.model / review.lens_models — the upgrade path, never downgrade]"
+# Default: neither key set -> empty/absent, brief and JSON carry the "inherit
+# the session model" signal, unchanged from before these keys existed.
+r=$(mkfixture "feature/x" "main" '.'); commit_lines "$r/repo" 5 f.js
+out=$(run_preflight "$r" 73 mono)
+eq "default review_model is empty"    "$(jq -r '.review_model' <<<"$out")" ""
+eq "default lens_models is {}"        "$(jq -r '.lens_models' <<<"$out")" "{}"
+brief=$(jq -r '.manager_brief_path' <<<"$out")
+eq "  brief carries review_model="    "$(grep -c '^review_model=$' "$brief")" "1"
+eq "  brief carries lens_models={}"   "$(grep -c '^lens_models={}$' "$brief")" "1"
+rm -rf "$r"
+# A global override applies; lens_models stays empty.
+r=$(mkfixture "feature/x" "main" '.review.model = "opus"'); commit_lines "$r/repo" 5 f.js
+out=$(run_preflight "$r" 73 mono)
+eq "review.model flows to review_model"      "$(jq -r '.review_model' <<<"$out")" "opus"
+brief=$(jq -r '.manager_brief_path' <<<"$out")
+eq "  brief carries review_model=opus"       "$(grep -c '^review_model=opus$' "$brief")" "1"
+rm -rf "$r"
+# Per-lens override, keyed by LENS NAME.
+r=$(mkfixture "feature/x" "main" '.review.lens_models = {"contract-security":"opus"}'); commit_lines "$r/repo" 5 f.js
+out=$(run_preflight "$r" 73 mono)
+eq "review.lens_models flows through"        "$(jq -r '.lens_models."contract-security"' <<<"$out")" "opus"
+eq "  no unknown_lens_model_keys warning"    "$(jq -r '[.warnings[]|select(startswith("unknown_lens_model_keys"))]|length' <<<"$out")" "0"
+rm -rf "$r"
+# Unknown key (a lens_tag, not a lens name — the exact mix-up fe0d99a fixed for
+# lens_tags) warns, does not fail the round.
+r=$(mkfixture "feature/x" "main" '.review.lens_models = {"api":"opus"}'); commit_lines "$r/repo" 5 f.js
+out=$(run_preflight "$r" 73 mono); rc=$?
+eq "unknown lens_models key -> still exit 0"          "$rc" "0"
+eq "  warned as unknown_lens_model_keys"              "$(jq -r '[.warnings[]|select(startswith("unknown_lens_model_keys"))]|length' <<<"$out")" "1"
+rm -rf "$r"
+# Wrong types are config errors (exit 2), same treatment as lens_tags.
+r=$(mkfixture "feature/x" "main" '.review.model = 42')
+run_preflight "$r" 73 mono >/dev/null; eq "non-string review.model -> exit 2" "$?" "2"
+rm -rf "$r"
+r=$(mkfixture "feature/x" "main" '.review.lens_models = ["opus"]')
+run_preflight "$r" 73 mono >/dev/null; eq "non-object review.lens_models -> exit 2" "$?" "2"
+rm -rf "$r"
+r=$(mkfixture "feature/x" "main" '.review.lens_models = {"contract-security": 42}')
+run_preflight "$r" 73 mono >/dev/null; eq "non-string lens_models value -> exit 2" "$?" "2"
+rm -rf "$r"
+
 echo "[lens priority ORDER is locked, not just the selected set]"
 # Regression lock: a pure priority reorder (api above schema) preserved the set
 # and shipped green, because every other case asserts membership/length only.
@@ -1523,6 +1565,20 @@ else
     doc_bad=$(printf '%s\n' "$doc_tags" | jq -Rr --arg re "$TAGS_RE" 'select(length>0) | select(test($re)|not)' | tr '\n' ',')
     if [ -z "$doc_bad" ]; then ok "  no unknown tags in doc snippets: $(basename "$f")"
     else bad "  no unknown tags in doc snippets: $(basename "$f")" "found: ${doc_bad%,}"; fi
+  done
+fi
+# review.lens_models keys must be LENS NAMES, extracted the same way as the tag
+# vocabulary above — a hardcoded copy here would drift the same way a hardcoded
+# tag list would.
+NAMES_RE=$(grep -oE "KNOWN_LENS_NAMES_RE='[^']+'" "$PREFLIGHT_SRC" | head -1 | sed -E "s/^KNOWN_LENS_NAMES_RE='//; s/'$//")
+if [ -z "$NAMES_RE" ]; then
+  bad "  lens-name vocabulary extracted from preflight.sh" "extraction returned nothing — update the extractor, do NOT paste a copy"
+else
+  ok "  lens-name vocabulary extracted from preflight.sh (not a hardcoded copy)"
+  for f in "$BB_REAL" "$REPO_SRC/examples/"*.json; do
+    bad_keys=$(jq -r --arg re "$NAMES_RE" '[.review.lens_models // {} | keys[]] | unique | map(select(test($re) | not)) | join(",")' "$f")
+    if [ -z "$bad_keys" ]; then ok "  no unknown lens_models keys: $(basename "$f")"
+    else bad "  no unknown lens_models keys: $(basename "$f")" "found: $bad_keys"; fi
   done
 fi
 
