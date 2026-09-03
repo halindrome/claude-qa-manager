@@ -104,6 +104,42 @@ and `forge` / `forge_cli` added.
 
 ### Smaller, independent items
 
+- **Lens reviewers silently inherit a weak session model — invariant 6 has no
+  floor. OPEN, and the default configuration is the failing case.** Invariant 6
+  says never manage review cost by downgrading the model. The cycle never
+  downgrades it *itself* — the letter of the rule — but `review.model` and
+  `review.lens_models` ship **empty**, empty means "pass no override, inherit the
+  session model", and so an operator whose everyday default is a cheaper model
+  gets a full panel of that model, silently. The round then reports as an ordinary
+  review: nothing in `preflight.json`, the manager's return, or any gate
+  distinguishes it from a frontier-model round. That is invariant 2's shape
+  applied to review quality — a precondition nobody checks reports as satisfied.
+
+  The existing knobs do not close it. They are an opt-in **upgrade** path; the
+  plugin deliberately does not rank model strength, so it cannot detect that an
+  inherited model is weaker than required; and the round-note footer that names a
+  model is prose the manager writes from its own knowledge, not an observed value,
+  so it is not evidence.
+
+  Three directions, cheapest first:
+
+  1. **Record what actually ran** — have each lens report the model it executed
+     as, surfaced per lens in the manager's return and the round note. Observation,
+     not policy: it cannot break a working setup and it produces the evidence
+     needed to decide whether a gate is justified. **Do this one first.**
+  2. **Warn on the empty case** — when both keys are empty, add a `warnings[]`
+     entry saying the panel inherits the session model and invariant 6 is
+     unenforced for this round.
+  3. **A declared floor** — `review.min_model` / `require_model`, with preflight
+     refusing to run when the resolved per-lens model is not in an allowed set.
+     Must be an **enumerated allow-list**, never a strength ranking: this plugin
+     does not rank models, and inventing an ordering here would be a second,
+     drifting copy of a judgement that belongs to the operator.
+
+  Same bug, second face: **subagent `effort`** (already listed below as its own
+  item). A frontier model at minimum effort is a downgrade the cycle equally
+  cannot see, and option 1 should record effort alongside the model.
+
 - **Stop the cycle reviewing its own work. DONE.** Measured across 76 `/qa-cycle`
   sessions, 21 projects, 267 round-records: **56% of rounds >= 2** carried at least
   one finding on code an earlier round of the same cycle wrote (0 of 106 round-1
