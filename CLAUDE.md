@@ -78,6 +78,25 @@ still asserts the opposite. `grep` for every occurrence before declaring a fix c
 against the copy. An earlier version of the suite did exactly that and was 41/41 green while
 7 of 8 deliberate breaks shipped undetected. See the header of `test/preflight.test.sh`.
 
+> **Red-first here means breaking the LIVE plugin — so break a copy instead.** This
+> invariant requires proving a test fails without the fix, and the layout note above says
+> this tree is what every running `/qa-cycle` sources. Those two collide: a red-first check
+> on the working tree ships a deliberate bug to any round running concurrently, in another
+> session or another repo. It has happened — a `GH_REPO` export was removed from
+> `lib/preflight.sh` for ~2m20s while a real round was live. Do the red run in an isolated
+> copy and assert the live tree is untouched in the same breath:
+>
+> ```bash
+> ISO=$(mktemp -d)/iso; mkdir -p "$ISO"
+> tar -C ~/Sources/claude-qa-manager --exclude=.git -cf - . | tar -C "$ISO" -xf -   # scrub-ok: this file documents the checkout
+> cd "$ISO" && <mutate the copy> && bash test/preflight.test.sh
+> ```
+>
+> The suite is self-contained in the copy — its fixtures take `lib/` from the tree the test
+> file lives in — so the red run is faithful. Note also that `ctx_execute` **discards its
+> filesystem**: a trailing `cp`-restore in a sandboxed script may never run if the call is
+> backgrounded or stopped, so never rely on one to undo a mutation.
+
 **6. Never manage review cost by downgrading the model.** A cheaper reviewer is a weaker
 reviewer, which defeats the cycle. Narrow `lens_tags` or the panel width instead.
 
@@ -127,6 +146,13 @@ project `<repo>/.claude/skills/qa-cycle/config.json`.
 ## Watch the token cost
 
 `skills/qa-cycle/SKILL.md` is the spine and is deliberately small. It was 41.9k tokens
-on-invoke; it is now ~15.1k. Check with `plugin details` after editing it, and treat a rise
-above ~15k as a regression to justify or undo. Depth belongs in `references/`, which costs
-nothing until read.
+on-invoke; it is now ~16.1k. Check with `plugin details` after editing it, and treat any
+rise above that as a regression to justify or undo. Depth belongs in `references/`, which
+costs nothing until read.
+
+The current figure is ~1k above the 15.1k it held for a long time, and that is a
+*justified* rise, not drift: Step 3B.5 (the fix-diff review), the Step 3B minor-routing
+table and the Step 3D minor-only bullet are new required behaviour, and roughly 2.3k of
+pre-existing depth moved out to `references/preflight-internals.md` and
+`references/fix-review.md` to pay for them. Per invariant 3 each of those rules kept a
+one-line why in the spine; only the measurements moved.

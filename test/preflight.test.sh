@@ -564,6 +564,48 @@ eq "no fanout stamp -> no row"   "$(cat "$thome"/.config/claude-qa-manager/timin
 rm -rf "$tdir" "$thome"
 
 # ---------------------------------------------------------------------------
+echo "[lens-landed — progress that cannot be forgotten or drift from disk]"
+# The manager used to do two hand-written Bash writes per lens return: save the
+# findings, then rewrite the status line copying six fields through and
+# incrementing `done` itself. Marked MANDATORY, and it did not happen — observed
+# live, four lens files landing across 100s while status sat at 0/4. So the
+# helper does both in ONE call and COUNTS `done` from the files on disk.
+LL="$REPO_SRC/lib/lens-landed.sh"
+ld=$(mktemp -d)
+printf '706|webapp|2|lenses|0|4|1700000000|/repo/a|1200\n' > "$ld/status"
+printf '[{"title":"one"}]' | bash "$LL" "$ld" contract-security >/dev/null
+eq "findings persisted"            "$(jq -r '.[0].title' "$ld/lens-contract-security.json")" "one"
+eq "  counter advanced to 1/4"     "$(cut -d'|' -f5,6 "$ld/status")" "1|4"
+eq "  phase forced to lenses"      "$(cut -d'|' -f4 "$ld/status")" "lenses"
+# Every pass-through field survives: epoch_start is what elapsed time is measured
+# from, target_abs scopes the round, lens_stall is the project's resolved fuse.
+eq "  mr/target/round preserved"   "$(cut -d'|' -f1,2,3 "$ld/status")" "706|webapp|2"
+eq "  epoch_start preserved"       "$(cut -d'|' -f7 "$ld/status")" "1700000000"
+eq "  target_abs preserved"        "$(cut -d'|' -f8 "$ld/status")" "/repo/a"
+eq "  lens_stall preserved"        "$(cut -d'|' -f9 "$ld/status")" "1200"
+printf '[{"title":"two"}]' | bash "$LL" "$ld" regression-edges >/dev/null
+eq "second lens -> 2/4"            "$(cut -d'|' -f5 "$ld/status")" "2"
+# THE property that makes it un-forgettable: `done` is counted from disk, so a
+# stale or wrong number in the status line cannot survive the next landing.
+printf '706|webapp|2|lenses|99|4|1700000000|/repo/a|1200\n' > "$ld/status"
+printf '[{"title":"three"}]' | bash "$LL" "$ld" test-quality >/dev/null
+eq "a bogus counter is corrected from disk" "$(cut -d'|' -f5 "$ld/status")" "3"
+# The status mtime is what the stall detector reads; landing a lens must move it.
+touch -t 202001010000 "$ld/status"
+printf '[{"title":"four"}]' | bash "$LL" "$ld" ui-styling >/dev/null
+eq "status mtime refreshed on landing" \
+  "$([ "$(date -r "$ld/status" +%Y)" != "2020" ] && echo yes || echo no)" "yes"
+# Findings are the round's work; a missing status file must not lose them.
+rm -f "$ld/status"
+printf '[{"title":"five"}]' | bash "$LL" "$ld" performance >/dev/null 2>"$ld/err"
+eq "no status file -> findings still saved" "$(jq -r '.[0].title' "$ld/lens-performance.json")" "five"
+eq "  and it says so on stderr"             "$(grep -c 'progress NOT refreshed' "$ld/err")" "1"
+# A path-bearing name would write outside the scratch dir.
+printf '[]' | bash "$LL" "$ld" "../escape" >/dev/null 2>&1
+eq "rejects a path-bearing lens name" "$?" "2"
+rm -rf "$ld"
+
+# ---------------------------------------------------------------------------
 echo "[self-inflicted findings — blame attribution, not line arithmetic]"
 ATTR="$REPO_SRC/lib/attribute-findings.sh"
 a=$(mktemp -d); git init -q "$a/r"
@@ -608,6 +650,46 @@ eq "unreadable location warns on stderr" "$(printf '%s' "$err" | grep -c 'no usa
 eq "  and names the count"               "$(printf '%s' "$err" | grep -c '1 of 1')" "1"
 eq "a fully-resolved batch stays silent" \
   "$(printf '%s' "$FA" | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" 2>&1 >/dev/null | wc -c | tr -d ' ')" "0"
+
+# --- .in_test_file -------------------------------------------------------
+# Step 3B routes a MINOR self-inflicted finding differently depending on this
+# flag: in a test file it goes to the observations ledger untouched; in code a
+# customer executes it is still offered as a fix. So the flag has to be present
+# on EVERY exit path, or "not a test file" becomes indistinguishable from "this
+# never ran" — which is the absent-check-reads-as-pass shape invariant 2 forbids.
+tf() { printf '[{"area_file":"%s","line_low":1,"title":"t"}]' "$1" | bash "$ATTR" "$a/r" '[]' | jq -r '.[0].in_test_file'; }
+eq "tests/ dir is a test file"        "$(tf 'tests/foo.js')"                  "true"
+eq "test/ dir is a test file"         "$(tf 'test/foo.js')"                   "true"
+eq "spec/ dir is a test file"         "$(tf 'spec/foo.rb')"                   "true"
+eq "__tests__/ is a test file"        "$(tf 'src/__tests__/foo.js')"          "true"
+# Capitalised, because Tests/ is as common as tests/ and the corpus has it.
+eq "Tests/ (capitalised) matches"     "$(tf 'Tests/CodeIslandTests/A.swift')" "true"
+# Test INFRASTRUCTURE outside a tests/ dir -- both of these are real paths from
+# the corpus that a tests?/ + *.spec.* pattern alone would miss.
+eq "src/testing/ is a test file"      "$(tf 'src/testing/global-shim.ts')"    "true"
+eq "a bare test.ts is a test file"    "$(tf 'src/test.ts')"                   "true"
+eq "*.spec.ts is a test file"         "$(tf 'src/app/foo.spec.ts')"           "true"
+eq "*_test.go is a test file"         "$(tf 'pkg/foo_test.go')"               "true"
+eq "a Perl .t is a test file"         "$(tf 't/fiix/createFiixWorkOrder.t')"  "true"
+# Production code a customer executes -- these must stay askable.
+eq "production .ts is NOT a test"     "$(tf 'src/app/services/check.service.ts')" "false"
+eq "a .cgi is NOT a test"             "$(tf 'linkAssetToFiix.cgi')"           "false"
+eq "'latest.json' is NOT a test"      "$(tf 'ota/latest.json')"               "false"
+# "contest"/"protest" must not match on a bare substring.
+eq "contest.js is NOT a test"         "$(tf 'src/contest.js')"                "false"
+# A finding with no location at all still carries the field, as false.
+eq "no location -> flag still present" \
+  "$(printf '[{"title":"nowhere"}]' | bash "$ATTR" "$a/r" '[]' | jq -r '.[0] | has("in_test_file")')" "true"
+# Present on the BLAME path too, not just the early exits.
+eq "flag survives the blame path" \
+  "$(printf '[{"area_file":"f.txt","line_low":13}]' | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" | jq -r '.[0] | has("in_test_file")')" "true"
+eq "  and blame still attributes" \
+  "$(printf '[{"area_file":"f.txt","line_low":13}]' | bash "$ATTR" "$a/r" "[\"$FIXSHA\"]" | jq -r '.[0].qa_introduced')" "true"
+# Overridable for a project whose tests live somewhere unusual.
+eq "custom pattern wins" \
+  "$(printf '[{"area_file":"checks/foo.pl","line_low":1}]' | bash "$ATTR" "$a/r" '[]' '(^|/)checks/' | jq -r '.[0].in_test_file')" "true"
+eq "  and narrows as well as widens" \
+  "$(printf '[{"area_file":"tests/foo.js","line_low":1}]' | bash "$ATTR" "$a/r" '[]' '(^|/)checks/' | jq -r '.[0].in_test_file')" "false"
 rm -rf "$a"
 
 # preflight recovers the cycle's fix commits from prior round-note trailers.
@@ -1630,10 +1712,16 @@ fi
 echo "[status-line format agrees across BOTH review paths]"
 # The manager owns the round on the default path; the sequential fallback owns it for
 # a tiny diff or when Agent nesting is unavailable. Both now write the same status
-# file, so the field list has to stay identical in both documents — preflight seeds
+# file, so the field list has to stay identical in both writers — preflight seeds
 # 9 fields and either writer dropping one silently breaks project scoping or the
-# stall threshold. Extract from the real docs; do not restate the format here.
-MGR="$REPO_SRC/agents/qa-manager.md"; SEQ="$REPO_SRC/skills/qa-cycle/references/sequential-and-multimodel.md"
+# stall threshold. Extract from the real sources; do not restate the format here.
+#
+# The MANAGER's writer is now lib/lens-landed.sh, not prose in qa-manager.md: asking
+# the agent to hand-copy six pass-through fields per lens return was marked MANDATORY
+# and still did not happen (four lens files landed while status sat at 0/4). This
+# assertion therefore follows the format to the script that now owns it — checking
+# qa-manager.md would only prove the prose still exists, which was never the problem.
+MGR="$REPO_SRC/lib/lens-landed.sh"; SEQ="$REPO_SRC/skills/qa-cycle/references/sequential-and-multimodel.md"
 # Count the SEPARATORS, not the %s: each writer stamps its own phase as a literal
 # (`|preflight|0|`, `|lenses|`, `|reviewing|`), so a format string is not all %s.
 fields() { local fmt; fmt=$(grep -ohE "printf '[^']*\|[^']*\\\\n'" "$1" | grep '|%s' | head -1)
@@ -1649,9 +1737,15 @@ done
 # Both writers must CLEAR the previous round's per-lens files. The scratch dir is
 # keyed to the MR, not the round, so leftovers read as this round's results —
 # observed live: `ls lens-*.json` showed 6 on a round that had finished 2.
-for doc in "$MGR" "$SEQ"; do
+for doc in "$REPO_SRC/agents/qa-manager.md" "$SEQ"; do
   eq "  $(basename "$doc") clears stale lens files" \
      "$( grep -c 'rm -f .*lens-\*\.json' "$doc" )" "1"
+done
+# And both must route the per-lens landing through the helper rather than
+# hand-writing the two files, which is what made the counter forgettable.
+for doc in "$REPO_SRC/agents/qa-manager.md" "$SEQ"; do
+  eq "  $(basename "$doc") uses lens-landed.sh" \
+     "$( grep -c 'lens-landed\.sh' "$doc" )" "1"
 done
 # The watcher does not TRUST that: it filters by the fanout stamp, so a round that
 # forgets to clear still reports the right count.

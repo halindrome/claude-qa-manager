@@ -47,15 +47,38 @@ a retry on a file you rewrite several times.
    ```
    The file's mtime is what proves the round is alive, so rewrite it even when the
    count has not moved.
-3. **When the reviewer returns**, write its findings to
-   `$QA_SCRATCH/lens-<name>.json` and re-snapshot the tree into `tree-after.txt`.
-   If it differs from `tree-before.txt`, the reviewer wrote to the tree: report it,
-   name the paths, and do **not** auto-revert — a reviewer's leftover and the
-   author's own uncommitted work are indistinguishable.
+3. **When the reviewer returns**, pipe its findings through the same helper the
+   manager path uses — it writes `lens-<name>.json` and refreshes the progress
+   counter in one action, counting `done` from the files on disk rather than from
+   a number you track:
+   ```bash
+   printf '%s' '<findings JSON>' \
+     | bash "${CLAUDE_PLUGIN_ROOT}/lib/lens-landed.sh" "$QA_SCRATCH" "<name>"
+   ```
+   Then re-snapshot the tree into `tree-after.txt`. If it differs from
+   `tree-before.txt`, the reviewer wrote to the tree: report it, name the paths, and
+   do **not** auto-revert — a reviewer's leftover and the author's own uncommitted
+   work are indistinguishable.
 4. **At the end of the round**, record the timing:
    ```bash
    bash "${CLAUDE_PLUGIN_ROOT}/lib/record-timing.sh" "$QA_SCRATCH"
    ```
+
+**This path does NOT attribute findings.** `lib/attribute-findings.sh` is called
+only from the manager path, so on a sequential round `qa_introduced`,
+`qa_introduced_blocking` and `in_test_file` are **absent — not false**. Consequences
+you must honour rather than paper over:
+
+- Step 3B's minor-routing rule keys on `in_test_file`. Absent means unknown, so it
+  **asks** about every minor, exactly as it would for production code. Never treat a
+  missing field as "not a test file".
+- The ⚠ self-inflicted line and the computed `diminishing_returns` trigger cannot
+  fire here. Say in the round note that this round did not attribute findings, rather
+  than letting their absence read as "none were self-inflicted".
+
+Running the helper yourself on this path is reasonable if you have the round's
+`QA-Fix-Commit` trailers to hand — but if you do not, say so; that is the honest
+state, and a silent all-false is the failure invariant 2 exists to prevent.
 
 **Use the Agent tool** to spawn a fresh sub-agent for the QA review. This is the critical step — do NOT display a prompt and ask the user to paste it elsewhere. Call the Agent tool directly.
 

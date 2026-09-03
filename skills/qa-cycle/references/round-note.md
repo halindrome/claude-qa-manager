@@ -13,7 +13,26 @@ Construct via a temp file to avoid shell quoting issues:
 cat > "$QA_SCRATCH/note-round<N>.md" << 'EOF'
 ## QA Round <N>
 
+<if qa_introduced_blocking >= 2, this line goes here — immediately under the
+heading, before anything else, where a human cannot miss it:>
+> ⚠ **<K> of <M> blocking findings are on code an earlier round of this QA cycle
+> introduced.** This cycle may be fixing its own work rather than the MR's.
+
+<K is qa_introduced_blocking and M is counts.critical + counts.major. Both are
+BLOCKING-ONLY: the sentence says "blocking", so K can never exceed M. If the
+numbers would read "4 of 0", the counter is wrong and the note must not be
+written from it — see agents/qa-manager.md, "Counting them". A round whose
+self-inflicted findings are all MINOR does not get this line; those are reported
+via qa_introduced_total and routed by SKILL.md Step 3B.>
+
 <merged-or-claude-only report body>
+
+<from round 2 on, one line naming the fix-diff review (SKILL.md Step 3B.5):>
+Fix review: <clean | findings, N addressed and amended into this round's commit
+             | skipped:round-1 | skipped:no-fix-commit | skipped:spawn-refused>
+
+<A skipped fix review is NEVER written as a clean one. `skipped:spawn-refused`
+means this round's fix went in unreviewed, and the note says so — invariant 2.>
 
 <for each reviewer that was attempted but failed (`do:deepseek-v4-pro`,
 `do:openai-gpt-5.3-codex`, or `qwen`): one line, inside the report body —

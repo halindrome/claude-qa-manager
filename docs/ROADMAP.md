@@ -104,6 +104,52 @@ and `forge` / `forge_cli` added.
 
 ### Smaller, independent items
 
+- **Stop the cycle reviewing its own work. DONE.** Measured across 76 `/qa-cycle`
+  sessions, 21 projects, 267 round-records: **56% of rounds >= 2** carried at least
+  one finding on code an earlier round of the same cycle wrote (0 of 106 round-1
+  records did, by construction), and **36 rounds were pure fix noise** — zero blocking
+  findings, a full panel spent on the previous round's own commit. The rate was flat
+  across five weeks of tuning while blocking findings fell 94 → 50, which is what makes
+  it structural rather than a tuning problem. Root cause: **Step 3B is the only
+  unreviewed writer in the loop**, so a bad fix is first seen by a full panel a round
+  later. Five changes, cheapest first:
+
+  1. **`qa_introduced_blocking` now has a definition** (blocking-only), plus
+     `qa_introduced_total` for the all-severity count. It previously had none anywhere —
+     one appearance in the manager's output schema, one consumer — and the value
+     exceeded `critical + major` in **62 of 262** rounds, including rounds with zero
+     blocking findings and a count of 2–5. A number that can exceed its own denominator
+     cannot gate anything, which is precisely why nothing gated on it.
+  2. **`diminishing_returns` is computed**, at `qa_introduced_blocking >= max(2,
+     ceil(blocking_total / 2))`. The lens-volunteered trigger it joins is effectively
+     unreachable — attribution runs in the manager *after* lenses return and no lens is
+     handed the fix commits — and it showed: 29 rounds met the criterion, 3 raised the
+     decision. This changes the *trigger*, not the policy: findings on the cycle's own
+     fixes are still reported and never acted on.
+  3. **Minor + self-inflicted + in a test file is never offered as a fix** — it goes to
+     the carry-forward ledger. `lib/attribute-findings.sh` stamps `in_test_file` from
+     the **path only** (never content — §schema-drift's lesson), overridable via
+     `review.test_path_pattern`. 60 of 200 measured self-inflicted findings were exactly
+     this. A minor defect in code a customer executes is still asked about: the line is
+     severity **plus location**, never "we wrote it, so skip it".
+  4. **No round narration in the fix commit.** 35 findings a month, 6 blocking, were the
+     previous round's own comments being found false by the next panel.
+  5. **Step 3B.5 — a one-lens review of the fix diff, round >= 2**, before the note
+     posts, with the push moved after it so a corrected fix amends the round's single
+     commit. This is the lever for the only class a reviewer must catch: 91 of 199
+     self-inflicted findings were runtime regressions, holding 21 of the 33 blocking
+     ones. Same model as the panel (invariant 6) — the saving is width, not strength.
+
+  Depth and the class breakdown: `skills/qa-cycle/references/fix-review.md`.
+
+- **The manager never rewrites `status` as lenses return — progress is dead and
+  the stall fuse measures the wrong thing. FIXED.** `lib/lens-landed.sh` now does the
+  landing in one call and **counts `done` from the files on disk**, so there is no
+  second step to omit and no number to misremember. The instruction it replaces was
+  already marked MANDATORY, which is the point: bookkeeping a subagent must carry across
+  a long context is not a mechanism, and the fix is to remove the bookkeeping rather
+  than to word the instruction more forcefully. Original diagnosis below.
+
 - **The manager never rewrites `status` as lenses return — progress is dead and
   the stall fuse measures the wrong thing. BUG, observed live.**
   `agents/qa-manager.md` §1.5 marks the per-return status rewrite MANDATORY. It

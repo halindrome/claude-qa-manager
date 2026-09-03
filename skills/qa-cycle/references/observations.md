@@ -4,6 +4,28 @@
 needs more than the spine says.** The spine states the rule at Steps 3C.5 and 4; this is
 the reasoning and the edges.
 
+## The ledger has two inflows; only one of them is observations
+
+Since the Step 3B minor-routing rule, `$QA_SCRATCH/observations.md` carries two kinds
+of line, and they must stay distinguishable:
+
+1. **`relevance: observation` findings** — the subject of everything below.
+2. **Minor findings Step 3B declined to fix** because they were `qa_introduced` **and**
+   `in_test_file`: defects in test scaffolding an earlier round of this cycle wrote.
+   These carry the suffix `(QA-authored test scaffolding, not fixed)`.
+
+The second kind is **not** an observation and must never be relabelled as one. Relevance
+is a factual classification of what a finding is *about*, not a routing dial — the same
+rule that forbids downgrading a regression to `observation` to unblock an MR forbids
+promoting these. They share the file because the ledger is the carry-forward *mechanism*
+and Step 4 reports from it, not because they are the same kind of thing.
+
+Why they are carried at all rather than dropped: they are real defects, and a cycle that
+silently discarded them would be hiding the cost of its own remediation. Why they are not
+fixed: fixing one costs a commit, a post and another full panel whose subject is that
+fix — 60 of 200 measured self-inflicted findings were exactly this, and the round they
+buy is the fix-noise round. See `references/fix-review.md`.
+
 ## What an observation is, and what it is not
 
 `relevance: observation` is one of three values on the relevance axis (`agents/qa-reviewer.md`,

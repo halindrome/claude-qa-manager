@@ -226,31 +226,37 @@ signal at all. A caller watching from outside cannot tell six working lenses fro
 manager that died twenty minutes ago: both look like an unchanged directory. Two
 writes fix that, and they are not optional.
 
-Use **Bash** for both writes below — a plain `>` redirect. Do NOT use the `Write`
-tool: it refuses to overwrite a file it has not read this session, so the first
-attempt fails and you pay an error plus a Read plus a retry, every time, on a file
-you rewrite six or more times a round.
+Use **Bash** for this — a plain command. Do NOT use the `Write` tool: it refuses to
+overwrite a file it has not read this session, so the first attempt fails and you
+pay an error plus a Read plus a retry, every time, on a file you rewrite six or
+more times a round.
 
-**As each lens returns**, before you do anything else with its result:
+**As each lens returns**, before you do anything else with its result, pipe that
+lens's findings JSON into:
 
 ```bash
-# 1. Persist that lens's raw findings — also your recovery point if a later lens
-#    dies, so five completed reviews are not lost with the sixth.
-printf '%s' '<that lens's findings JSON>' > "$qa_scratch/lens-<lens-name>.json"
-
-# 2. Rewrite the one-line status file:
-#      mr|target|round|phase|done|total|epoch_start|target_abs|lens_stall_seconds
-#    ONLY `phase` and `done` change. Copy every other field through verbatim from
-#    the line already there — epoch_start is what elapsed time is measured from,
-#    target_abs is what scopes the round to its project (drop it and two
-#    concurrent cycles each display the other's progress), and lens_stall_seconds
-#    is this project's tolerance for a quiet fan-out, resolved by preflight from
-#    config. Re-deriving any of them here would put a second, drifting copy of
-#    that resolution in the wrong place.
-printf '%s|%s|%s|lenses|%s|%s|%s|%s|%s\n' \
-  "$mr" "$target" "$round" "$done" "$total" "$start" "$target_abs" "$lens_stall" \
-  > "$status_path"
+printf '%s' '<that lens's findings JSON>' \
+  | bash "${CLAUDE_PLUGIN_ROOT}/lib/lens-landed.sh" "$qa_scratch" "<lens-name>"
 ```
+
+That is the whole obligation. The helper persists `lens-<lens-name>.json` **and**
+refreshes the progress counter in one action, so there is no second step to omit —
+and it **counts `done` from the files on disk** rather than taking a number from
+you, so the counter cannot drift from what actually completed. Every other field
+in the status line is copied through by the helper.
+
+This used to be two hand-written Bash blocks here, with six fields copied through
+verbatim and `done` incremented by hand. It was marked MANDATORY and it did not
+happen: on a live round, four lens files landed across a 100-second window while
+`status` sat at `0/4` — last written before the first lens even arrived — and the
+round then jumped straight to `4/4 done`. A counter that only ever reads `0/N` or
+`N/N` is not progress; it is a latch that says "nothing has happened" for the
+entire 11–28 minutes anyone would want to watch, and it also breaks the stall fuse,
+which was tuned assuming this write happens per return. The helper's header has
+the measurements.
+
+If the helper prints a `progress NOT refreshed` warning, the findings were still
+saved — say so in `blocking_summary` rather than letting a silent counter stand.
 
 **When you fan out**, alongside setting `phase=lenses`, clear the previous round's
 per-lens files and stamp the fan-out time:
@@ -310,8 +316,13 @@ numbers by hand:
 
 ```bash
 printf '%s' "<merged findings JSON array>" \
-  | bash "${CLAUDE_PLUGIN_ROOT}/lib/attribute-findings.sh" "<target_abs>" "<qa_fix_commits from the brief>"
+  | bash "${CLAUDE_PLUGIN_ROOT}/lib/attribute-findings.sh" \
+      "<target_abs>" "<qa_fix_commits from the brief>" "<test_path_pattern from the brief>"
 ```
+
+Pass `test_path_pattern` through **verbatim, including when it is empty** — empty
+is the signal to use the helper's built-in default, and inventing a pattern here
+would put a second, drifting copy of that vocabulary in the wrong place.
 
 Each finding comes back with `qa_introduced` (and `qa_introduced_commit` when true):
 the finding sits on a line a **previous round of this cycle wrote**, not on the
@@ -329,6 +340,31 @@ that many findings were NOT checked; report the count rather than treating the
 all-false result as clean. That warning exists because a field-name mismatch once
 made every finding of a round read as "not ours" when all 8 were.
 
+Each finding also comes back with **`in_test_file`** — a path-only classification of
+whether it sits in test scaffolding rather than in code a customer executes. Step 3B
+routes minor self-inflicted findings by it. Carry it through into the findings you
+hand back; do not recompute or second-guess it.
+
+#### Counting them — the two numbers, defined
+
+Compute both from the attributed findings and report both:
+
+| field | counts findings where |
+|---|---|
+| `qa_introduced_blocking` | `qa_introduced == true` **AND** `severity` is `critical` or `major` |
+| `qa_introduced_total` | `qa_introduced == true`, at **any** severity |
+
+`qa_introduced_blocking` is **blocking-only** — that is what its name says and what
+every consumer wants: SKILL.md's `>= 2` surface rule, the ⚠ note line that reads
+"K of M **blocking** findings", and the `diminishing_returns` rule below all compare
+it against the blocking total. Reporting an all-severity count there makes it exceed
+`counts.critical + counts.major`, which is how it read in 62 of 262 measured rounds —
+including rounds with **zero** blocking findings and a `qa_introduced_blocking` of 2
+to 5. A number that can exceed its own denominator cannot gate anything.
+
+`qa_introduced_total` is the all-severity count. The observations ledger and the
+minor-routing rule want it; keep them separate rather than overloading one field.
+
 ### 4. Render the round note
 
 Write the full round-note markdown to `$qa_scratch/note-round<round>.md`: Contract
@@ -345,12 +381,20 @@ for whichever path did not change.
 
 **Self-inflicted findings are marked, and called out at two or more.** Every finding
 with `qa_introduced:true` carries the marker `↩ on code QA round <N> introduced` in
-its `### Finding N` heading. When **two or more** blocking findings are
-`qa_introduced`, put a line immediately under the `## QA Round <N>` heading, where a
-human cannot miss it:
+its `### Finding N` heading. When `qa_introduced_blocking >= 2`, put a line
+immediately under the `## QA Round <N>` heading, where a human cannot miss it:
 
 > ⚠ **<K> of <M> blocking findings are on code an earlier round of this QA cycle
 > introduced.** This cycle may be fixing its own work rather than the MR's.
+
+`<K>` is `qa_introduced_blocking` and `<M>` is `counts.critical + counts.major` —
+both blocking-only, per the definitions above. The sentence says "blocking", so K
+must never exceed M; if the numbers you are about to write would read `4 of 0`,
+the counter is wrong, not the note.
+
+A round with self-inflicted findings that are **all minor** does not get this line —
+it gets `qa_introduced_total` reported and its minors routed per Step 3B. The ⚠ is
+for the case where the cycle is *blocked* on its own work.
 
 Report it and stop there. Do **not** recommend reverting, do not propose an approach,
 and do not treat it as a reason to withhold the note. Whether to revert, patch again,
@@ -456,6 +500,7 @@ posting; the caller will post from `$qa_scratch/note-round<round>.md`.
   "observations_count": 0,
   "observations": [{"title":"<tag-stripped title>","severity":"critical|major|minor","area_file":"<path>","line_low":0}],
   "qa_introduced_blocking": 0,
+  "qa_introduced_total": 0,
   "tree_mutated": false,
   "blocking_summary": "<=2 sentences: the confirmed critical/major findings, or 'none'",
   "decisions_needed": []
@@ -488,11 +533,31 @@ Rules for `decisions_needed`:
   `QA-Fix-Commit` trailers appended. Emitting the decision while reporting
   `note_posted=true` would make main post the round twice and inflate the round
   counter, so the two must agree.
-- Add `diminishing_returns` when one or more lenses report that most of their blocking
-  findings target code an **earlier QA round** introduced rather than the change the MR
-  exists to make. This is the precondition for the Step 3E deferred-findings exit — if
-  you never raise it, an MR the panel itself judges not worth further review can never
-  be approved, so do not withhold it as noise. Raise it regardless of round number.
+- Add `diminishing_returns` when **either** holds. Raise it regardless of round number.
+
+  1. **The count says so** — `qa_introduced_blocking >= max(2, ceil(blocking_total / 2))`,
+     where `blocking_total` is `counts.critical + counts.major`. This is a computation,
+     not a judgement: fill `self_referential` with `qa_introduced_blocking` and
+     `blocking_total` with the total, and state the arithmetic in `reason`.
+  2. A lens volunteers it — one or more lenses report that most of their blocking
+     findings target code an **earlier QA round** introduced rather than the change the
+     MR exists to make.
+
+  **Rule 1 is the one that will actually fire.** Rule 2 asks a lens for a judgement it
+  has no way to make: attribution runs *here*, in step 3.5, **after** the lenses have
+  returned, and no lens is ever handed the cycle's fix commits. It stayed as an OR
+  because a lens may still notice the pattern by reading the diff — but it was the only
+  trigger for a long time, and it shows: across 281 measured rounds, 29 met rule 1's
+  criterion and the decision was raised in **3** of them.
+
+  This is the precondition for the Step 3E deferred-findings exit — if you never raise
+  it, an MR the panel itself judges not worth further review can never be approved, so
+  do not withhold it as noise.
+
+  Raising it does **not** change what you do about the findings. They are still
+  reported and never acted on (`references/design-notes.md`); this decision only offers
+  the human the option to stop. Do not recommend reverting, and do not withhold the
+  note.
 - `observations` must list **every** entry that went into the `## Observations` section
   — one object each, `observations_count` entries exactly. The count alone is not
   enough: main carries these across rounds into the end-of-cycle ledger, and a number

@@ -76,7 +76,7 @@ it:
 | `mr_title`,`mr_author`,`source_branch`,`target_branch`,`state`,`draft`,`changes_count`,`pipeline_status` | MR facts |
 | `dev_user`,`is_own_branch` | `IS_OWN_BRANCH` (Step 3B ownership gate) |
 | `qa_token_ok`,`qa_auth_user` | `QA_TOKEN_OK` (Steps 0.25/3C/3E) |
-| `qa_token_env`,`qa_token_file`,`expected_qa_user` | how Step 0.25 resolves `QA_TOKEN` (env var first, then file) and who it must resolve to. **Read these; never re-derive them.** A guessed name resolves EMPTY, empty means "act as the developer", and both misattributions that caused are in `CASE-STUDIES.md` §self-approval-fallback. |
+| `qa_token_env`,`qa_token_file`,`expected_qa_user` | how Step 0.25 resolves `QA_TOKEN` (env first, then file) and who it must resolve to. **Read these; never re-derive them** — a guessed name resolves EMPTY, and empty means "act as the developer". `CASE-STUDIES.md` §self-approval-fallback. |
 | `mr_approved` | `MR_APPROVED` (Step 3B.6/3E) |
 | `diff_scope.total_changed`,`diff_scope.is_tiny` | tiny-MR relax (Steps 2.5/3E) |
 | `review_mode` (`manager`\|`sequential`) | Step 3A.1 routing (deterministic) |
@@ -85,12 +85,12 @@ it:
 | `sast.gate_state`,`sast.running`,`sast.report_path`,`sast.helper_reason` | `SAST_GATE_STATE`,`$SAST_REPORT` (Steps 2.5/3C/3E) |
 | `contract.candidate_tickets`,`contract.title_ticket`,`contract.description_length` | Step 0.5 contract resolution |
 | `docs_only` | Step 0.5 docs-only exemption |
-| `round` | the round number for Step 3 — derived from the MR's posted `## QA Round N` notes (max + 1). Do NOT re-derive it by hand, and do not track it in the shell: every invocation is a fresh process, so a hand-tracked round silently resets to 1 and re-fires the round-1-only prompts on a late round. |
+| `round` | the round number for Step 3, derived from the MR's posted `## QA Round N` notes (max + 1). Never re-derive or shell-track it: each invocation is a fresh process, so a hand-tracked round resets to 1 and re-fires the round-1-only prompts late. |
 | `proportionality_path` | the `## Proportionality` section injected verbatim into every lens prompt (Step 3A / the manager). Never empty; preflight escalates its contents at `round >= 3`. |
 | `forge` (`gitlab`\|`github`), `forge_cli` (`glab`\|`gh`) | which backend `lib/forge.sh` dispatches to, and which CLI it drives. Everything that touches the forge goes through `forge_*` — never call `glab`/`gh` directly, or the step works on one forge only. |
 | `project`,`project_enc`,`qa_scratch` | as named |
 | `commit_subject` | the Step 3B fix-commit subject, already rendered — scopeless in a single-project repo |
-| `verify.command`,`verify.source`,`verify.state`,`verify.kind`,`verify.build_command` | the target's OWN test/build entry point, discovered from its Makefile / package.json / tox.ini / …. Step 3B runs it before committing. `state=none-found` means the project has no discoverable tests — report that, never treat it as a pass. `kind=lint` means what was found is a linter, **not** a behavioural suite: run it, and still report that nothing behavioural ran. |
+| `verify.command`,`verify.source`,`verify.state`,`verify.kind`,`verify.build_command` | the target's OWN test/build entry point, discovered from its Makefile / package.json / tox.ini. Step 3B runs it before committing. `state=none-found` is not a pass; `kind=lint` is a linter, not a behavioural suite — run it and still report that nothing behavioural ran. |
 | `layout.multi_target`,`layout.target_is_submodule` | whether this project HAS subprojects, and whether this target is one. Gate subproject wording (Step 4) on these; never assume a repo has parts. |
 
 > `scope` is the target token; `diff_scope` is the diff numbers. preflight asserts the
@@ -100,17 +100,18 @@ it:
 **Exit-code contract — honor it before anything else runs:**
 - **`0`** — proceed. If `warnings` is non-empty, surface them.
 - **`2`** — usage/config error **the operator can fix** (bad args, unknown target, missing tooling, unresolvable remote URL). STOP; fix and re-run.
-- **`3`** — SOFT gate: **the sync merge itself deleted files** net-negative (`sync.unexpected_deletions=true`, "cut from a stale base"). Measured over the merge's own range (pre-merge tip..HEAD), NOT the MR's authored diff — so a legitimately deletion-heavy MR does not trip it. **The merge is left LOCAL and unpushed**, and `sync.deleted_files` lists the casualties. Do NOT proceed silently — present it via AskUserQuestion (rebuild-from-base vs. proceed anyway) with `sync.reason` + the deleted-file list, exactly as the old Step 2 warning intended. The predicate cannot distinguish "the base legitimately deleted these" from "my work is being reverted" — that judgment is the human's, which is why it asks.
-- **`4`** — HARD STOP: the sync **could not be performed safely** (`sync.failed=true`; `sync.reason` says which — fetch/merge/push non-zero, merge conflict or dirty index, a failed checkout of the source branch, a dirty tree blocking that checkout, or a **protected source branch**). **No QA round may run** — a bad sync produces false findings. Report `sync.reason` and stop.
-- **`5`** — INTERNAL failure: an invariant in preflight itself broke (jq build failed, the emitted JSON failed preflight's own shape assertion, or a diff-range endpoint would not resolve). This is a **bug in preflight**, not something the operator can fix by re-running — report it as such. Distinct from `2` so it cannot hide behind "usage error".
+- **`3`** — SOFT gate: the sync merge itself deleted files, net-negative (`sync.unexpected_deletions=true`). The merge is left **LOCAL and unpushed**; `sync.deleted_files` lists the casualties. Do NOT proceed silently — AskUserQuestion (rebuild-from-base vs. proceed anyway) with `sync.reason` and the deleted-file list. It asks because only a human can tell "the base deleted these" from "my work is being reverted".
+- **`4`** — HARD STOP: the sync could not be performed safely (`sync.failed=true`; `sync.reason` says which). **No QA round may run** — a bad sync produces findings about a diff that is not the MR's. Report `sync.reason` and stop. An MR sourced FROM a protected branch lands here and gets no automated QA; that is deliberate.
+- **`5`** — INTERNAL failure: an invariant inside preflight broke. A **bug in preflight**, not something re-running fixes — report it as such. Distinct from `2` so it cannot hide behind "usage error".
 
-> **Known limitation — an MR sourced FROM a protected branch gets no automated QA.** preflight exits 4 and the round does not run; review it by hand. This is the *safe* failure and it is deliberate. Letting the round proceed read-only was tried and opened two holes at once: Step 3C's fix commit became reachable and pushed **straight to the protected branch** (`<feature-branch>` *is* the protected branch on that path), and because the checkout is skipped, the panel diffed an unrelated — often empty — `HEAD` and reported a **clean round on an MR it never read**, which could chain into an auto-approval. Supporting it properly needs preflight to export a three-dot diff range, every consumer to read that instead of hardcoding `..HEAD`, and Step 3C gated to report-only. That is a self-contained change deserving its own MR and its own QA.
+> Why each code is separate, and why the protected-source-branch case fails safe rather
+> than degrading to read-only: `references/preflight-internals.md`.
 
 **Warnings you must surface (`warnings[]`):**
 - `unexpected_deletions` — pairs with exit 3 above.
 - `sast_helper_failed` — the SAST helper exited non-zero (`sast.helper_reason` has the first stderr line). SKILL.md policy is that helper failure is a **MUST-ask-the-user** event (proceed without SAST vs. stop) — never silently continue.
 - `sast_unrecognized_stub` — the helper exited 0 but emitted output preflight could not positively classify. `sast.gate_state` is `skipped:unknown`, which is **never** treated as a security review.
-- `round_probe_failed:exit=<N>` — the MR-notes probe failed, so `round` fell back to `1` and is **not** trustworthy. A wrong round is not cosmetic: it re-fires the round-1-only prompts on a late round and renders the *light* proportionality tier on a round that had earned the strict one. Surface it and confirm the round number with the operator before running the panel — the posted `## QA Round N` notes on the MR are the ground truth. Never let a silent fallback pick the tier.
+- `round_probe_failed:exit=<N>` — the notes probe failed, so `round` fell back to `1` and is **not** trustworthy. Not cosmetic: it re-fires round-1-only prompts and renders the *light* proportionality tier on a round that earned the strict one. Confirm the number with the operator before running the panel; the posted `## QA Round N` notes are ground truth.
 
 **What still requires an LLM/interactive turn after preflight** (do these as before):
 - **Step 0.5 — contract resolution.** Use `contract.title_ticket` / `candidate_tickets`: if present, `jira_get` + (synthesis / ambiguity AskUserQuestion); if `docs_only=true`, take the docs exemption; if `description_length < 200` and no ticket, BLOCK. preflight does only the mechanical ID extraction.
@@ -305,17 +306,13 @@ regardless; the multi-model flags only add second-opinion shims inside it.
 **Why a manager subagent, not the `Workflow` tool** — a clean main loop, and hooks that
 reach the lenses. Reviewer correctness depends on neither: `references/design-notes.md`.
 
-So: **main spawns ONE `qa-manager` Agent** (background); the manager fans out
-the `qa-reviewer` lenses named in preflight's `lenses` array **concurrently**
-(all Agent calls in one message), merges/dedupes, renders
-`$QA_SCRATCH/note-round<N>.md`, optionally posts it, and returns a compact verdict
-+ a `decisions_needed` list. The panel is **preflight-selected** (3-6 lenses): the
-three core lenses (contract-security, regression-edges, test-quality) always, plus
-conditional lenses (schema-propagation, api-envelope, ui-styling, performance) per
-the target's `lens_tags` and the live schema signal — capped at 6, the measured
-Agent-grandchild concurrency ceiling, so the panel stays single-wave. The full
-contract + the lens catalog live in `agents/qa-manager.md`; this step is
-the main-loop side — how to invoke it and what to do with the verdict.
+So: **main spawns ONE `qa-manager` Agent** (background); the manager fans out the
+`qa-reviewer` lenses named in preflight's `lenses` array **concurrently**, merges and
+dedupes, renders `$QA_SCRATCH/note-round<N>.md`, optionally posts it, and returns a
+compact verdict + a `decisions_needed` list. The panel is preflight-selected (3-6
+lenses, capped at 6 — the measured Agent-grandchild concurrency ceiling, so it stays
+single-wave). The full contract and the lens catalog live in `agents/qa-manager.md`;
+this step is the main-loop side — how to invoke it and what to do with the verdict.
 
 **Invoke it** with the Agent tool (`subagent_type: "claude-qa-manager:qa-manager"`,
 `run_in_background: true`), passing:
@@ -361,18 +358,14 @@ it returns those as `decisions_needed`. The main loop:
 - resolves each `decisions_needed` entry: `approval` → the Step 3E confirm;
   `fixes` → the Step 3B ownership-gated triage; `contract_disambiguation` →
   re-resolve Step 0.5; `sast_wait` → the Step 2.5 gate;
-  `diminishing_returns` → present the panel's reasoning to the operator and ask
-  whether to end the cycle. If they end it, every remaining confirmed
-  critical/major finding must be explicitly deferred and enumerated in a posted
-  note — that is what makes the Step 3E deferred-findings exit available. Do not
-  silently continue to another round when this decision is raised; the panel
-  judging its own output worthless is a result, not noise.
-  **Put the case once, then take the answer.** Ending the cycle and deferring a
-  finding are the operator's calls, exactly as `qa_introduced_blocking` is
-  report-only. If they want another round, run it — do not re-argue, and never
-  write "the operator explicitly deferred" about a deferral you had to talk them
-  into: consent recorded that way is indistinguishable from consent volunteered,
-  and the note is the only record anyone reads later.
+  `diminishing_returns` → present the reasoning and ask whether to end the cycle.
+  If they end it, every remaining confirmed critical/major finding must be explicitly
+  deferred and enumerated in a posted note — that is what makes the Step 3E
+  deferred-findings exit available. Never continue silently when it is raised.
+  **Put the case once, then take the answer.** If they want another round, run it —
+  do not re-argue, and never write "the operator explicitly deferred" about a deferral
+  you talked them into: consent recorded that way is indistinguishable from consent
+  volunteered, and the note is the only record anyone reads later.
 - **`--non-interactive`**: pre-answer only the decisions whose default is *mechanical* —
   it may never invent a human's answer. `approval` is not defaultable (needs
   `--auto-approve` too), and two prompts are never answered at all: the **schema-change
@@ -396,10 +389,11 @@ it here):
   of this round's findings may describe the mutation rather than the MR, and a fix
   commit would capture a lens's leftovers. Never auto-revert — you cannot distinguish
   a lens's stub from the author's own uncommitted work.
-- `qa_introduced_blocking >= 2` → surface it to the user verbatim from the note. This
-  cycle is largely fixing its own earlier fixes. **Report only**: do not recommend
-  reverting or choose an approach — whether to revert, patch again, or stop is the
-  human's, because the attribution cannot tell a wrong premise from a sloppy fix.
+- `qa_introduced_blocking >= 2` → surface it verbatim from the note: this cycle is
+  largely fixing its own earlier fixes. **Report only** — whether to revert, patch
+  again, or stop is the human's, because attribution cannot tell a wrong premise from
+  a sloppy fix. (At half or more of the blocking findings the manager also raises
+  `diminishing_returns`, which is the decision that actually offers to stop.)
 
 **Never manage round cost by downgrading the model** — a cheaper reviewer is a weaker
 reviewer, which defeats the cycle. The levers are panel width (`lens_tags`) and the
@@ -434,7 +428,26 @@ Do NOT apply fixes automatically. Instead:
 
 **If `IS_OWN_BRANCH=true` (your own MR):**
 
-1. Read each finding carefully. For findings marked "hypothetical" or "minor" with no confirmed reproduction, ask the user whether to fix them before proceeding.
+1. Read each finding carefully. For findings marked "hypothetical" or "minor" with no
+   confirmed reproduction, ask the user whether to fix them before proceeding — with
+   one exception and one warning, both about the cycle's own work:
+
+   | the finding is | do |
+   |---|---|
+   | blocking (critical/major) | fix it, as below — unchanged |
+   | minor + `qa_introduced` + `in_test_file` | **do not offer it as a fix.** Send it to the observations ledger (Step 3C.5) and the carried-forward list. Say you did. |
+   | minor + `qa_introduced`, not a test file | ask — and say that fixing it costs a commit, a post, and another full panel |
+   | minor, not `qa_introduced` | ask, as before |
+
+   Why: a minor defect in test scaffolding an earlier round wrote is the largest single
+   category of self-inflicted finding, and fixing one buys a round whose whole subject is
+   that fix. The line is severity **plus location**, never "we wrote it, so skip it".
+
+   **`in_test_file` absent is not `false`** — the sequential and `--double` paths never
+   call `attribute-findings.sh`. Absent means unknown, so **ask**: reading a missing field
+   as "not a test" diverts nothing while looking like a working rule (invariant 2).
+
+   Measurements and the class breakdown: `references/fix-review.md`.
 2. **Read `tooling.fix_mandate_path` from `preflight.json` before you edit anything.** It is
    never empty: it states whether a code-navigation graph is available this session and how
    to find every affected site under that regime. You are the only participant in the round
@@ -456,51 +469,87 @@ Do NOT apply fixes automatically. Instead:
    claim in it rests on reading. If the detected command is unsafe to run at this
    point, that is what `targets.<name>.verify.command` is for: say so and ask,
    rather than skipping silently. See `docs/CASE-STUDIES.md` §unrun-suite.
-   - **A new or changed test must be shown to fail without the fix — and you must see it
-     fail FIRST.** Author the test against the unfixed source (revert the fix if you already
-     made it), run it, and **read the failure message**: it has to name the behaviour under
-     test. Only then apply the fix and confirm it passes. A test that passes either way
-     verifies nothing while looking like proof. Running it green-first inverts that: you are
-     debugging a harness you have already built on, which is the loop that eats whole rounds.
-   - **A coverage-only test needs a check that can fail too.** When the test targets code
-     this round did NOT change, there is no fix to revert and the rule above passes for
-     free — so mutate the code under test instead, confirm red, restore. That exemption is
-     exactly where the last cycle's surviving defects landed, including an assertion that
-     could not fail by construction.
-   - **The harness is where these tests actually break, not the assertions.** A wrong exit
-     status, a `chdir` in a constructor, a shell that is not the script's shebang, an extra
-     parsing layer — each looks like a code defect and costs a round. `fix-mandate.md` gives
-     the capture rule for this session's tooling. Traps and the failure catalogue:
-     `references/test-authoring.md`.
-   - **Put a new test where that subsystem's siblings already live**, never at the suite root
-     — a suite organised by folder exists so subsets can be run, and a stray file breaks that.
-   - **Say in the round note which command you ran, verbatim.** If it was narrower than what
-     CI runs, say so: a subset that passes locally and goes red in CI buys a whole extra round.
-   - If `verify.state` is `none-found`, do **not** treat that as clean: say in the round note
-     that this round's fixes are unverified and why. That is a finding about the project, not
-     a passing gate.
-   - **`verify.kind == "lint"` is not behavioural verification.** Run it — a linter catches
-     real defects — but the note must still say no behavioural suite was found, exactly as
-     `none-found` would. `state:detected` answers "is there something to run", which is not
-     the question. If the project has a behavioural job the detector cannot derive (one
-     needing an inventory, fixtures, or credentials), name it and say it did not run, or
-     point `targets.<name>.verify.command` at it.
-   - If the checks fail, fix that before committing. Do not commit a red tree and leave it to
-     the next round.
-5. Each QA round's fixes must be committed as a **single, separate commit** — do not amend previous commits:
+   - **A new or changed test must be shown to fail without the fix, and you must see it
+     fail FIRST** — read the failure message; it has to name the behaviour under test. A
+     test that passes either way verifies nothing while looking like proof.
+   - **A coverage-only test needs a check that can fail too.** Targeting code this round
+     did NOT change makes the rule above pass for free, so mutate the code, confirm red,
+     restore. That exemption is where the last cycle's surviving defects landed.
+   - **The harness is where these tests break, not the assertions** — a wrong exit status,
+     a `chdir` in a constructor, the wrong shell. Each looks like a code defect and costs
+     a round.
+   - **Put a new test where that subsystem's siblings live**, never at the suite root.
+   - **Name the command you ran, verbatim, in the round note.** If it was narrower than
+     CI, say so: a subset that passes locally and goes red in CI buys another round.
+   - `verify.state == none-found` is **not** clean, and `verify.kind == "lint"` is **not**
+     behavioural verification. Run the linter, but the note says no behavioural suite was
+     found. If the project has a job the detector cannot derive, name it and say it did
+     not run, or point `targets.<name>.verify.command` at it.
+   - If the checks fail, fix that before committing. Never commit a red tree.
+
+   Red-first traps, the harness failure catalogue, and the capture rule for this session's
+   tooling: `references/test-authoring.md` and `fix-mandate.md`. **In a repo where the
+   plugin runs from its own working tree, mutate a COPY for the red run** — a red-first
+   check there ships a deliberate bug to any round running concurrently.
+5. **Do not narrate the round in the source.** Comments, docblocks and README prose
+   describing *what this round did or found* ("after round 2…", "the round-1 fix…")
+   belong in the round note. Why: 35 self-inflicted findings a month, 6 blocking, were
+   the previous round's own commentary being found false by the next panel. A comment
+   explaining *why the code is as it is* stays; one reporting *what QA did* is a finding
+   waiting to happen. Examples: `references/fix-review.md`.
+
+6. Each QA round's fixes must be committed as a **single, separate commit** — do not
+   amend previous commits, and **do not push yet**:
 
 ```bash
 cd <target-path>
 git add <changed-files>
 git commit -m "<preflight.json .commit_subject, verbatim>"
-git push <remote> <feature-branch>
 ```
+
+The push moves to after Step 3B.5, so that a fix the review corrects is amended into
+this round's own commit rather than landing as a second one. Two commits for one round
+would inflate the `QA-Fix-Commit` trailers and misattribute the next round's blame.
 
 `.commit_subject` is already rendered — `fix(api): address QA round 3` where the project
 defines named targets, `fix: address QA round 3` where it does not. Do not assemble it from
 `.scope`: a scope is a multi-project concept, and a single-project repo has none.
 
-If there are no actionable findings (all hypothetical or minor), skip the fix commit.
+If nothing was actually fixed — no blocking findings, and the minors were either
+ledgered or declined — skip the fix commit, and say in the round note that this round
+changed no code. A round that fixed only minors is **not** a clean round; see Step 3D.
+
+
+### Step 3B.5 — review this round's fix diff, then push (round >= 2)
+
+**Skip on round 1** (`fix_review.state = skipped:round-1`) and when Step 3B made no
+commit (`skipped:no-fix-commit`). Round 1's fixes sit on author code with a full panel
+behind them; 0 of 106 measured round-1 records carried a self-inflicted finding.
+
+From round 2 on, spawn **one** `claude-qa-manager:qa-reviewer` over just this round's
+fix commit, before the note posts:
+
+- `skip_contract_verification=true` — the full panel verified the contract this round;
+- the explicit range `<fix-commit>^..<fix-commit>`, plus the finding titles it addressed;
+- exactly two questions: **does this diff do what the finding asked**, and **does it
+  leave a sibling site asserting the opposite** (invariant 4).
+
+If it returns findings, fix them and **amend this round's not-yet-pushed commit** — one
+commit per round. Then push:
+
+```bash
+cd <target-path>
+git push <remote> <feature-branch>
+```
+
+Record `fix_review.state` in the note: `clean`, `findings`, or `skipped:<why>`. **A
+skipped fix review is never reported as a clean one** (invariant 2) — a refused spawn is
+`skipped:spawn-refused` and the note says the fix is unreviewed.
+
+Why one lens: runtime regressions in the cycle's own fixes are the only class a reviewer
+must catch (91 of 199 measured, holding 21 of 33 blocking findings), and the alternative
+is a full panel finding them a round later. Same model as the panel per invariant 6 —
+the saving is width, not strength. Depth: `references/fix-review.md`.
 
 
 ## Step 3B.6 — revoke an approval before posting a dirty re-round
@@ -554,6 +603,18 @@ Append every `relevance: observation` finding this round produced to
 - [R<round>] **<severity>** <title> — <area_file>:<line_low>
 ```
 
+**Second inflow:** every minor finding Step 3B declined to fix because it was
+`qa_introduced` **and** `in_test_file`, marked so a reader can tell the two apart:
+
+```
+- [R<round>] **minor** <title> — <area_file>:<line_low>  (QA-authored test scaffolding, not fixed)
+```
+
+These are *not* `relevance: observation` and must not be relabelled as such — relevance
+is a factual classification, not a routing dial (`references/observations.md`). They
+share the ledger because it is the carry-forward mechanism and Step 4 reports from it;
+the marker is what keeps the two inflows distinguishable.
+
 Manager path: its `observations` array. Sequential: your own merged report. Select on the
 `relevance` axis, never on a heading — the two renderers do not spell that heading alike.
 
@@ -567,11 +628,17 @@ be read. This file is what Step 4 reports. Depth: `references/observations.md`.
 After each round, evaluate the findings:
 
 - **If the round is clean** (no findings, or only hypothetical/minor with nothing to fix): announce the round came back clean. If this is at least round 2, tell the user the MR is ready to mark for review.
+- **If the only things fixed this round were minor**: not a clean round, and not
+  automatically another one. Say what was fixed, then ask — noting that the next panel's
+  main subject would be the commit just made. This bullet was missing: "clean" covers
+  *nothing to fix* and the next bullet covers *critical/major fixed*, so a minor-only
+  round fell between them and the cycle improvised another. 36 measured rounds were
+  exactly that.
 - **If critical or major confirmed findings were found and fixed** (own branch): announce that another round is required. Ask: *"Ready to run QA round <N+1>?"* If yes, post this round's note first (it is what makes the next derivation return N+1), then **re-run `preflight.sh`** and take the new `round` and the freshly rendered `proportionality.md` from it. Do NOT increment the round by hand and reuse the existing scratch files — preflight re-runs the sync and re-renders the mandate for the new round in the same pass, which is the only thing that keeps the round number and the proportionality tier in agreement (see Step 3).
 - **If critical or major findings were reported but not fixed** (someone else's branch, report-only mode): announce the findings have been posted. The QA cycle pauses here — the author needs to apply fixes before further rounds can be meaningful. Tell the user: *"QA report posted. Once {author} addresses the findings, run `/qa-cycle {MR_NUMBER}` again to continue QA."* (append the target name only when
 `.layout.multi_target` is true.)
 - **After 4 rounds**: if findings persist beyond round 4, present a summary of remaining open issues and ask the user how to proceed.
-- **On a `diminishing_returns` decision** (any round): stop and ask, regardless of round number. Do not roll into another round on the assumption that more review is always safer — the failure mode this catches is the opposite one. A useful check when deciding: **if most of this round's blocking findings target code an earlier QA round introduced rather than the change the MR exists to make, the cycle has stopped adding value.** Ending it there, with the remaining findings explicitly deferred and enumerated in a note, is a legitimate and complete outcome — see the Step 3E deferred-findings exit.
+- **On a `diminishing_returns` decision** (any round): stop and ask, regardless of round number. Do not roll into another round on the assumption that more review is always safer — the failure mode this catches is the opposite one. The manager now **computes** this rather than waiting to notice it: it raises the decision when `qa_introduced_blocking >= max(2, ceil(blocking_total / 2))`, i.e. **when at least half of this round's blocking findings target code an earlier QA round introduced rather than the change the MR exists to make.** That is the signal that the cycle has stopped adding value. Ending it there, with the remaining findings explicitly deferred and enumerated in a note, is a legitimate and complete outcome — see the Step 3E deferred-findings exit.
 
 **Under `--non-interactive` that *"Ready to run round N+1?"* prompt is auto-answered yes**
 — continuing after findings were fixed is what the policy already prescribes — but only

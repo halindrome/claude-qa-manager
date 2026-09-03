@@ -1,18 +1,39 @@
 #!/usr/bin/env bash
 # attribute-findings.sh — mark findings that sit on code THIS QA CYCLE wrote.
 #
-# Usage:  attribute-findings.sh <repo-dir> <fix-commits-json> < findings.json
+# Usage:  attribute-findings.sh <repo-dir> <fix-commits-json> [test-path-pattern] < findings.json
 #           <fix-commits-json>  JSON array of SHAs, e.g. '["abc1234","def5678"]'
+#           [test-path-pattern] ERE matched case-insensitively against the
+#                               finding's path; omit for the built-in default
 #           stdin               JSON array of findings, each with .area_file
 #                               (the lens schema's name; .file also accepted)
 #                               and .line_low (.line_high optional)
 # Output: the same array on stdout, each finding gaining
 #           .qa_introduced        true|false
 #           .qa_introduced_commit <sha>   (only when true)
+#           .in_test_file         true|false
 #         plus, on stderr, a count of findings whose location could not be read
 #         at all — see the note above that warning. Callers read .qa_introduced,
 #         and must NOT report an all-false result as clean when that count is the
 #         whole batch.
+#
+# WHY .in_test_file, AND WHY A PATH CHECK. Measured over a month of cycles, 58 of
+# 199 findings on the cycle's own fixes were defects in TEST SCAFFOLDING the fix
+# round itself wrote — assertions weaker than their labels, a spec pinning the
+# wrong contract — and 55 of those were minor. Fixing one costs a commit, a post
+# and another full panel, so Step 3B routes them to the observations ledger
+# instead of the fix list. A minor defect in code a customer executes still gets
+# asked about; that is the whole distinction this field carries.
+#
+# Path only, never file content. Content scanning for a file's "kind" is the same
+# mistake DDL-scanning was for schema detection — it matches fixtures, comments
+# and labels — and docs/CASE-STUDIES.md §schema-drift records what that cost.
+#
+# The flag is stamped on EVERY return path, including the two early exits below.
+# A caller must be able to tell "not a test file" from "this never ran", and an
+# absent field reading as false is exactly the shape invariant 2 forbids. Note
+# the sequential/--double path does not call this script at all, so THERE the
+# field is genuinely absent — SKILL.md Step 3B treats absent as unknown and asks.
 #
 # WHY BLAME AND NOT A LINE-RANGE COMPARISON. The obvious implementation — record
 # the line ranges each fix commit touched, then check whether a later finding
@@ -36,12 +57,27 @@
 set -uo pipefail
 
 REPO="${1:-}"; FIX_JSON="${2:-[]}"
+
+# Default test-path vocabulary. `testing/` and a bare `test.<ext>` are in here
+# because the corpus contains exactly those (src/testing/global-shim.ts,
+# src/test.ts) and a pattern built only from `tests?/` and `*.spec.*` misses
+# them. Matched case-insensitively: `Tests/` is as common as `tests/`.
+TESTPAT="${3:-}"
+[ -n "$TESTPAT" ] || TESTPAT='(^|/)(tests?|specs?|__tests__|testing)/|[._-](test|spec)\.[A-Za-z0-9]+$|(^|/)test\.[A-Za-z0-9]+$|\.t$'
+
 FINDINGS=$(cat)
+
+# One definition of the flag, applied on every exit path (see the header).
+stamp_test_flag() {
+  jq -c --arg pat "$TESTPAT" \
+    '[.[] | .in_test_file = (((.area_file // .file // "") | test($pat; "i")) // false)]'
+}
 
 # No recorded fix commits (round 1, or a cycle predating the trailer) => nothing
 # can be attributed. Return the input untouched rather than inventing a verdict.
 if [ -z "$REPO" ] || [ ! -d "$REPO" ] || [ "$(jq -r 'length' <<<"$FIX_JSON" 2>/dev/null || echo 0)" = "0" ]; then
-  jq -c '[.[] | .qa_introduced = false]' <<<"$FINDINGS" 2>/dev/null || printf '%s' "$FINDINGS"
+  jq -c '[.[] | .qa_introduced = false]' <<<"$FINDINGS" 2>/dev/null \
+    | stamp_test_flag 2>/dev/null || printf '%s' "$FINDINGS"
   exit 0
 fi
 
@@ -52,7 +88,7 @@ while IFS= read -r sha; do
   f=$(git -C "$REPO" rev-parse --verify "${sha}^{commit}" 2>/dev/null) || continue
   FULL="$FULL $f"
 done < <(jq -r '.[]' <<<"$FIX_JSON" 2>/dev/null)
-[ -n "$FULL" ] || { jq -c '[.[] | .qa_introduced = false]' <<<"$FINDINGS"; exit 0; }
+[ -n "$FULL" ] || { jq -c '[.[] | .qa_introduced = false]' <<<"$FINDINGS" | stamp_test_flag; exit 0; }
 
 blame_sha() {  # $1 = file, $2 = line -> full SHA of the commit that last touched it
   git -C "$REPO" blame -w -C -L "$2,$2" --porcelain -- "$1" 2>/dev/null \
@@ -89,6 +125,7 @@ while IFS= read -r finding; do
   fi
   out=$(jq -c --argjson f "$finding" '. + [$f]' <<<"$out")
 done < <(jq -c '.[]' <<<"$FINDINGS" 2>/dev/null)
+out=$(printf '%s' "$out" | stamp_test_flag)
 
 # An unblameable location and "blamed, not ours" both emit qa_introduced=false,
 # so a total field-name/shape mismatch is otherwise indistinguishable from the

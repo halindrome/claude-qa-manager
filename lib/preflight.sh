@@ -241,6 +241,24 @@ UNKNOWN_LENS_MODEL_KEYS=$(jq -r --arg re "$KNOWN_LENS_NAMES_RE" \
   '[.review.lens_models // {} | keys[] | select(test($re) | not)] | join(" ")' "$BB" 2>/dev/null || echo "")
 LENS_MODELS_JSON=$(jq -c '.review.lens_models // {}' "$BB")
 
+# review.test_path_pattern -- which paths are test scaffolding rather than code a
+# customer executes. Empty means lib/attribute-findings.sh's built-in default;
+# a value REPLACES it. Validated here rather than in the helper because a bad
+# regex would otherwise surface as "no finding is in a test file", which is a
+# wrong answer wearing the shape of a clean one.
+TEST_PATH_PATTERN_TYPE=$(jq -r '.review.test_path_pattern | type' "$BB" 2>/dev/null || echo "null")
+case "$TEST_PATH_PATTERN_TYPE" in
+  string|null) ;;
+  *) die_usage "review.test_path_pattern must be a string (found: $TEST_PATH_PATTERN_TYPE)." ;;
+esac
+TEST_PATH_PATTERN=$(jq -r '.review.test_path_pattern // ""' "$BB")
+# A pattern jq cannot compile makes every test($pat) call throw, and the helper's
+# `// false` would then read as "nothing is a test file". Reject it at source.
+if [ -n "$TEST_PATH_PATTERN" ]; then
+  jq -ne --arg p "$TEST_PATH_PATTERN" '("x" | test($p; "i")) | true' >/dev/null 2>&1 \
+    || die_usage "review.test_path_pattern is not a valid regex: $TEST_PATH_PATTERN"
+fi
+
 EXPECTED_QA_USER=$(jq -r '.qa_agent.expected_username // ""' "$BB")
 QA_TOKEN_ENV=$(jq -r     '.qa_agent.token_env // "QA_AGENT_TOKEN"'    "$BB")
 QA_TOKEN_FILE=$(jq -r    '.qa_agent.token_file // "~/.config/claude-qa-manager/qa-agent-token"' "$BB")
@@ -1621,6 +1639,9 @@ MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
   # the session model", exactly today's behaviour.
   printf 'review_model=%s\n'           "$REVIEW_MODEL"
   printf 'lens_models=%s\n'            "$(printf '%s' "$LENS_MODELS_JSON" | jq -c .)"
+  # Empty means attribute-findings.sh uses its built-in default; see
+  # config/defaults.json `review.test_path_pattern`.
+  printf 'test_path_pattern=%s\n'      "$TEST_PATH_PATTERN"
   printf 'forge=%s\n'                  "$FORGE"
   printf 'project=%s\n'                "$FORGE_PROJECT"
   printf 'project_enc=%s\n'            "$FORGE_PROJECT_ENC"
@@ -1721,6 +1742,7 @@ PREFLIGHT_JSON=$(jq -n \
   --arg review_mode "$REVIEW_MODE" \
   --argjson lenses "$LENSES_JSON" \
   --arg review_model "$REVIEW_MODEL" --argjson lens_models "$LENS_MODELS_JSON" \
+  --arg test_path_pattern "$TEST_PATH_PATTERN" \
   --argjson schema_detected "$SCHEMA_DETECTED" \
   --arg schema_state "$SCHEMA_STATE" \
   --arg schema_evidence "$QA_SCRATCH/schema-change.md" \
@@ -1767,6 +1789,7 @@ PREFLIGHT_JSON=$(jq -n \
     review_mode: $review_mode,
     lenses: $lenses,
     review_model: $review_model, lens_models: $lens_models,
+    test_path_pattern: $test_path_pattern,
     schema: { detected: $schema_detected, state: $schema_state, evidence_path: $schema_evidence },
     sast: { gate_state: $sast_gate_state, running: $sast_running, report_path: $sast_report,
             helper_reason: $sast_helper_reason },

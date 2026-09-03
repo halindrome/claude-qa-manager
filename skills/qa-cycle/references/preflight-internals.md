@@ -1,5 +1,45 @@
 # Preflight internals
 
+## Exit codes — why each one is separate
+
+SKILL.md Step 0.0 states the contract (what to do on each code). This is why the
+distinctions exist.
+
+**3 — the sync merge itself deleted files, net-negative.** Measured over the *merge's
+own range* (pre-merge tip..HEAD), **not** the MR's authored diff, so a legitimately
+deletion-heavy MR does not trip it. The merge is left LOCAL and unpushed and
+`sync.deleted_files` lists the casualties. It asks rather than deciding because the
+predicate cannot distinguish "the base legitimately deleted these" from "my work is
+being reverted" — that judgement is the operator's.
+
+**4 — the sync could not be performed safely.** `sync.reason` names which: fetch,
+merge or push non-zero; a merge conflict or dirty index; a failed checkout of the
+source branch; a dirty tree blocking that checkout; or a protected source branch. No
+QA round may run, because a bad sync produces false findings — findings about a diff
+that is not the MR's.
+
+**5 — an invariant inside preflight broke** (a jq build failed, the emitted JSON
+failed preflight's own shape assertion, a diff-range endpoint would not resolve).
+Kept distinct from `2` precisely so a preflight bug cannot hide behind "usage error",
+which is the category an operator would otherwise try to fix by re-running.
+
+### Known limitation — an MR sourced FROM a protected branch gets no automated QA
+
+preflight exits 4 and the round does not run; review it by hand. This is the *safe*
+failure and it is deliberate. Letting the round proceed read-only was tried and opened
+two holes at once:
+
+1. Step 3C's fix commit became reachable and pushed **straight to the protected
+   branch** — on that path `<feature-branch>` *is* the protected branch.
+2. Because the checkout is skipped, the panel diffed an unrelated (often empty) `HEAD`
+   and reported a **clean round on an MR it never read**, which could chain into an
+   auto-approval.
+
+Supporting it properly needs preflight to export a three-dot diff range, every
+consumer to read that instead of hardcoding `..HEAD`, and Step 3C gated to
+report-only. That is a self-contained change deserving its own MR and its own QA.
+
+
 **You normally do not need this file.** `preflight.sh` performs every mechanic below and
 emits the result as JSON; the spine tells you which field to read. This is the *policy*
 behind those fields — read it when preflight reports something surprising, when you are

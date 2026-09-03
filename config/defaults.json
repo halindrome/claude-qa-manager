@@ -57,7 +57,9 @@
     "tiny_diff_max_lines": 25,
     "proportionality_strict_from_round": 3,
     "model": "",
-    "lens_models": {}
+    "lens_models": {},
+    "_test_path_comment": "Which paths are TEST scaffolding rather than code a customer executes. Empty means the built-in default in lib/attribute-findings.sh, which covers tests?/ specs?/ __tests__/ testing/ dirs, *.test.* / *.spec.* / *_test.*, a bare test.<ext>, and Perl .t -- matched case-insensitively. It exists because a MINOR finding on the cycle's own fix is routed by it: in a test file it goes to the observations ledger, in production code it is still offered as a fix. Measured over a month, 60 of 200 self-inflicted findings were minor defects in test scaffolding the fix round itself wrote. Set this only if your tests live somewhere the default misses; it REPLACES the default rather than adding to it, so include the ordinary cases too. Path matching only -- never file content, for the reason docs/CASE-STUDIES.md §schema-drift records.",
+    "test_path_pattern": ""
   },
 
   "sast_gate": {
