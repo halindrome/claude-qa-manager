@@ -104,6 +104,24 @@ and `forge` / `forge_cli` added.
 
 ### Smaller, independent items
 
+- **Every `gh` call is pinned to the resolved slug. DONE.** `preflight.sh` exports
+  `GH_REPO` (respecting a caller's existing value) once the forge is resolved as
+  GitHub. A `gh` invocation that omits `--repo` otherwise falls back to gh's own
+  remote resolution, which **in a fork checkout prefers the parent repository** —
+  so PR #N of a fork silently returns upstream's PR #N. `forge_view_mr` is exactly
+  such a call, and it supplies the branch names and diff range the entire round is
+  built on. Observed live: preflight resolved the fork slug correctly and then
+  reported a different, already-merged PR by another author, every field internally
+  consistent; only a failed branch checkout stopped the panel from reviewing an
+  unrelated diff. With a PR number valid on both sides and a branch that happened
+  to check out, the round would have come back clean on the wrong change — the
+  invariant-2 shape, since nothing in the output said "wrong repository".
+  Exported rather than threaded through `forge_view_mr`'s signature because
+  `(<dir> <n>)` is the cross-forge contract in `lib/forge.sh`, shared with the
+  GitLab backend; `GH_REPO` is ignored by `glab`, so this is inert on a GitLab run.
+  Locked by `preflight.test.sh`, which asserts the slug the **stubbed CLI actually
+  saw** rather than the presence of the export line — an assertion on the source
+  text would pass even if the export were placed after the first forge call.
 - **Model override — upward, not downward. DONE.** `config/defaults.json`
   `review.model` (global) and `review.lens_models` (per lens name, wins over
   `review.model`) let an operator spend a stronger model than the session's on

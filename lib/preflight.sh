@@ -380,6 +380,29 @@ FORGE_PROJECT=$(forge_project_slug "$FORGE_REMOTE_URL") \
   || die_usage "could not resolve a <group>/<project> path from remote '$REMOTE' url '$FORGE_REMOTE_URL'"
 FORGE_PROJECT_ENC=$(forge_project_enc "$FORGE_PROJECT")
 
+# Pin every downstream `gh` call to the slug we just resolved from the CHOSEN
+# remote. Any gh invocation that omits `--repo` otherwise falls back to gh's own
+# remote resolution, which in a fork checkout prefers the PARENT repository — so
+# a round started against PR #N of a fork silently inspects upstream's PR #N
+# instead. `forge_view_mr` is exactly such a call (see the header comment in
+# lib/forge-github.sh, which prescribes this fix), and it feeds the branch names
+# and diff range the entire round is built on.
+#
+# Observed live on halindrome/codebase-memory-mcp PR #2: preflight resolved the
+# fork slug correctly and then reported a DIFFERENT, already-merged PR by another
+# author, every field internally consistent. Only a failed branch checkout
+# (exit 4) stopped the panel from reviewing an unrelated diff — with a PR number
+# valid on both sides and a branch that happened to check out, the round would
+# have come back clean on the wrong change.
+#
+# Exported rather than threaded through forge_view_mr's signature because that
+# signature (<dir> <n>) is the cross-forge contract in lib/forge.sh and is shared
+# with the GitLab implementation. GH_REPO is ignored by glab, so this is inert on
+# a GitLab run. A caller that already exported GH_REPO keeps its value.
+if [ "$FORGE" = "github" ]; then
+  export GH_REPO="${GH_REPO:-$FORGE_PROJECT}"
+fi
+
 # ---------------------------------------------------------------------------
 # Step 0 — dev identity + MR inspection (dev token)
 # ---------------------------------------------------------------------------

@@ -177,8 +177,13 @@ SH
   #   GH_STUB_APPROVER  -> a login to place in the reviews list (MR_APPROVED seed)
   #   GH_STUB_NOTES     -> raw JSON array for the issue-comments endpoint
   #   GH_STUB_NOTES_EXIT-> non-zero to make the notes probe FAIL
+  #   GH_STUB_ENVLOG    -> a path; every invocation appends the GH_REPO it saw.
+  #                        Inert unless set, so it costs the other cases nothing.
   cat > "$bin/gh" <<SH
 #!/usr/bin/env bash
+if [ -n "\${GH_STUB_ENVLOG:-}" ]; then
+  printf 'GH_REPO=%s\n' "\${GH_REPO:-<unset>}" >> "\${GH_STUB_ENVLOG}"
+fi
 case "\$*" in
   *"api user"*)     printf '%s' "\${GH_STUB_USER:-devuser}" ;;
   *"pr view"*)      jq -nc --arg s "$src_branch" --arg t "$tgt_branch" \
@@ -939,6 +944,28 @@ r=$(mkfixture "feature/x" "main" '.forge = "gitlab"')
 git -C "$r/repo" remote set-url origin 'git@git.example.invalid:grp/proj.git'
 out=$(QA_FORGE=github run_preflight "$r" 73 mono); note_scratch "$out"
 eq "QA_FORGE beats the .forge config key" "$(jq -r '.forge // "<none>"' <<<"$out")" "github"
+rm -rf "$r"
+
+echo "[every gh call is pinned to the slug preflight resolved, not gh's own guess]"
+# A `gh` invocation without --repo falls back to gh's remote resolution, which in
+# a FORK checkout prefers the PARENT repository. `forge_view_mr` is such a call,
+# and it supplies the branch names and diff range the whole round is built on --
+# so PR #N of a fork silently returns upstream's PR #N, every field internally
+# consistent. Observed live: preflight resolved the fork slug correctly and then
+# reported a different, already-merged PR by another author.
+#
+# Asserted from what the CLI actually SAW (the stub logs its own GH_REPO), not
+# from the presence of the export line in preflight.sh -- an assertion on the
+# source text would pass while the export sat after the first forge call.
+r=$(mkfixture "feature/x" "main" '.')
+git -C "$r/repo" remote set-url origin 'git@github.com:forkowner/proj.git'
+commit_lines "$r/repo" 5 f.js
+envlog="$r/gh-env.log"; : > "$envlog"
+out=$(QA_FORGE=github GH_STUB_ENVLOG="$envlog" run_preflight "$r" 73 mono); note_scratch "$out"
+eq "fork remote still resolves as github" "$(jq -r '.forge // "<none>"' <<<"$out")" "github"
+eq "  at least one gh call was made"      "$( [ -s "$envlog" ] && echo yes || echo no)" "yes"
+eq "  every gh call saw the fork slug"    "$(sort -u "$envlog" | tr '\n' ' ' | sed 's/ *$//')" "GH_REPO=forkowner/proj"
+eq "  no gh call ran with GH_REPO unset"  "$(grep -c '<unset>' "$envlog"; true)" "0"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------
