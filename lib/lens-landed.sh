@@ -70,8 +70,17 @@ IFS='|' read -r MR TARGET ROUND PHASE DONE TOTAL START TARGET_ABS LENS_STALL < "
 DONE_NOW=0
 for f in "$S"/lens-*.json; do [ -f "$f" ] && DONE_NOW=$((DONE_NOW + 1)); done
 
-printf '%s|%s|%s|lenses|%s|%s|%s|%s|%s\n' \
-  "$MR" "$TARGET" "$ROUND" "$DONE_NOW" "$TOTAL" "$START" "$TARGET_ABS" "$LENS_STALL" \
+# PHASE is preserved, never asserted. This script owns the counter; the caller owns
+# what the round is doing. Hardcoding `lenses` here was wrong on the sequential
+# path and shipped that way for one live round: the fallback's vocabulary is
+# `reviewing -> merging -> rendering -> posting -> done`, and a returning reviewer
+# there means review is OVER, so stamping `lenses` both mislabels the phase and
+# hands the round the LONG lens-stall fuse (statusline-fragment.sh keys the 1200s
+# limit on phase == "lenses") for merge/render work that should get the short one.
+# On the manager path nothing changes: the manager has already set `lenses` at
+# fan-out, so preserving it keeps exactly the value hardcoding produced.
+printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+  "$MR" "$TARGET" "$ROUND" "$PHASE" "$DONE_NOW" "$TOTAL" "$START" "$TARGET_ABS" "$LENS_STALL" \
   > "$S/status"
 
 printf 'lens-landed: %s (%s/%s)\n' "$NAME" "$DONE_NOW" "$TOTAL"

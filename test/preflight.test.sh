@@ -576,7 +576,19 @@ printf '706|webapp|2|lenses|0|4|1700000000|/repo/a|1200\n' > "$ld/status"
 printf '[{"title":"one"}]' | bash "$LL" "$ld" contract-security >/dev/null
 eq "findings persisted"            "$(jq -r '.[0].title' "$ld/lens-contract-security.json")" "one"
 eq "  counter advanced to 1/4"     "$(cut -d'|' -f5,6 "$ld/status")" "1|4"
-eq "  phase forced to lenses"      "$(cut -d'|' -f4 "$ld/status")" "lenses"
+eq "  phase PRESERVED, not asserted" "$(cut -d'|' -f4 "$ld/status")" "lenses"
+# The sequential path's vocabulary is reviewing/merging/rendering/posting/done, and
+# a returning reviewer there means review is OVER. Hardcoding `lenses` mislabelled
+# it AND handed merge/render work the long 1200s lens fuse instead of the short one
+# (statusline-fragment.sh keys that limit on phase == "lenses"). Observed live.
+# A CLEAN scratch dir: `done` is counted from every lens-*.json present, so reusing
+# the dir above would count that round's five files and report 6/1.
+sd=$(mktemp -d)
+printf '1151|mobile|1|reviewing|0|1|1700000000|/repo/m|1200\n' > "$sd/status"
+printf '[{"title":"seq"}]' | bash "$LL" "$sd" sequential >/dev/null
+eq "sequential phase survives a landing" "$(cut -d'|' -f4 "$sd/status")" "reviewing"
+eq "  and its counter still advances"    "$(cut -d'|' -f5,6 "$sd/status")" "1|1"
+rm -rf "$sd"
 # Every pass-through field survives: epoch_start is what elapsed time is measured
 # from, target_abs scopes the round, lens_stall is the project's resolved fuse.
 eq "  mr/target/round preserved"   "$(cut -d'|' -f1,2,3 "$ld/status")" "706|webapp|2"
