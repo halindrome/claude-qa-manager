@@ -203,10 +203,11 @@ Always emit this section. If the MR touches no schema, write
 
 - Whether the MR changes `apps/api/the configured schema file` — the one file that IS
   the schema.
-- **Propagation status:** whether a schema change is reflected in
-  `apps/api/the configured schema file`. State `propagated` or `NOT propagated`.
+- **Propagation status:** whether a schema change is reflected in the file(s)
+  `schema.files` names. State `propagated` or `NOT propagated`.
 - Any code-only schema dependency (code referencing a column/table absent from
-  the template) — the part no file check can detect, and the the schema-drift case (docs/CASE-STUDIES.md) class.
+  the template) — the part no file check can detect, and the schema-drift class
+  (`docs/CASE-STUDIES.md` §schema-drift).
 
 A `NOT propagated` schema change, or a code-only dependency on a missing
 column/table, MUST also appear as a blocking finding in `## Findings`

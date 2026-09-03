@@ -1406,7 +1406,7 @@ REVIEW_MODE="manager"
 CMM_PROJECT=""
 if [ "$CMM_AVAILABLE" = "true" ] && [ -n "$REPO_ROOT" ]; then
   # CMM derives a project name from the indexed path: leading slash dropped, path
-  # separators become dashes (/Users/x/Sources/repo -> Users-x-Sources-repo). Use
+  # separators become dashes (/Users/x/Sources/repo -> Users-x-Sources-repo). Use  scrub-ok: illustrative
   # REPO_ROOT, which is the SUPERPROJECT root (line ~89) — CMM's monorepo rule is
   # to index the root, and a subtree index produces a name that will not match.
   CMM_PROJECT="${REPO_ROOT#/}"; CMM_PROJECT="${CMM_PROJECT//\//-}"
