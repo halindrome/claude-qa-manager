@@ -1614,6 +1614,35 @@ r=$(mkfixture "feature/x" "main" '.review.lens_models = {"contract-security": 42
 run_preflight "$r" 73 mono >/dev/null; eq "non-string lens_models value -> exit 2" "$?" "2"
 rm -rf "$r"
 
+echo "[review.test_path_pattern — reaches the manager, or the override is inert]"
+# The manager passes this to attribute-findings.sh as argv[3]. If it never reaches
+# the brief, the override silently does nothing and every project quietly gets the
+# built-in default -- a configured knob that reports success while doing nothing.
+r=$(mkfixture "feature/x" "main" '.'); commit_lines "$r/repo" 5 f.js
+out=$(run_preflight "$r" 73 mono)
+eq "default test_path_pattern is empty"  "$(jq -r '.test_path_pattern' <<<"$out")" ""
+brief=$(jq -r '.manager_brief_path' <<<"$out")
+eq "  brief carries the key even empty"  "$(grep -c '^test_path_pattern=$' "$brief")" "1"
+rm -rf "$r"
+r=$(mkfixture "feature/x" "main" '.review.test_path_pattern = "(^|/)checks/"'); commit_lines "$r/repo" 5 f.js
+out=$(run_preflight "$r" 73 mono)
+eq "a configured pattern flows to JSON"  "$(jq -r '.test_path_pattern' <<<"$out")" "(^|/)checks/"
+brief=$(jq -r '.manager_brief_path' <<<"$out")
+eq "  and to the brief verbatim"         "$(grep -c '^test_path_pattern=(\^|/)checks/$' "$brief")" "1"
+rm -rf "$r"
+# A pattern jq cannot compile makes every test() call throw, and the helper's
+# `// false` would then read as "nothing is a test file" -- a wrong answer wearing
+# the shape of a clean one. Reject it at source instead.
+r=$(mkfixture "feature/x" "main" '.review.test_path_pattern = "(unclosed"')
+run_preflight "$r" 73 mono >/dev/null; eq "an uncompilable regex -> exit 2" "$?" "2"
+rm -rf "$r"
+r=$(mkfixture "feature/x" "main" '.review.test_path_pattern = 42')
+run_preflight "$r" 73 mono >/dev/null; eq "non-string test_path_pattern -> exit 2" "$?" "2"
+rm -rf "$r"
+# The manager must be TOLD the key exists, or it cannot pass what it never reads.
+eq "qa-manager.md lists it as a brief input" \
+   "$(grep -c 'test_path_pattern.*may' "$REPO_SRC/agents/qa-manager.md")" "1"
+
 echo "[lens priority ORDER is locked, not just the selected set]"
 # Regression lock: a pure priority reorder (api above schema) preserved the set
 # and shipped green, because every other case asserts membership/length only.

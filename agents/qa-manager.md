@@ -26,7 +26,9 @@ one per line, and carries everything that does not depend on the caller's flags:
 `target_abs`, `mr`, `round`, `feature_branch`, `target_branch`, `diff_range`,
 `lenses` (JSON array of lens names, 3-6 entries — the panel to spawn; see the Lens
 catalog in step 1), `review_model` (string, may be empty), `lens_models` (JSON
-object mapping lens name -> model id, may be `{}`), `forge`, `project`, `project_enc`, `qa_scratch`,
+object mapping lens name -> model id, may be `{}`), `test_path_pattern` (string, may
+be empty — pass it to `attribute-findings.sh` verbatim; empty means its built-in
+default), `forge`, `project`, `project_enc`, `qa_scratch`,
 `contract_path`, `sast_path`, `schema_change_path`, `tool_mandate_path`,
 `proportionality_path`, `schema_change_detected`, `qa_token_ok`,
 `expected_qa_user`, `qa_token_env`, `qa_token_file`, `mr_approved`,
