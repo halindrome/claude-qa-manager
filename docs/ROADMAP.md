@@ -139,6 +139,24 @@ source before building on it. Transcript metadata is not a schema.
 The general lesson for anything added here still stands on the two confirmed rows: if a
 rule matters, give it a script, a computed value, or a test. Emphasis is not enforcement.
 
+**And enforcement is available at this level — that is settled, further down this file.**
+`PreToolUse` hooks DO fire inside a subagent (measured again on 2026-09-03: 747 hook
+firings across 78 subagent transcripts, 196 of them blocks, plus subagents adding
+`# cmm-exempt` markers precisely because they are being gated). So the two confirmed rows
+are not evidence that a rule of this kind *cannot* be enforced; they are evidence it was
+never attempted. The plugin ships no hooks at all — already an open item below.
+
+Two cautions before reaching for one. A shipped `PreToolUse` hook fires in every session
+of every adopter, so it must exit immediately on anything outside its concern. And the
+deadlock recorded below is real: a hook that orders a lens to route through `ctx_execute`
+while that lens cannot load `ctx_execute` leaves it with `Read` alone. Any gate this
+project ships must fail **open**.
+
+A worked example of what a gate would buy, from the same day: the manager passed
+`model: sonnet` to three lenses with config empty and an explicit instruction to pass no
+override. A `PreToolUse:Agent` gate rejecting an unauthorized `model` on a `qa-reviewer`
+spawn would have stopped that; no amount of prose did.
+
 ### Smaller, independent items
 
 - **Lens reviewers silently inherit a weak session model — invariant 6 has no
