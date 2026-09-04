@@ -84,7 +84,7 @@ QA-Fix-Commit: <full SHA of any further fix commit this round>
 
 ---
 <if QA_TOKEN_OK=true:>
-*QA performed by <qa_auth_user from preflight.json when qa_token_ok, else the dev identity that posted> via Claude Code (<the model you are actually running as — not a literal copied from this file; a hardcoded id rots and misattributes the review. If you cannot determine it, write "Claude Code" with no parenthetical>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` where tag is the reviewer's tag, e.g. ` + do:deepseek-v4-pro` or ` + do:openai-gpt-5.3-codex` or ` + qwen3-14b (LM Studio)`>
+*QA performed by <qa_auth_user from preflight.json when qa_token_ok, else the dev identity that posted> via Claude Code (<the model the LENSES actually ran as. On the driver path this is recorded, not remembered: `jq -r '[.[].model] | unique | join(", ")' "$QA_SCRATCH/panel-models.json"` — the run record, taken from each lens's own `modelUsage`. On the sequential path, the model you are actually running as. Never a literal copied from this file; a hardcoded id rots and misattributes the review. If you cannot determine it, write "Claude Code" with no parenthetical>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` where tag is the reviewer's tag, e.g. ` + do:deepseek-v4-pro` or ` + do:openai-gpt-5.3-codex` or ` + qwen3-14b (LM Studio)`>
 <else (QA_TOKEN_OK=false): omit the "<username> via " prefix:>
 *QA performed by Claude Code (<the model you are actually running as — see the note above>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` as above>
 

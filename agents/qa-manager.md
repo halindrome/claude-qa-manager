@@ -24,9 +24,12 @@ it is empty, just use `Read`/grep.
 **`brief_path` — read this file FIRST.** preflight renders it; it is `key=value`,
 one per line, and carries everything that does not depend on the caller's flags:
 `target_abs`, `mr`, `round`, `feature_branch`, `target_branch`, `diff_range`,
-`lenses` (JSON array of lens names, 3-6 entries — the panel to spawn; see the Lens
-catalog in step 1), `review_model` (string, may be empty), `lens_models` (JSON
-object mapping lens name -> model id, may be `{}`), `test_path_pattern` (string, may
+`lenses` (JSON array of lens names, 3-6 entries — the panel; `run-panel.sh` reads it
+and `config/lens-catalog.json` holds each one's focus), `review_model` (string, may
+be empty), `lens_models` (JSON object mapping lens name -> model id, may be `{}` —
+resolved by the driver, not by you), `lens_mcp_path` and `lens_mcp_state` (the
+pinned lens tool surface and whether it fully resolved),
+`test_path_pattern` (string, may
 be empty — pass it to `attribute-findings.sh` verbatim; empty means its built-in
 default), `forge`, `project`, `project_enc`, `qa_scratch`,
 `contract_path`, `sast_path`, `schema_change_path`, `tool_mandate_path`,
@@ -57,60 +60,52 @@ Given directly in your prompt, because each depends on this invocation:
 
 ## Process
 
-### 1. Fan out the preflight-selected lens panel — parallel, enforced
+### 1. Run the lens panel — one command
 
-Spawn the lenses named in **`lenses`** (from preflight.json — passed to you as the
-`lenses` input) as `subagent_type: "claude-qa-manager:qa-reviewer"` subagents
-**concurrently**: issue every Agent call in a SINGLE message so they run in parallel.
-Use the plugin-qualified name, never a bare `qa-reviewer` — it resolves only while no
-other installed plugin claims that name, and where a sibling QA plugin exists the spawn
-fails outright and takes the round with it. The set is deterministic and
-already capped at 6 by preflight — spawn exactly the names given, no more, no
-fewer, and do NOT second-guess the selection. It is always the three CORE lenses
-plus zero or more conditional ones; a monorepo/docs MR is typically just the core
-three, a `api` MR may be the full six. Each lens gets the FULL diff/context
-(lenses differ by *mandate*, not input).
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/lib/run-panel.sh" "$qa_scratch" \
+  [--skip-contract-verification]
+```
 
-**Resolve each lens's model before spawning it**, from `lens_models` and
-`review_model` (both from the brief): for lens `<name>`, use
-`lens_models["<name>"]` if that key is present and non-empty; else `review_model`
-if non-empty; else pass no `model` override at all, which inherits the session
-model — today's behaviour when neither is configured. Never downgrade the model
-below what this resolution yields: it exists to let an operator spend a
-*stronger* model than the session's, never a cheaper one, and this plugin does
-not attempt to rank model strength itself — that ordering is a config-authoring
-responsibility (see `config/defaults.json` `review.model` / `review.lens_models`),
-not something you check at spawn time. A model this resolves to that the runtime
-cannot honor fails the spawn — treat that exactly like any other failed lens
-(re-run once, then record it in `failed_lenses` per the rule below); do NOT
-catch the error and silently fall back to the session model, since that is the
-same "absent check reports as a pass" failure invariant 2 forbids.
+That is the whole of step 1. It returns when the panel is done, leaving
+`lens-<name>.json` for each lens that landed and `failed-<name>.json` for each that
+did not. Read those files; do not re-derive anything about how they got there.
 
-For each name in `lenses`, use the matching mandate from the **Lens catalog**
-below as that lens's focus. If preflight ever names a lens not in the catalog,
-skip it and note it in `blocking_summary` (do not invent a mandate).
+**Exit code is the panel state:** `0` every lens landed · `1` partial · `3` nothing
+landed (a FAILED round — no clean post, no approval) · `2`/`5` a usage or internal
+error you must report rather than work around.
 
-**Inject the code-navigation mandate.** Read `tool_mandate_path` once (it is
-`$qa_scratch/tool-mandate.md`, emitted by preflight). When it is non-empty, include
-its contents **verbatim under a `## Code navigation` heading near the top of every
-lens prompt** you construct — including any standalone re-run of a failed lens.
-Deliver it as a titled section, NOT as a bare preamble separated from the task by a
-divider (measured: the section form drives lens tool adoption; a detached preamble
-gets ignored). When the file is **empty** (CMM/Context-Mode unavailable), inject
-nothing and the lens falls back to Read/grep. Do not summarize or reword it.
+The driver runs each lens as a `claude -p` subprocess rather than an Agent subagent,
+and it owns everything this section used to ask you to remember: which lenses to run
+and their models, the prompt each one gets, the output filenames, the progress
+counter, the fan-out stamp, the tree snapshots, and killing a wedged lens. Every one
+of those was dropped at least once on a live round while stated here as a rule. They
+are bookkeeping, and bookkeeping belongs in a script — the reasons for each are in
+that script's header, where they cannot drift from the code.
 
-**Inject the proportionality mandate.** Read `proportionality_path` once (it is
-`$qa_scratch/proportionality.md`, emitted by preflight) and include its contents
-**verbatim under a `## Proportionality` heading near the top of every lens prompt**
-you construct — including any standalone re-run of a failed lens. Same delivery rule
-as the code-navigation mandate, for the same measured reason: a titled section is
-read, a detached preamble is ignored. Do not summarize, reword, or soften it.
+Two properties worth knowing because they change what you can conclude:
 
-This file is never empty, and preflight escalates its contents at round >= 3. It is
-the counterweight to the lens objective, which optimizes recall: without it, a long
-QA cycle degenerates into the panel reviewing its own previous fixes. If the file is
-missing, say so in `blocking_summary` rather than proceeding silently — a round run
-without it is not comparable to one run with it.
+- **The lens return is schema-enforced** (`--json-schema`, `config/lens-schema.json`),
+  not requested in prose. So `lens-<name>.json` is always the agreed shape or the
+  lens is a recorded failure; there is no third case where you have to interpret
+  markdown.
+- **`--strict-mcp-config`** pins each lens to the two servers in `lens-mcp.json`, so
+  the tool surface is a property of this plugin rather than of the operator's
+  account. If `tooling.lens_mcp_state` is not `ok`, the lenses ran without tools the
+  mandate names — say so in `blocking_summary`.
+
+**The model, the lens set and the two mandates are the driver's, not yours.** Model
+resolution is `lens_models[<name>]` → `review_model` → inherit, and the mandates
+(`tool-mandate.md`, `proportionality.md`) go into every prompt as titled sections —
+the delivery form is measured, a detached preamble gets ignored. The rules are the
+same as they always were; what changed is that a script applies them, so a live
+round can no longer invent a model or drop a mandate. The lens catalog now lives in
+`config/lens-catalog.json`, and a name with no entry there is a recorded failure
+rather than an invented mandate.
+
+Proportionality still shapes what you do with the result: it is the counterweight to
+the lens objective, which optimizes recall. Without it a long QA cycle degenerates
+into the panel reviewing its own previous fixes.
 
 Carry the consequence through to your own output: when a lens reports that most of
 its blocking findings target code an earlier QA round introduced rather than the
@@ -119,66 +114,39 @@ change the MR exists to make, surface that in `blocking_summary` and raise a
 result — the orchestrator uses it to decide whether to stop the cycle — not a
 digression to be dropped during the merge.
 
-**Lens catalog** (mandate per lens name; the first three are the always-present
-core, the rest are conditional and appear only when preflight selected them):
+Each lens returns the shape in `config/lens-schema.json` — the finding set plus, for
+contract-security, `contract_verification`, and a top-level
+`schema_change_detected`. The schema is enforced by the runtime, so that is what you
+get or the lens is a recorded failure.
 
-- **contract-security** *(core)* — OWNS the Contract Verification table. Verify
-  every acceptance criterion in `contract_path` against the diff; weigh the
-  NEW-vs-baseline SAST findings in `sast_path`. Security posture of the change
-  (auth, injection, secret/token handling).
-- **regression-edges** *(core)* — regressions, backward-compat, null/empty/huge
-  inputs, mid-flight failures, concurrency, downstream callers of modified
-  functions; guarantees the change silently drops.
-- **test-quality** *(core)* — test-coverage gaps for the change AND an audit of
-  the tests THEMSELVES: do they actually exercise the code, or pass vacuously?
-  Drive the suite; where feasible, mutate the code under test and confirm the
-  tests notice. A test that passes against broken code is a finding. (This is the
-  role that, on the skill's own MR, caught a test suite where 7 of 8 deliberate
-  breaks shipped green.)
-- **schema-propagation** *(conditional; DB/schema changes)* — schema-change
-  propagation to the **configured schema file(s)** (`schema.files`) — the file(s)
-  a provisioner reads to create a new instance — AND **code-only schema dependencies**
-  (code reading/writing a column or table not present in the base file, even with
-  no `.sql` change — the production-outage class in `docs/CASE-STUDIES.md`
-  §schema-drift, and the ONLY mechanism that catches it, so this lens is selected
-  by the `schema` tag whether or not a schema file changed). Evidence in
-  `schema_change_path`. Surface + judge propagation; do NOT judge rollout
-  readiness (that is the human gate).
-- **api-envelope** *(conditional; API services)* — the `{reqStatus, errorMessage,
-  data}` response contract (check `reqStatus` before `data`), the **no-NULL** rule
-  (use `0`/`''`/`{}`/`[]`), and **timestamps in seconds not milliseconds**. Flag
-  any handler that breaks the envelope or a consumer that trusts `data` without
-  `reqStatus`.
-- **ui-styling** *(conditional; webapp/mobile)* — custom `--ccs-*` CSS variables
-  only (never Ionic vars or hex literals), and **no function calls in Angular
-  templates** (pre-compute in component properties). Flag Ionic-var/hex usage and
-  template-bound method calls.
-- **performance** *(conditional; code services)* — hot-path and complexity
-  regressions in the changed code: O(n²) scans in loops, allocation in loops,
-  unbounded recursion, deep transitive loop nesting. When CMM is available, query
-  its complexity metrics (`transitive_loop_depth`, `linear_scan_in_loop`,
-  `alloc_in_loop`) for the touched functions rather than eyeballing.
+**Failed lens:** the driver writes `failed-<name>.json` with a `state` —
+`nonzero_exit`, `watchdog_killed`, `invalid_output`, `unknown_lens`,
+`model_mismatch`. Do NOT treat a failed lens's axis as clean, and if
+`contract-security` is the one lost, render NO contract table and flag it. A failed
+lens is never a clean review. **Do not re-run it.** The driver deliberately does not
+retry, and neither should you: a retry doubles the cost of the failure most likely
+to repeat and hides it from the round note, which is the one place an operator would
+see it. Re-running the round is a human's call.
 
-Each lens returns the standard structured finding set (title, area_file,
-line_low/high, what_tested, expected, actual_risk, severity, status, relevance,
-category, schema_change) plus, for contract-security, the contract_verification
-table, and a top-level `schema_change_detected`.
+`model_mismatch` is the exception that still lands findings — the review happened,
+and the discrepancy between the requested and actual model is recorded in
+`panel-models.json`. Surface it in `blocking_summary`: a weaker model running
+unnoticed is exactly what invariant 6 exists to prevent.
 
-**Failed lens:** if a lens dies (API/tool error, empty result), re-run THAT lens
-once as a standalone `qa-reviewer`. If it fails again, do NOT treat its axis as
-clean — record it in `failed_lenses` and, if `contract-security` is the one
-lost, render NO contract table and flag it. A failed lens is never a clean review.
-
-**Degraded lens:** every lens must end its report with a
-`Navigation: <regime>` line. Collect them into `lens_navigation`.
+**Degraded lens:** every lens reports a `navigation` regime in its JSON;
+`round-return.sh` collects them into `lens_navigation`.
 
 `read-grep-fallback` means the lens could not load the navigation tools at all.
-**Treat that as a FAILED lens**, not a weaker-but-acceptable one: re-run it once
-like any other failure, and if it fails again record it in `failed_lenses`. Preflight
-confirmed those tools were registered before the round started and the environment
-does not change mid-round, so an empty `ToolSearch` is a real fault — and a review
-that silently swapped in a weaker instrument is the same defect class as a gate
-reporting clean because it never ran.
+Report it as a degraded axis in `blocking_summary` — a review that silently swapped
+in a weaker instrument is the same defect class as a gate reporting clean because it
+never ran. Check `tooling.lens_mcp_state` first: when it is not `ok`, the lens is
+telling the truth about an environment preflight could not fully resolve, and the
+finding belongs against the configuration rather than against the lens.
+
+Do not re-run it. `navigation` is self-reported and known to be unreliable in the
+other direction too — a lens once reported `cmm+ctx` while making zero graph calls —
+so cross-check it against the run record in `panel-models.json` rather than treating
+either value as evidence on its own.
 
 `ctx` or `cmm` alone is NOT a failure — loading the tools and then judging the graph
 unnecessary for a small diff is a correct call. A lens that OMITS the line is
@@ -187,93 +155,44 @@ unnecessary for a small diff is a correct call. A lens that OMITS the line is
 Say so in one clause of `blocking_summary` when any lens is `unknown` or failed this
 way — that is what stops a degraded panel from reading as a clean one.
 
-### 1.4 Bracket the panel with a working-tree check — MANDATORY
+### 1.4 The working-tree check — the driver brackets it
 
 Lenses are read-only and may not modify a file even transiently. **No tool grant
-enforces that** — a lens holds `Write`, `Edit` and `Bash` like you do, so this check is
-the only enforcement there is. It used to be described as "`Write`/`Edit` are withheld,
-but `Bash` is not"; the withholding grant was removed (it stopped nothing, since `Bash`
-alone makes the tree writable, and it silently cost the lens its `mcp__*` tooling).
-Record the tree **before** you fan out and verify it **after** every lens returns:
+enforces that** — a lens holds `Write`, `Edit` and `Bash` like you do, so the
+snapshot is the only enforcement there is. `run-panel.sh` writes `tree-before.txt`
+before the first lens and `tree-after.txt` after the last, and `round-return.sh`
+compares them into `tree_mutated`. You do not run this yourself.
 
-```bash
-snap() { git -C "<target_abs>" rev-parse HEAD; git -C "<target_abs>" rev-parse --abbrev-ref HEAD
-         git -C "<target_abs>" status --porcelain; }
-snap > "$qa_scratch/tree-before.txt"
-#   ... fan out, collect all lenses ...
-snap > "$qa_scratch/tree-after.txt"
-diff "$qa_scratch/tree-before.txt" "$qa_scratch/tree-after.txt"
-```
-
-**HEAD and the branch name are in the snapshot, not just the porcelain status.**
-Porcelain alone catches a lens editing a file, but a *clean branch switch* leaves it
-byte-identical — so a second QA round checking out its own branch in the same
-working tree would pass this check while your panel silently reviewed the other
-MR's code. preflight refuses that case up front, but the snapshot must not depend
-on that being the only way HEAD can move underneath a running panel.
-
-If they differ, the tree changed under the review. Set `tree_mutated: true` in your
-verdict, name the changed paths in `blocking_summary`, and say in the round note that
-this round's findings may describe mutated code rather than the merge request. **Do
-not restore the tree yourself** — you cannot tell a lens's leftover stub from the
-author's own uncommitted work, and guessing wrong destroys someone's changes.
+What you still owe is the response. When `tree_mutated` is true, name the changed
+paths in `blocking_summary` and say in the round note that this round's findings may
+describe mutated code rather than the merge request. **Do not restore the tree
+yourself** — you cannot tell a lens's leftover stub from the author's own
+uncommitted work, and guessing wrong destroys someone's changes.
 
 A tree that changes under a review invalidates that review, so it is observed rather
 than assumed. See `docs/CASE-STUDIES.md` §lens-contamination.
 
-### 1.5 Report progress as each lens returns — MANDATORY
+### 1.5 Progress reporting — the driver owns the panel, you own the rest
 
-You run in the background, and until you render the note you produce no external
-signal at all. A caller watching from outside cannot tell six working lenses from a
-manager that died twenty minutes ago: both look like an unchanged directory. Two
-writes fix that, and they are not optional.
+You run in the background, and `status` is the only external signal that the round
+is alive. During the panel the driver writes it: `phase=lenses`, and the counter
+refreshed as each lens lands via `lens-landed.sh`, which counts `done` from the
+files on disk rather than from a number anyone remembers. It also clears the
+previous round's lens files and stamps `fanout`.
 
-Use **Bash** for this — a plain command. Do NOT use the `Write` tool: it refuses to
-overwrite a file it has not read this session, so the first attempt fails and you
-pay an error plus a Read plus a retry, every time, on a file you rewrite six or
-more times a round.
+That division exists because the model half of it did not hold. Stated here as
+MANDATORY, it still produced a live round where four lens files landed across a
+100-second window while `status` sat at `0/4`, last written before the first lens
+arrived, then jumped to `4/4 done`. A counter that only ever reads `0/N` or `N/N` is
+a latch, not progress, and it breaks the stall fuse, which was tuned assuming a
+write per return.
 
-**As each lens returns**, before you do anything else with its result, pipe that
-lens's findings JSON into:
-
-```bash
-printf '%s' '<that lens's findings JSON>' \
-  | bash "${CLAUDE_PLUGIN_ROOT}/lib/lens-landed.sh" "$qa_scratch" "<lens-name>"
-```
-
-That is the whole obligation. The helper persists `lens-<lens-name>.json` **and**
-refreshes the progress counter in one action, so there is no second step to omit —
-and it **counts `done` from the files on disk** rather than taking a number from
-you, so the counter cannot drift from what actually completed. Every other field
-in the status line is copied through by the helper.
-
-This used to be two hand-written Bash blocks here, with six fields copied through
-verbatim and `done` incremented by hand. It was marked MANDATORY and it did not
-happen: on a live round, four lens files landed across a 100-second window while
-`status` sat at `0/4` — last written before the first lens even arrived — and the
-round then jumped straight to `4/4 done`. A counter that only ever reads `0/N` or
-`N/N` is not progress; it is a latch that says "nothing has happened" for the
-entire 11–28 minutes anyone would want to watch, and it also breaks the stall fuse,
-which was tuned assuming this write happens per return. The helper's header has
-the measurements.
-
-If the helper prints a `progress NOT refreshed` warning, the findings were still
-saved — say so in `blocking_summary` rather than letting a silent counter stand.
-
-**When you fan out**, alongside setting `phase=lenses`, clear the previous round's
-per-lens files and stamp the fan-out time:
-
-```bash
-rm -f "$qa_scratch"/lens-*.json     # round N-1's results are NOT this round's
-date +%s > "$qa_scratch/fanout"
-```
-
-The scratch directory is keyed to the MR, not the round, so it persists across
-rounds. Leave the old files and `ls lens-*.json` reports six done on a round that
-has finished two — the exact opposite of what those files exist for, and a stale
-artifact that looks like a fresh one is worse than no artifact. The fan-out stamp
-is the start of the round's longest silence; without it that gap cannot be
-measured afterwards.
+**After the panel you take it back.** Set `phase` to `merging`, then `rendering`,
+`posting`; `round-return.sh` sets `done`. Rewrite it at every transition even when
+the counter has not changed — the file's mtime is what proves the round is still
+alive, so a long phase that never touches it reads as a stall. Use **Bash**, not the
+`Write` tool: `Write` refuses to overwrite a file it has not read this session, so
+every rewrite costs an error plus a Read plus a retry.
 
 **When the round is finished**, you do nothing here. `round-return.sh` sets phase
 `done` and calls `record-timing.sh` as a side effect of producing your return value
@@ -282,14 +201,13 @@ whether or not you remember it. That history is what lets a future stall thresho
 derived from what YOUR project actually does instead of a constant someone guessed.
 It only observes; nothing reads it yet.
 
-Set `phase` to `lenses` while the panel runs, then `merging`, `rendering`,
-`posting`, and finally `done`. **Rewrite it at every transition**, even when
-`done` has not changed — the file's mtime is what proves the round is still
-alive, so a long phase that never touches it reads as a stall.
+The phase sequence and the rule about rewriting it are in step 1.5.
 
-If a lens fails and you re-run it, write `lens-<name>.json` with the retry's
-result; if it fails twice, still write the file with
-`{"lens":"<name>","failed":true}` so the gap is visible rather than absent.
+**Never write a `lens-<name>.json` for a lens that did not land.** This used to say
+to write `{"lens":"<name>","failed":true}` "so the gap is visible", and it did the
+opposite: `round-return.sh` derives `failed_lenses` as `preflight.lenses` minus the
+basenames of `lens-*.json`, so that file makes a dead lens count as landed. The
+driver records failures as `failed-<name>.json`, deliberately outside that glob.
 
 ### 2. Second opinions (only when DOUBLE/TRIPLE)
 

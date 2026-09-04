@@ -298,27 +298,28 @@ This is the **default review path**. Routing is **deterministic from preflight**
 take this path when `review_mode == "manager"` (non-trivial diff), and the Step 3A
 sequential fallback when `review_mode == "sequential"` (tiny diff — a single
 reviewer beats the overhead). The one runtime exception preflight cannot predict:
-if a manager or lens **spawn is refused** in this runtime (no Agent nesting), fall
-back to sequential Step 3A regardless of `review_mode`. `DOUBLE`/`TRIPLE` do
+if the **manager spawn is refused** in this runtime (no Agent nesting), fall back to
+sequential Step 3A regardless of `review_mode`. That test is about the manager only:
+the lenses are subprocesses, so nesting depth does not constrain the panel.
+`DOUBLE`/`TRIPLE` do
 **not** change this routing — the manager runs the preflight-selected lens panel
 regardless; the multi-model flags only add second-opinion shims inside it.
 
 **Why a manager subagent, not the `Workflow` tool** — a clean main loop, and hooks that
 reach the lenses. Reviewer correctness depends on neither: `references/design-notes.md`.
 
-So: **main spawns ONE `qa-manager` Agent** (background); the manager fans out the
-`qa-reviewer` lenses named in preflight's `lenses` array **concurrently**, merges and
-dedupes, renders `$QA_SCRATCH/note-round<N>.md`, optionally posts it, and returns a
-compact verdict + a `decisions_needed` list. The panel is preflight-selected (3-6
-lenses, capped at 6 — the measured Agent-grandchild concurrency ceiling, so it stays
-single-wave). The full contract and the lens catalog live in `agents/qa-manager.md`;
-this step is the main-loop side — how to invoke it and what to do with the verdict.
+So: **main spawns ONE `qa-manager` Agent** (background); it runs the panel with
+`lib/run-panel.sh` (each lens a `claude -p` subprocess, so the model cannot invent a
+model or forget a lens — the why is in that script's header), merges and dedupes,
+renders `$QA_SCRATCH/note-round<N>.md`, optionally posts it, and returns a compact
+verdict + a `decisions_needed` list. The panel is preflight-selected (3-6 lenses,
+capped at 6). The full contract lives in `agents/qa-manager.md`; this step is the
+main-loop side — how to invoke it and what to do with the verdict.
 
 **Invoke it** with the Agent tool, `subagent_type: "claude-qa-manager:qa-manager"` and
-**`run_in_background: true`** — not optional: it is what keeps the round's noise out of
-this context. A backgrounded agent returns a stub and a transcript pointer you must never
-read; a foreground return lands the whole round here, which is the one thing the manager
-exists to prevent. Pass:
+**`run_in_background: true`** — not optional: a foreground return lands the whole round
+in this context, the one thing the manager exists to prevent. A backgrounded agent
+returns a stub and a transcript pointer you must never read. Pass:
 
 ```
 brief_path=<preflight.json .manager_brief_path>

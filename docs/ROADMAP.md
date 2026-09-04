@@ -50,7 +50,7 @@ complete *before* the first push rather than fixed in a later commit.
 
 | Decision | Why |
 |---|---|
-| Ship as a **Claude Code plugin** | Verified by spike: a conventional `agents/` dir is discovered with **no manifest key**. The design depends on Agent subagents nesting two deep, `AskUserQuestion` gating human decisions, and `SubagentStart` injection — abstracting that away would gut it. Claude-specific by choice. |
+| Ship as a **Claude Code plugin** | Verified by spike: a conventional `agents/` dir is discovered with **no manifest key**. The design depends on `AskUserQuestion` gating human decisions and `SubagentStart` injection — abstracting that away would gut it. Claude-specific by choice. **Amended 2026-09-04:** this entry also said "the design depends on Agent subagents nesting two deep". It no longer does — `lib/run-panel.sh` runs the lenses as `claude -p` subprocesses, so only the manager is a nested Agent. It remains a plugin either way, and it is now MORE Claude-specific, not less: the driver shells out to the `claude` CLI and depends on `--json-schema`, `--strict-mcp-config` and `--output-format json`. |
 | **Apache-2.0**, public, personal work | Owner's call; stated explicitly. |
 | Repo name `claude-qa-manager` under `halindrome` | Chosen over `qa-rounds` / `mr-qa`. |
 | **Build locally, push only when clean** | Public history is permanent. |
@@ -227,9 +227,9 @@ an exit code, and a wedged lens is a watchdog kill. Before committing, run **one
 prompt** through `-p` and compare its findings against the Agent arm's — mechanism is
 proven, equivalence is not.
 
-This contradicts the do-not-relitigate entry justifying plugin packaging partly because
-"the design depends on Agent subagents nesting two deep." Amend that entry explicitly if
-the driver architecture is adopted; it remains a plugin either way.
+This contradicted the do-not-relitigate entry justifying plugin packaging partly because
+"the design depends on Agent subagents nesting two deep." **That entry is now amended**
+(2026-09-04, with the driver landed); it remains a plugin either way.
 
 ### Phase 1 parity result (2026-09-04) — 3 of 4 criteria pass; `-p` reviews BETTER
 
@@ -302,6 +302,52 @@ whenever `a` is non-zero). No Agent finding was lost.
   *design property* of the driver path, and it is why the property is worth having.
   Incidentally it settles the prefix question: under `--mcp-config` the ctx tools resolve
   as `mcp__context-mode__`, the direct form.
+
+### Phase 3 result (2026-09-04) — `lib/run-panel.sh` landed and wired
+
+The panel now runs as `claude -p` subprocesses. Three commits, each safe on a live
+tree until the last: the driver + schema + catalog; preflight generating
+`lens-mcp.json`; then the wiring.
+
+**Gate 0 settled the one open question first.** `--json-schema` was known to beat a
+system prompt that said "Never emit JSON", but only on a single trivial turn — it was
+unverified whether it constrains the final message or short-circuits the tool turns a
+real lens needs. One run with `--agent claude-qa-manager:qa-reviewer --plugin-dir …
+--json-schema …` on a prompt requiring real file reads: **`num_turns=4`,
+`.structured_output` present and schema-shaped**, $0.28, 47s, `stop_reason: tool_use`,
+`rc=0`. It constrains the answer, not the work. That closes Phase 1's only failing
+criterion.
+
+What the driver owns, each mapped to a live failure: the model is an argument (no
+invented Sonnet), filenames belong to the driver (no seven names for one artifact),
+the counter is refreshed per landing by `lens-landed.sh` counting files on disk (no
+`0/N` latch), a failed lens is `failed-<name>.json` (no remembered list), a wedged
+lens is a TERM-then-KILL watchdog (previously undetectable except by a stall
+heuristic), and `panel-models.json` records the model each lens **actually** ran as
+from its own `modelUsage` — which closes the "silently inherit a weak model" item
+below to the extent that it is now *observable*, with no hook.
+
+Three defects were found by the suite rather than by a live round, and each is a
+one-line lesson:
+
+1. **`lens-*.json` is a load-bearing glob**, not just a filename convention.
+   `round-return.sh:101` derives `failed_lenses` from it. The run record was briefly
+   called `lens-models-actual.json` and reported as a landed lens named
+   "models-actual".
+2. **`agents/qa-manager.md` told the manager to write `{"lens":X,"failed":true}` into
+   `lens-<name>.json` "so the gap is visible."** Against that same derivation it did
+   the opposite — it made a dead lens count as landed. Deleted.
+3. **Replacing code means carrying the reasons it was written that way.** The
+   driver's first tree snapshot was `git status --porcelain`, dropping the HEAD and
+   branch lines the manager's version had — and the line above them explains that a
+   clean branch switch leaves porcelain byte-identical.
+
+Not done here, deliberately: the merge step stays a manager judgement call (it is
+merge/dedupe, which is what a model is for), and the Phase 5 gate scripts are
+untouched. `qa-cycle` on-invoke held at 16.3k.
+
+**Still unexercised: a live round.** Every claim above is from the suite, Gate 0, and
+red-first runs in isolated copies. The driver has never run a real panel.
 
 ### Smaller, independent items
 

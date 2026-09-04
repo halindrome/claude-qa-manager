@@ -43,6 +43,7 @@ set -uo pipefail
 SKILL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_SRC="$(cd "$SKILL_SRC/.." && pwd)"
 PREFLIGHT_SRC="$REPO_SRC/lib/preflight.sh"
+RUNPANEL_SRC="$REPO_SRC/lib/run-panel.sh"
 DEFAULTS_SRC="$REPO_SRC/config/defaults.json"
 SKILL_MD="$REPO_SRC/skills/qa-cycle/SKILL.md"
 
@@ -1840,17 +1841,25 @@ echo "[lens enum <-> qa-manager catalog agreement]"
 # The !73 precedent: a fix added two SAST gate_states to the producer but not its
 # consumer, hard-exiting a routine clean round. Same producer/consumer shape here
 # — preflight's enum is the producer, the manager's catalog is the consumer.
-MANAGER_MD="$REPO_SRC/agents/qa-manager.md"
-if [ -f "$MANAGER_MD" ]; then
+# The catalog moved out of agents/qa-manager.md prose into config/lens-catalog.json
+# when lib/run-panel.sh took over composing lens prompts. The producer/consumer
+# check is the same one; only the consumer's address changed.
+CATALOG_JSON="$REPO_SRC/config/lens-catalog.json"
+if [ -f "$CATALOG_JSON" ]; then
   enum=$(grep -oE '\^\(contract-security\|[a-z|-]+\)\$' "$PREFLIGHT_SRC" | head -1 \
     | sed -E 's/^\^\((.*)\)\$$/\1/' | tr '|' '\n' | sort -u)
-  catalog=$(grep -oE '^- \*\*[a-z-]+\*\*' "$MANAGER_MD" | sed -E 's/^- \*\*([a-z-]+)\*\*/\1/' | sort -u)
+  catalog=$(jq -r 'to_entries[] | select(.key | startswith("$") | not) | .key' "$CATALOG_JSON" | sort -u)
   if [ -z "$enum" ]; then bad "lens enum extracted from preflight" "regex found nothing — update the test"
-  elif [ -z "$catalog" ]; then bad "lens catalog extracted from qa-manager.md" "found nothing — update the test"
-  elif [ "$enum" = "$catalog" ]; then ok "preflight lens enum == qa-manager catalog"
-  else bad "preflight lens enum == qa-manager catalog" "$(diff <(echo "$enum") <(echo "$catalog") | tr '\n' ' ')"; fi
+  elif [ -z "$catalog" ]; then bad "lens catalog extracted from config/lens-catalog.json" "found nothing — update the test"
+  elif [ "$enum" = "$catalog" ]; then ok "preflight lens enum == lens-catalog.json"
+  else bad "preflight lens enum == lens-catalog.json" "$(diff <(echo "$enum") <(echo "$catalog") | tr '\n' ' ')"; fi
+  # Every entry needs a focus. A key with no focus is a lens the driver treats as
+  # unknown, which fails the whole lens rather than reviewing without a mandate.
+  eq "  every catalog entry has a focus" \
+     "$(jq -r '[to_entries[] | select(.key | startswith("$") | not)
+                | select((.value.focus // "") == "")] | length' "$CATALOG_JSON")" "0"
 else
-  bad "qa-manager.md present" "not found at $MANAGER_MD"
+  bad "config/lens-catalog.json present" "not found at $CATALOG_JSON"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1882,16 +1891,36 @@ done
 # Both writers must CLEAR the previous round's per-lens files. The scratch dir is
 # keyed to the MR, not the round, so leftovers read as this round's results —
 # observed live: `ls lens-*.json` showed 6 on a round that had finished 2.
-for doc in "$REPO_SRC/agents/qa-manager.md" "$SEQ"; do
+# On the default path the writer is now lib/run-panel.sh, not the manager's prose;
+# the sequential path still owns its own bookkeeping.
+for doc in "$RUNPANEL_SRC" "$SEQ"; do
   eq "  $(basename "$doc") clears stale lens files" \
      "$( grep -c 'rm -f .*lens-\*\.json' "$doc" )" "1"
 done
 # And both must route the per-lens landing through the helper rather than
 # hand-writing the two files, which is what made the counter forgettable.
-for doc in "$REPO_SRC/agents/qa-manager.md" "$SEQ"; do
+# At least once, not exactly once: the sequential doc states the obligation once,
+# while run-panel.sh calls it and explains why in its header.
+for doc in "$RUNPANEL_SRC" "$SEQ"; do
   eq "  $(basename "$doc") uses lens-landed.sh" \
-     "$( grep -c 'lens-landed\.sh' "$doc" )" "1"
+     "$( [ "$(grep -c 'lens-landed\.sh' "$doc")" -ge 1 ] && echo yes || echo no )" "yes"
 done
+# The default path must actually REACH the driver, and must no longer describe the
+# Agent fan-out it replaced. Both halves matter: a doc that still tells the manager
+# to spawn qa-reviewer subagents gives it two contradictory ways to run the panel,
+# and prose the model can cite is prose the model will follow.
+MANAGER_MD="$REPO_SRC/agents/qa-manager.md"   # NOT $MGR — that is lens-landed.sh
+eq "qa-manager.md runs the panel via run-panel.sh" \
+   "$( [ "$(grep -c 'run-panel\.sh' "$MANAGER_MD")" -ge 1 ] && echo yes || echo no )" "yes"
+eq "  ...and no longer spawns qa-reviewer Agents" \
+   "$( grep -c 'subagent_type.*qa-reviewer' "$MANAGER_MD" )" "0"
+eq "  ...and no longer carries the lens catalog in prose" \
+   "$( grep -cE '^- \*\*(contract-security|regression-edges|test-quality)\*\*' "$MANAGER_MD" )" "0"
+# The sequential path is the exception and keeps its own reviewer spawn — asserted
+# so that "no Agent spawn anywhere" is never mistaken for the rule.
+eq "  the sequential path still spawns its reviewer" \
+   "$( [ "$(grep -c 'qa-reviewer' "$SEQ")" -ge 1 ] && echo yes || echo no )" "yes"
+
 # The watcher does not TRUST that: it filters by the fanout stamp, so a round that
 # forgets to clear still reports the right count.
 eq "watcher filters lens files by fanout" \
@@ -2057,8 +2086,6 @@ else ok "detect-workflows-support.sh is gone"; fi
 # and failed in production on all three.
 # ===========================================================================
 echo "[run-panel.sh — the lens driver]"
-
-RUNPANEL_SRC="$REPO_SRC/lib/run-panel.sh"
 
 mkpanel() {   # -> echoes a root dir with plugin/, repo/, scratch/, bin/
   local root; root=$(mktemp -d)

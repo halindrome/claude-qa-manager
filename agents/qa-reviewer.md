@@ -181,6 +181,20 @@ The second example is **fabricated**: no definition of `mqttPublish` exists anyw
 
 ## Output Format
 
+**Which format applies is decided for you, and you do not choose between them.**
+
+- Run by `lib/run-panel.sh` (the normal path), your final message is validated
+  against `config/lens-schema.json` by the runtime. Fill that shape and ignore the
+  markdown spec below — the fields carry the same content under different names
+  (`Severity` → `severity`, `Evidence` → `evidence`, the `Navigation:` trailer →
+  `navigation`). The runtime enforces this, so there is nothing to decide.
+- Run as an Agent subagent on the sequential path, emit the markdown below.
+
+This used to be a genuine conflict, and it cost a measured failure: this file said
+markdown, the spawn prompt asked for JSON, and whichever won varied by run — the
+Phase 1 parity replay came back as a markdown round-note where the caller needed
+JSON. A rule that two callers can both cite for opposite answers is not a rule.
+
 Emit exactly two top-level sections, in this order. If a section has no content, emit `_None_` — do not omit the section.
 
 ### Header
