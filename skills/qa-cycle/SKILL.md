@@ -664,27 +664,30 @@ requires after the prompt still applies. Conditions in full: `references/non-int
 
 ## Step 3E — approve the MR
 
-Approve only when ALL hold:
+**Run the gate. Do not re-derive its conditions.**
 
-- `QA_TOKEN_OK=true`;
-- the round is **clean** (no confirmed critical/major) **OR** the deferred-findings exit
-  applies;
-- `round >= min_clean_round`, **OR** the tiny-diff relax matched;
-- **CI has finished and passed on the exact commit you are approving** — probe the forge
-  live with `forge_head_ci` and check its sha against `HEAD`. `preflight.json
-  .pipeline_status` predates this round's fix commit, so using it certifies code no CI saw;
-  a round once approved while its own fix commit's pipeline was still running. `running`
-  means wait, `none` means say so — neither is a pass;
-- if `SCHEMA_CHANGE_DETECTED=true`: a human (neither author nor QA agent) has already
-  approved on GitLab **and** the rollout checklist was acknowledged. No flag relaxes this.
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/lib/gate-approve.sh" "$QA_SCRATCH" \
+  --round-blocking <round_has_critical_or_major> \
+  [--schema-ack true] [--deferred-exit true --deferred-note-url <url>]
+```
 
-Confirm with the operator before approving. `--auto-approve` skips only that confirm, never
-a gate.
+`.decision` is `approve` or `refuse`; exit 0 or 1 agrees with it. **`refuse` ends Step 3E
+— there is no reading of `.reasons` that overturns it.** Report the failing checks to the
+operator and stop.
 
-Never describe a deferred-findings approval as a clean round: it rests on an enumerated
-note, and that note must exist and be linked before approving.
+It checks the token, round-clean, eligibility, the schema gate, and CI **live** with its
+sha against `HEAD` — `preflight.json .pipeline_status` predates this round's fix commit,
+so using it certifies code no CI saw. It **fails closed**: what it cannot evaluate
+refuses.
 
-Full gate logic, comment wording, and the exit's preconditions: `references/approval.md`.
+On `approve`, **confirm with the operator, then approve.** The gate establishes premises;
+the human decides. `--auto-approve` skips only that confirm, never a gate.
+
+Never call a deferred-findings approval a clean round — the gate refuses
+`--deferred-exit` without its note URL for that reason.
+
+Comment wording, schema checklist, exit preconditions: `references/approval.md`.
 
 ---
 

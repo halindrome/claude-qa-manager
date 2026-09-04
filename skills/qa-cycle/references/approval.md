@@ -1,8 +1,23 @@
 # Approval: gates, schema preconditions, and the deferred-findings exit
 
-**Read this only on an approval-eligible round.** The spine states the gate conditions; the
-detail here covers the schema-change preconditions, the deferred-findings exit, and the
-exact comment wording, which must never present a deferred-findings approval as clean.
+**Read this only on an approval-eligible round.**
+
+**The gate conditions are no longer checked by reading this file.**
+`lib/gate-approve.sh` evaluates them and returns `.decision`; the spine calls it. What
+survives here is what a script cannot do: the schema-change preconditions a human must
+satisfy, the deferred-findings exit, and the exact comment wording — which must never
+present a deferred-findings approval as clean.
+
+Why the move: every condition was mechanically checkable, and all of them were being
+verified by a model reading prose. That is the shape of every defect this project has
+recorded — a check whose execution depends on remembering to perform it — and it is worst
+here, because approval is the output that enters someone's audit trail as "this was
+reviewed". The gate **fails closed**: what it cannot evaluate refuses. Degrading a note
+loses information; degrading an approval fabricates it.
+
+**The condition list below is documentation of what the gate enforces, not a checklist to
+re-run by hand.** If it disagrees with `lib/gate-approve.sh`, the script is right and this
+file is stale — fix the file.
 
 ### Step 3E — Approve the MR
 
@@ -86,7 +101,8 @@ applicable, and **no human GitLab approval is required**: the QA agent approving
 on its own after a clean, approval-eligible round is the expected, sanctioned
 path for non-schema MRs.
 
-**Approval gate.** Consider approving only when ALL of these hold:
+**Approval gate — enforced by `lib/gate-approve.sh`.** These are the checks it makes; run
+the script rather than this list. Consider approving only when ALL of these hold:
 
 - `QA_TOKEN_OK=true` (the QA agent token resolved and verified in Step 0.25).
 - If `SCHEMA_CHANGE_DETECTED=true`, then BOTH `SCHEMA_CHANGE_ACK=true` AND `SCHEMA_HUMAN_APPROVED=true` (a human — neither the MR author nor the QA agent — has already approved on GitLab; see the schema-change gate above). For non-schema MRs (`SCHEMA_CHANGE_DETECTED=false`), **no** human GitLab approval is required — QA-agent-alone approval after a clean round is the sanctioned path.

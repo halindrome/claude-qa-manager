@@ -2723,6 +2723,30 @@ eq "  ...and says unevaluable, not failed" \
    "$(jq -r '[.reasons[]|select(.state=="unevaluable")]|length >= 1' <<<"$out")" "true"
 rm -rf "$g"
 
+# --- the spine must REACH the gate, and must not restate its conditions -------
+# A gate nothing calls is prose, which is the failure mode that produced
+# lens-landed.sh sitting unused for a day. And a spine that still lists the
+# conditions gives the model a second, drifting copy to satisfy instead.
+# $SKILL_MD is defined at the top of this file. $SKILL_SRC is the TEST directory,
+# not the skill directory — an easy and silent mistake: every assertion below
+# passed a nonexistent path to grep, which returns 0 matches, which reads as
+# "the spine does not call the gate". Wrong for the right-looking reason.
+APPROVAL_MD="$REPO_SRC/skills/qa-cycle/references/approval.md"
+eq "Step 3E calls gate-approve.sh" \
+   "$( [ "$(grep -c 'gate-approve\.sh' "$SKILL_MD")" -ge 1 ] && echo yes || echo no )" "yes"
+eq "  ...and says a refusal ends the step" \
+   "$( grep -qiE 'refuse. ends Step 3E|there is no reading of' "$SKILL_MD" && echo yes || echo no )" "yes"
+# The live-CI rationale must survive the move (invariant 3: a rule keeps its why).
+eq "  ...and keeps the why for probing CI live" \
+   "$( grep -qi 'pipeline_status. predates\|predates this round' "$SKILL_MD" && echo yes || echo no )" "yes"
+eq "approval.md points at the gate rather than being the gate" \
+   "$( [ "$(grep -c 'gate-approve\.sh' "$APPROVAL_MD")" -ge 1 ] && echo yes || echo no )" "yes"
+# A path that does not exist greps 0 and reads as a real failure, so assert the
+# files are actually there — otherwise this whole block can pass vacuously the
+# moment someone moves them.
+eq "  ...and both files exist to be checked" \
+   "$( [ -f "$SKILL_MD" ] && [ -f "$APPROVAL_MD" ] && echo yes || echo no )" "yes"
+
 # --- usage errors are exit 2, distinct from a refusal -------------------------
 eq "no scratch dir -> exit 2" \
    "$(bash "$GATE_SRC" 2>/dev/null; echo $?)" "2"
