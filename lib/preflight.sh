@@ -1238,7 +1238,7 @@ CMM_AVAILABLE=false; _probe_registered "codebase-memory-mcp" && CMM_AVAILABLE=tr
 CTX_AVAILABLE=false; _probe_registered "context-mode"        && CTX_AVAILABLE=true
 
 # ---------------------------------------------------------------------------
-# Lens MCP config -> $QA_SCRATCH/lens-mcp.json
+# Lens MCP config -> $QA_SCRATCH/panel-mcp.json
 # ---------------------------------------------------------------------------
 # lib/run-panel.sh runs each lens as `claude -p --strict-mcp-config --mcp-config
 # <this file>`, which makes the lens tool surface a property of the PLUGIN rather
@@ -1325,7 +1325,16 @@ _resolve_server() {  # $1 = server name -> the launch entry, or nothing
   _server_from_plugin_cache "$name"
 }
 
-LENS_MCP_FILE="$QA_SCRATCH/lens-mcp.json"
+# NOT `lens-mcp.json`. `lens-*.json` is a load-bearing namespace: lens-landed.sh
+# counts it for the progress denominator, round-return.sh:101 derives
+# failed_lenses from it, and run-panel.sh clears it between rounds. A config file
+# under that prefix is deleted by the driver's own round hygiene AND counted as a
+# landed lens named "mcp". The first live round hit the deletion half: all four
+# lenses died with "MCP config file not found" while preflight reported
+# lens_mcp_state=ok, because preflight had written the file and the driver removed
+# it microseconds later. Driver-owned files that are not one lens's findings live
+# under `panel-*`.
+LENS_MCP_FILE="$QA_SCRATCH/panel-mcp.json"
 LENS_MCP_JSON='{"mcpServers":{}}'
 LENS_MCP_MISSING=""
 for _srv in codebase-memory-mcp context-mode; do

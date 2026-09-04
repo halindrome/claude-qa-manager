@@ -89,7 +89,7 @@ Two properties worth knowing because they change what you can conclude:
   not requested in prose. So `lens-<name>.json` is always the agreed shape or the
   lens is a recorded failure; there is no third case where you have to interpret
   markdown.
-- **`--strict-mcp-config`** pins each lens to the two servers in `lens-mcp.json`, so
+- **`--strict-mcp-config`** pins each lens to the two servers in `panel-mcp.json`, so
   the tool surface is a property of this plugin rather than of the operator's
   account. If `tooling.lens_mcp_state` is not `ok`, the lenses ran without tools the
   mandate names — say so in `blocking_summary`.

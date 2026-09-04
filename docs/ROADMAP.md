@@ -346,8 +346,48 @@ Not done here, deliberately: the merge step stays a manager judgement call (it i
 merge/dedupe, which is what a model is for), and the Phase 5 gate scripts are
 untouched. `qa-cycle` on-invoke held at 16.3k.
 
-**Still unexercised: a live round.** Every claim above is from the suite, Gate 0, and
-red-first runs in isolated copies. The driver has never run a real panel.
+### First live round (2026-09-04) — FAILED, and it was worth more than a pass
+
+Round 1, `rest-api` target, 4 lenses. **All four died before doing any work**, and the
+two defects behind it are the useful part.
+
+**1. The driver deleted the config it was about to pass.** Preflight wrote
+`lens-mcp.json`; `run-panel.sh`'s round hygiene was `rm -f "$S"/lens-*.json`, which
+matches it; every lens then started with `--mcp-config` pointing at a path that no
+longer existed and exited 1 on startup. `preflight.json` still said
+`lens_mcp_state: ok` — correctly, because preflight *had* written the file.
+
+This is the **third** appearance of one root cause: `lens-*.json` is a load-bearing
+namespace (`lens-landed.sh` counts it for the progress denominator, `round-return.sh`
+derives `failed_lenses` from it, the driver clears it between rounds). The first two
+were caught by the suite — `lens-models-actual.json` reporting as a landed lens, and
+a documented rule telling the manager to write `{"lens":X,"failed":true}` into it. The
+third shipped because the fixture had no `lens-mcp.json` and the fake `claude` ignores
+`--mcp-config`, so nothing in 581 tests could see it. Two fixes, both applied: the file
+is `panel-mcp.json` now (driver-owned non-findings files live under `panel-*`), and the
+cleanup deletes **by name** from the catalog rather than by glob.
+
+**2. `jq` on a zero-byte file exits 0 with no output**, so `jq … || printf null` never
+fires. Four failed lenses left four empty envelopes and `panel-models.json` was written
+as `{"contract-security": , …}` — not JSON, in the file whose only job is to record
+what actually ran. The guard has to be on the output, not the exit code.
+
+**What worked, and is the reason this round is evidence rather than a mess:** every
+failure was recorded as a distinct `failed-<lens>.json` with its state and stderr; the
+tree snapshots bracketed the panel and matched; `status` reached `0/4 done` rather than
+latching; and the manager refused to render a clean round — its note opens *"This round
+FAILED to review the MR. No review of the change was performed, and nothing below
+should be read as a clean result,"* names the harness as the cause, and states that an
+absent Contract Verification table is not a passing one. That is invariant 2 holding
+under a total panel failure, which no test had exercised.
+
+**The live round was the red run.** Both fixes have regression tests
+(`the mcp config survives the driver's round hygiene`, `panel-models.json is valid JSON
+with every lens dead`), and the failure they pin is the one that actually happened.
+Suite 584 → 590.
+
+**Still unexercised: a round whose lenses actually review.** Everything about merge,
+note rendering from real findings, and approval remains unproven on the driver path.
 
 ### Smaller, independent items
 

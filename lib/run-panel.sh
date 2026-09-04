@@ -90,7 +90,7 @@ LENS_MCP_STATE=$(brief lens_mcp_state)
 # The pinned tool surface. Preflight generates it from this machine's own
 # registration -- it cannot be shipped, because --mcp-config takes launch
 # commands and those are machine-local.
-[ -n "$LENS_MCP" ] || LENS_MCP="$S/lens-mcp.json"
+[ -n "$LENS_MCP" ] || LENS_MCP="$S/panel-mcp.json"
 if [ ! -f "$LENS_MCP" ]; then
   # A scratch dir from before preflight generated this. An empty config is the
   # honest fallback -- --strict-mcp-config with no servers means the lens uses
@@ -140,7 +140,18 @@ fi
 # a lens that never ran this round reporting as landed, which is invariant 2's
 # exact failure shape.
 # ---------------------------------------------------------------------------
-rm -f "$S"/lens-*.json "$S"/failed-*.json "$S"/raw-*.json "$S"/err-*.txt
+# Delete BY NAME, never by glob. `rm -f "$S"/lens-*.json` reads as obviously
+# correct and is not: it also matches `lens-mcp.json`, the --mcp-config file
+# preflight generates into this same directory. On the first live round it
+# deleted that file microseconds before the first lens started, and all four
+# lenses died instantly with "MCP config file not found" -- while preflight.json
+# still reported `lens_mcp_state: ok`, because preflight HAD written it.
+# That is the second time the `lens-*` namespace has claimed a file that is not
+# one lens's findings. Enumerating the catalog is not more code than a glob, and
+# it cannot reach a filename nobody thought about.
+for _l in $(jq -r 'to_entries[] | select(.key | startswith("$") | not) | .key' "$CATALOG"); do
+  rm -f "$S/lens-$_l.json" "$S/failed-$_l.json" "$S/raw-$_l.json" "$S/err-$_l.txt"
+done
 
 # fanout + tree snapshots. These were the MANAGER's bookkeeping
 # (agents/qa-manager.md:202,268) and both fail SILENTLY if nobody writes them:
@@ -370,13 +381,19 @@ snap > "$S/tree-after.txt"
     [ "$first" = 1 ] || echo ","
     first=0
     printf '  "%s": ' "$lens"
-    jq -c '{ model: (.modelUsage | to_entries
+    # `|| printf null` is NOT enough, and the first live round proved it: a lens
+    # that fails before emitting anything leaves a ZERO-BYTE envelope, and jq on
+    # an empty file prints nothing and exits 0 -- so the fallback never fires and
+    # the object comes out as `"contract-security": ,` which is not JSON. The
+    # guard has to be on the output, not on the exit code.
+    _pm=$(jq -c '{ model: (.modelUsage | to_entries
                      | max_by(.value.outputTokens // .value.output_tokens // 0) | .key),
              all_models: (.modelUsage | keys),
              cost_usd: .total_cost_usd, num_turns: .num_turns,
              duration_ms: .duration_ms,
              permission_denials: (.permission_denials | length),
-             stop_reason: .stop_reason }' "$f" 2>/dev/null || printf 'null'
+             stop_reason: .stop_reason }' "$f" 2>/dev/null)
+    printf '%s' "${_pm:-null}"
   done
   echo
   echo "}"

@@ -2111,6 +2111,10 @@ mkpanel() {   # -> echoes a root dir with plugin/, repo/, scratch/, bin/
   printf '73|mono|2|preflight|0|3|%s|%s|2\n' "$(date +%s)" "$repo" > "$S/status"
   printf 'x\n' > "$S/proportionality.md"
   printf 'use the graph tools\n' > "$S/tool-mandate.md"
+  # The pinned tool surface preflight generates. The fixture did NOT have this
+  # file for the driver's first three commits, and its absence hid a live-round
+  # failure: the driver's round hygiene deleted it before the first lens ran.
+  printf '{"mcpServers":{}}\n' > "$S/panel-mcp.json"
 
   {
     printf 'target_abs=%s\n' "$repo"
@@ -2127,6 +2131,8 @@ mkpanel() {   # -> echoes a root dir with plugin/, repo/, scratch/, bin/
     printf 'tool_mandate_path=%s/tool-mandate.md\n' "$S"
     printf 'proportionality_path=%s/proportionality.md\n' "$S"
     printf 'status_path=%s/status\n' "$S"
+    printf 'lens_mcp_path=%s/panel-mcp.json\n' "$S"
+    printf 'lens_mcp_state=ok\n'
   } > "$S/manager-brief.txt"
 
   cat > "$bin/claude" <<'STUB'
@@ -2351,6 +2357,45 @@ eq "a stale lens file does not survive into the new round" \
    "$([ -f "$p/scratch/lens-contract-security.json" ] && echo present || echo absent)" "absent"
 rm -rf "$p"
 
+# --- REGRESSION: the driver must not eat the config it is about to pass -------
+# First live round, 2026-09-04: preflight wrote lens-mcp.json, run-panel.sh's
+# round hygiene (`rm -f "$S"/lens-*.json`) deleted it microseconds later, and all
+# four lenses died instantly with "MCP config file not found" while preflight.json
+# still said lens_mcp_state=ok. Two independent fixes, and BOTH are asserted here
+# because either alone would have prevented it and neither alone is sufficient in
+# general: the file left the `lens-*` namespace, and the cleanup deletes by name.
+p=$(mkpanel)
+run_panel "$p" >/dev/null
+eq "the mcp config survives the driver's round hygiene" \
+   "$([ -f "$p/scratch/panel-mcp.json" ] && echo present || echo DELETED)" "present"
+# The rename matters beyond deletion: `lens-*.json` is also what lens-landed.sh
+# counts for the progress denominator and what round-return.sh:101 uses to derive
+# failed_lenses, so a config under that prefix reports as a landed lens.
+eq "  ...and is not counted as a landed lens" \
+   "$(ls "$p/scratch"/lens-*.json 2>/dev/null | wc -l | tr -d ' ')" "3"
+rm -rf "$p"
+# The name-driven cleanup, proven independently of the rename: a decoy file under
+# the old glob must survive, because the driver no longer sweeps by wildcard.
+p=$(mkpanel)
+printf '{"decoy":true}\n' > "$p/scratch/lens-mcp.json"
+run_panel "$p" >/dev/null
+eq "cleanup deletes by NAME, so an unknown lens-*.json is left alone" \
+   "$([ -f "$p/scratch/lens-mcp.json" ] && echo present || echo DELETED)" "present"
+rm -rf "$p"
+
+# --- REGRESSION: panel-models.json must parse even when every lens failed ------
+# jq on a ZERO-BYTE file prints nothing and exits 0, so `jq … || printf null`
+# never fires. The first live round produced `"contract-security": ,` — not JSON,
+# in the file whose entire job is to record what actually ran.
+p=$(mkpanel)
+FAKE_MODES="contract-security:nonzero regression-edges:nonzero test-quality:nonzero" \
+  run_panel "$p" >/dev/null
+eq "panel-models.json is valid JSON with every lens dead" \
+   "$(jq -e . "$p/scratch/panel-models.json" >/dev/null 2>&1 && echo valid || echo INVALID)" "valid"
+eq "  ...and a dead lens is recorded as null, not omitted" \
+   "$(jq -r '."contract-security"' "$p/scratch/panel-models.json")" "null"
+rm -rf "$p"
+
 # --- a lens name with no catalog entry is fatal, never an invented mandate ----
 p=$(mkpanel)
 sed -i.bak 's/"test-quality"/"no-such-lens"/' "$p/scratch/manager-brief.txt"
@@ -2401,7 +2446,10 @@ echo "[lens-mcp.json — the pinned lens tool surface]"
 r=$(mkfixture "feature/x" "main")
 out=$(run_preflight "$r" 73 mono)
 lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
-eq "unregistered -> lens-mcp.json still written" "$([ -f "$lm" ] && echo yes || echo no)" "yes"
+eq "unregistered -> the mcp config is still written" "$([ -f "$lm" ] && echo yes || echo no)" "yes"
+# It must NOT be named lens-*.json: that namespace is swept and counted elsewhere.
+eq "  ...and it is outside the lens-* namespace" \
+   "$(case "$(basename "$lm")" in lens-*) echo INSIDE ;; *) echo outside ;; esac)" "outside"
 eq "  ...with no servers"   "$(jq -r '.mcpServers | length' "$lm")" "0"
 eq "  ...and state says so" "$(jq -r '.tooling.lens_mcp_state' <<<"$out")" "none:not-registered"
 rm -rf "$r"
