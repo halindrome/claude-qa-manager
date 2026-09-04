@@ -1283,20 +1283,27 @@ _server_from_plugin_cache() {  # $1 = plugin name -> the entry, or nothing
     for pj in $(find "$root" -maxdepth 7 -name plugin.json -path '*/.claude-plugin/*' \
                   -exec grep -l "\"name\"[[:space:]]*:[[:space:]]*\"$name\"" {} \; 2>/dev/null); do
       pdir=$(dirname "$(dirname "$pj")")
-      [ -f "$pdir/.mcp.json" ] || continue
-      # The server key inside a plugin's .mcp.json need not equal the plugin name;
-      # fall back to the sole entry when there is exactly one, and to nothing when
-      # there are several (guessing which of three servers was meant is worse than
-      # reporting that it could not be resolved).
-      entry=$(jq -e -c --arg n "$name" --arg d "$pdir" '
-        ((.mcpServers[$n]? // (if (.mcpServers | length) == 1
-                               then (.mcpServers | to_entries[0].value) else empty end))
-         // empty)
-        | walk(if type == "string"
-               then gsub("\\$\\{CLAUDE_PLUGIN_ROOT\\}"; $d) | gsub("\\$CLAUDE_PLUGIN_ROOT"; $d)
-               else . end)
-      ' "$pdir/.mcp.json" 2>/dev/null) || continue
-      [ -n "$entry" ] && { printf '%s' "$entry"; return 0; }
+      # TWO declaration sites, and both are real. A plugin may ship a sibling
+      # `.mcp.json`, OR declare `mcpServers` inline in `.claude-plugin/plugin.json`
+      # -- context-mode does the latter, so checking only the first missed the
+      # common case on the machine this was written on and reported
+      # `partial:context-mode` while the server was perfectly launchable.
+      for src in "$pj" "$pdir/.mcp.json"; do
+        [ -f "$src" ] || continue
+        # The server key inside a plugin's declaration need not equal the plugin
+        # name; fall back to the sole entry when there is exactly one, and to
+        # nothing when there are several (guessing which of three servers was
+        # meant is worse than reporting that it could not be resolved).
+        entry=$(jq -e -c --arg n "$name" --arg d "$pdir" '
+          ((.mcpServers[$n]? // (if ((.mcpServers // {}) | length) == 1
+                                 then (.mcpServers | to_entries[0].value) else empty end))
+           // empty)
+          | walk(if type == "string"
+                 then gsub("\\$\\{CLAUDE_PLUGIN_ROOT\\}"; $d) | gsub("\\$CLAUDE_PLUGIN_ROOT"; $d)
+                 else . end)
+        ' "$src" 2>/dev/null) || continue
+        [ -n "$entry" ] && { printf '%s' "$entry"; return 0; }
+      done
     done
   done
   return 1

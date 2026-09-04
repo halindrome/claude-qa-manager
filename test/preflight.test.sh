@@ -2463,10 +2463,32 @@ cat > "$pcache/.mcp.json" <<'JSON'
 JSON
 out=$(run_preflight "$r" 73 mono)
 lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
-eq "plugin-provided server is resolved from the plugin cache" \
+eq "plugin-provided server is resolved from a sibling .mcp.json" \
    "$(jq -r '.mcpServers["context-mode"].command' "$lm")" "node"
 eq "  \${CLAUDE_PLUGIN_ROOT} is expanded to the plugin's own dir" \
    "$(jq -r '.mcpServers["context-mode"].args[0]' "$lm")" "$pcache/start.mjs"
+rm -rf "$r"
+
+# (e) the OTHER declaration site: `mcpServers` inline in plugin.json. Both are
+# real and a plugin may use either — context-mode uses this one, so checking only
+# the sibling file reported `partial:context-mode` on a machine where the server
+# was perfectly launchable. Found by looking at a real install, not by reasoning.
+r=$(mkfixture "feature/x" "main")
+pcache="$r/home/.config/claude-code/plugins/cache/mkt/context-mode/1.0.0"
+mkdir -p "$pcache/.claude-plugin"
+cat > "$pcache/.claude-plugin/plugin.json" <<'JSON'
+{ "name": "context-mode", "version": "1.0.0",
+  "mcpServers": { "context-mode": { "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/start.mjs"] } } }
+JSON
+out=$(run_preflight "$r" 73 mono)
+lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
+eq "server declared INSIDE plugin.json is resolved too" \
+   "$(jq -r '.mcpServers["context-mode"].command' "$lm")" "node"
+eq "  ...with the placeholder expanded" \
+   "$(jq -r '.mcpServers["context-mode"].args[0]' "$lm")" "$pcache/start.mjs"
+eq "  ...and the state is ok, not partial" \
+   "$(jq -r '.tooling.lens_mcp_state' <<<"$out")" "ok"
 rm -rf "$r"
 
 # --- the schema is a wire payload as well as documentation -------------------
