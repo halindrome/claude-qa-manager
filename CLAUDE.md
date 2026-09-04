@@ -46,11 +46,27 @@ exists here from an earlier install; it is inert, and its staleness means nothin
 When in doubt, do not reason about it — ask what actually ran:
 
 ```bash
-jq -r '.plugins."claude-qa-manager@halindrome"[0] | .version, .installPath' \
-   ~/.config/claude-code/plugins/installed_plugins.json
-jq -r '.halindrome.installLocation' ~/.config/claude-code/plugins/known_marketplaces.json
+# The marketplace entry is the reliable one: source.source == "directory" means
+# CLAUDE_PLUGIN_ROOT resolves to installLocation, i.e. this tree.
+jq -r '.halindrome | .source.source, .installLocation' \
+   ~/.config/claude-code/plugins/known_marketplaces.json
+
+# Decisive, and needs no reasoning at all: ask the INSTALLED plugin what it loads,
+# from a neutral cwd with no --plugin-dir, then compare with this tree's numbers.
+( cd /tmp && claude plugin details claude-qa-manager )
+claude --plugin-dir . plugin details claude-qa-manager
+
 grep -o '[^"]*lib/preflight\.sh' <the round's transcript>   # the path it really sourced
 ```
+
+**Do NOT use `installed_plugins.json`'s `installPath` for this.** It answers a different
+question, and here it answers misleadingly: it records the **cache copy** made at install
+time — pinned to a `gitCommitSha`, weeks stale, and missing `lib/run-panel.sh`,
+`lib/round-return.sh` and `lib/lens-landed.sh` entirely. An earlier version of this very
+section recommended that command. A session followed it on 2026-09-04 and reached the
+confident, wrong conclusion that the working tree was *not* live — the exact opposite of
+what this section exists to establish, arrived at by doing what the section said. The
+`plugin details` comparison above is what settled it.
 
 ## Hard invariants
 

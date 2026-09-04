@@ -1104,7 +1104,7 @@ url_case() {
   rm -rf "$r"
 }
 url_case "scp-style + .git"   'git@host.invalid:grp/proj.git'       'grp/proj'
-url_case "ssh alias, no .git" 'gitalias:grp/proj'                  'grp/proj'
+url_case "ssh alias, no .git" 'githost:grp/proj'                    'grp/proj'
 url_case "https + .git"       'https://host.invalid/grp/proj.git'   'grp/proj'
 url_case "https, no .git"     'https://host.invalid/grp/proj'       'grp/proj'
 url_case "nested subgroups"   'git@host.invalid:a/b/c/proj.git'     'a/b/c/proj'

@@ -21,6 +21,15 @@ private_identifiers=(
   'redacted-3'
   'redacted-4'
   'halindrome\.com'
+  # An internal SSH host alias is an org identifier too, and this one was NOT
+  # caught: it sat in a URL-parser fixture from the migration commit until a
+  # by-hand grep found it on 2026-09-04, while this guard reported clean. Every
+  # sibling case in that block uses `host.invalid`; the alias was arbitrary, so
+  # the fix was a one-word edit and the only real cost was that the guard had
+  # not been asked the question. A guard is only as good as its list — when you
+  # scrub a new identifier out of the tree, add it here in the same commit or
+  # the next slip is invisible again.
+  'redacted-host-alias'
 )
 secret_shapes=(
   'glpat-[A-Za-z0-9_-]{10,}'      # GitLab PAT

@@ -386,8 +386,61 @@ under a total panel failure, which no test had exercised.
 with every lens dead`), and the failure they pin is the one that actually happened.
 Suite 584 → 590.
 
-**Still unexercised: a round whose lenses actually review.** Everything about merge,
-note rendering from real findings, and approval remains unproven on the driver path.
+### Rounds 1 and 2 on the driver (2026-09-04) — the architecture is proven
+
+Same MR, immediately after the two fixes above. Round 1: **3 of 4 lenses landed**.
+Round 2: **4 of 4, no failures**.
+
+| | round 1 | round 2 |
+|---|---|---|
+| landed | 3/4 | 4/4 |
+| navigation | `ctx` ×3 | `cmm+ctx` ×4 |
+| model (from `modelUsage`) | `claude-opus-5[1m]` ×3 | `claude-opus-5[1m]` ×4 |
+| cost | $8.96 | $13.96 |
+| turns | 13/13/6 | 18/15/15/12 |
+| tree mutated | no | no |
+
+**The watchdog fired for real, and cleanly.** Round 1's `regression-edges` was killed
+at 1200s — `fanout 11:45:51`, expected kill `12:05:51`, `failed-regression-edges.json`
+written `12:05:52` with `{"state":"watchdog_killed","rc":143}`. `rc=143` is SIGTERM, so
+the TERM-then-KILL path ran rather than a bare `kill -9`, and **no MCP server children
+were orphaned** (every surviving server process had a live parent, none started inside
+the lens's window). That was the one design choice a fake `claude` could not test. The
+same lens completed in 421s in round 2, so the kill was a one-off wedge rather than a
+systematically slow lens — which is why "wedged" needs to stay distinguishable.
+
+**Round derivation and the trailer chain worked end to end.** Round 2 derived `round: 2`
+from the posted round-1 heading and recovered a one-element `qa_fix_commits` from that
+note's `QA-Fix-Commit` trailer, so attribution ran with real input
+(`qa_introduced_blocking: 0`). This
+is also where the `post_after_fixes` ordering earns itself: round 1 withheld its post
+until fixes existed, because a note posted before the fix commits could never carry the
+trailers the next round reads.
+
+**A CORRECTION to the reading of round 1.** After round 1 this document was going to
+record that the spike's headline had not reproduced — three lenses reporting `ctx`, not
+`cmm`, with the graph reachable. Round 2 shows that was wrong: all four lenses used
+`cmm+ctx` on the same MR. Round 1's `ctx` was a judgement call on a 147-line
+single-pattern diff, exactly as its own note claimed. **The spike's finding stands**;
+one round of `ctx` is not evidence against it, and treating it as such would have been
+the "a lens reported X so X is true" error in reverse.
+
+**What this closes in the open items below.** The "lens reviewers silently inherit a
+weak session model" entry argues in part that the round-note model line "is prose the
+manager writes from its own knowledge, not an observed value, so it is not evidence."
+That half is now false: `panel-models.json` records the model each lens actually ran as,
+taken from its `modelUsage`, and `references/round-note.md` reads the footer from it —
+round 2's posted footer said `claude-opus-5[1m]` because the run record did. The
+**observability** half of that item is closed. The **policy** half is untouched: invariant
+6 still has no floor, and the plugin still cannot rank model strength, so an operator
+whose default is a cheap model still gets a cheap panel — it is now merely *visible*
+rather than invisible.
+
+**Still open, and now sharper:** a watchdog-killed lens leaves **no diagnostic at all** —
+round 1's `raw-regression-edges.json` was 0 bytes with empty stderr, so the only fact
+recorded is "exceeded 1200s". Distinguishing a wedge from slow-but-working needs either
+`--output-format stream-json` captured to disk or a `--max-budget-usd` ceiling. Neither
+is built.
 
 ### Smaller, independent items
 
@@ -402,11 +455,24 @@ note rendering from real findings, and approval remains unproven on the driver p
   distinguishes it from a frontier-model round. That is invariant 2's shape
   applied to review quality — a precondition nobody checks reports as satisfied.
 
-  The existing knobs do not close it. They are an opt-in **upgrade** path; the
+  The existing knobs do not close it. They are an opt-in **upgrade** path, and the
   plugin deliberately does not rank model strength, so it cannot detect that an
-  inherited model is weaker than required; and the round-note footer that names a
-  model is prose the manager writes from its own knowledge, not an observed value,
-  so it is not evidence.
+  inherited model is weaker than required.
+
+  **AMENDED 2026-09-04 — the observability half is CLOSED; the policy half is not.**
+  This entry used to end "and the round-note footer that names a model is prose the
+  manager writes from its own knowledge, not an observed value, so it is not
+  evidence." That is no longer true. `lib/run-panel.sh` writes
+  `$QA_SCRATCH/panel-models.json` from each lens's `modelUsage` — the model the
+  runtime actually billed, not a self-report — and `references/round-note.md` renders
+  the footer from it. Verified on a live round: the posted footer read
+  `claude-opus-5[1m]` because the run record did.
+  So a weak-model round is now **visible** in an artifact and in the posted note.
+  What remains open is the policy: there is still no floor, nothing *refuses* a round
+  on a model too weak to review, and ranking model strength is still out of scope. The
+  gap has moved from "nobody could tell" to "nobody stops it", which is a smaller and
+  differently-shaped problem — and `lib/gate-approve.sh` is the natural place to act
+  on it, since `panel-models.json` is now a checkable premise.
 
   Three directions, cheapest first:
 
