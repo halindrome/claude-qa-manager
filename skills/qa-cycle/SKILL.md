@@ -314,8 +314,10 @@ lenses, capped at 6 — the measured Agent-grandchild concurrency ceiling, so it
 single-wave). The full contract and the lens catalog live in `agents/qa-manager.md`;
 this step is the main-loop side — how to invoke it and what to do with the verdict.
 
-**Invoke it** with the Agent tool (`subagent_type: "claude-qa-manager:qa-manager"`,
-`run_in_background: true`), passing:
+**Invoke it** with the Agent tool, `subagent_type: "claude-qa-manager:qa-manager"` and
+**`run_in_background: true`** — not optional, and the flag most often dropped. A
+foreground spawn blocks the main loop for the round's whole 10–30 minutes, so the session
+looks wedged; observed on four consecutive rounds. Pass:
 
 ```
 brief_path=<preflight.json .manager_brief_path>
@@ -325,9 +327,9 @@ DOUBLE=<t|f>  TRIPLE=<t|f>  reviewer_override=<qwen-local|"">
 skip_contract_verification=<true|false>
 ```
 
-**Always the plugin-qualified `claude-qa-manager:` prefix**, here and wherever else an
-agent is spawned: a bare name resolves only while no sibling QA plugin claims it, and
-where one does the spawn fails outright — observed on a live round 1.
+**Always the plugin-qualified `claude-qa-manager:` prefix**, wherever an agent is
+spawned: a bare name resolves only while no sibling QA plugin claims it, and where one
+does the spawn fails outright — observed live.
 
 Everything else the manager needs — branches, diff range, lens panel, forge, every
 scratch path, the token env/file pair, `mr_approved`, `approval_eligible` — is already
