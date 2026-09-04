@@ -102,32 +102,42 @@ complete *before* the first push rather than fixed in a later commit.
 **JSON keys renamed** (`gitlab_project` → `project`, `gitlab_project_enc` → `project_enc`)
 and `forge` / `forge_cli` added.
 
-### The pattern behind three separate bugs found in one day
+### The pattern behind two confirmed bugs found in one day (and one retraction)
 
 **A behavioural requirement stated once as prose, with no mechanism and no test, does
-not happen.** Three instances, all found on 2026-09-03, all previously believed fine:
+not happen.** Two confirmed instances, found 2026-09-03, both previously believed fine —
+plus a third that was reported and then retracted, which is recorded here rather than
+deleted because the retraction is the more useful lesson:
 
 | requirement | how it was stated | what happened |
 |---|---|---|
 | rewrite `status` as each lens returns | `qa-manager.md` §1.5, marked **MANDATORY** | never happened; counter read `0/N` for the whole fan-out |
 | `qa_introduced_blocking` | named in an output schema, consumed in SKILL.md | never *defined* anywhere; over-counted in 62 of 262 rounds |
-| `run_in_background: true` on the manager spawn | one parenthetical in SKILL.md:318 | dropped on four consecutive rounds; foreground spawn blocks the main loop for 10–30 minutes, so the session looks wedged |
+| ~~`run_in_background: true` dropped~~ | ~~one parenthetical~~ | **RETRACTED — this was an analysis error, not a bug. See below.** |
 
-The first two were fixed by removing the prose requirement rather than strengthening
-it — `lib/lens-landed.sh` does the write in one call and counts from disk; the counter
-got a stated computation. The third has no mechanism available: the main loop's own
-`Agent` call is not scriptable from here, and no test in this suite can assert what the
-model passes to a tool. It currently rests on prose made louder, which is precisely the
-approach that failed twice above — so treat it as unresolved, not fixed.
+Both were fixed by removing the prose requirement rather than strengthening it —
+`lib/lens-landed.sh` does the write in one call and counts from disk; the counter got a
+stated computation, and `lib/round-return.sh` now computes it outright.
 
-Worth considering: a `PreToolUse:Agent` hook could reject a `qa-manager` spawn without
-`run_in_background`, which would turn the last row into a mechanism like the other two.
-That is a hook shipped by the plugin, which this project does not currently do, so it is
-a real decision rather than an obvious one.
+**The retracted third row, and why it is worth keeping visible.** It was reported here
+as a bug on the strength of `run_in_background` being absent from the `tool_input`
+recorded in session transcripts across several rounds. That was wrong: those agents
+*were* backgrounded. Their tool results read `Async agent launched successfully` and
+carry an `output_file` pointer the caller is explicitly forbidden to read. The flag is
+simply not always persisted in the recorded input, and **an absent field was read as a
+value** — the exact failure this document warns about everywhere else, committed while
+documenting it.
 
-The general lesson for anything added here: if a rule matters, give it a script, a
-computed value, or a test. Emphasis is not enforcement, and this file now has three
-measured examples of that.
+Two things survive the retraction. First, `run_in_background: true` matters more than
+the original parenthetical suggested, and for a different reason than the retraction
+assumed: it is **context isolation**, not responsiveness. A backgrounded agent hands
+back a stub; a foreground one would land the entire round in the caller's context, which
+is the manager's whole reason to exist. SKILL.md now says that. Second, the analysis
+lesson: when a field's absence is the evidence, confirm what absence *means* in that
+source before building on it. Transcript metadata is not a schema.
+
+The general lesson for anything added here still stands on the two confirmed rows: if a
+rule matters, give it a script, a computed value, or a test. Emphasis is not enforcement.
 
 ### Smaller, independent items
 

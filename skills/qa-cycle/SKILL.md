@@ -315,9 +315,10 @@ single-wave). The full contract and the lens catalog live in `agents/qa-manager.
 this step is the main-loop side — how to invoke it and what to do with the verdict.
 
 **Invoke it** with the Agent tool, `subagent_type: "claude-qa-manager:qa-manager"` and
-**`run_in_background: true`** — not optional, and the flag most often dropped. A
-foreground spawn blocks the main loop for the round's whole 10–30 minutes, so the session
-looks wedged; observed on four consecutive rounds. Pass:
+**`run_in_background: true`** — not optional: it is what keeps the round's noise out of
+this context. A backgrounded agent returns a stub and a transcript pointer you must never
+read; a foreground return lands the whole round here, which is the one thing the manager
+exists to prevent. Pass:
 
 ```
 brief_path=<preflight.json .manager_brief_path>
