@@ -177,6 +177,20 @@ rule matters, give it a script, a computed value, or a test. Emphasis is not enf
   item). A frontier model at minimum effort is a downgrade the cycle equally
   cannot see, and option 1 should record effort alongside the model.
 
+  **OBSERVED LIVE, and worse than inheritance.** On a 649-line MR the manager
+  passed `"model": "sonnet"` explicitly to all three lenses, with
+  `review.model` and `review.lens_models` both empty and the brief correctly
+  carrying them empty. `agents/qa-manager.md` says: use `lens_models[name]` if
+  present, else `review_model` if non-empty, **else pass no `model` override at
+  all**. It invented the downgrade. So the failure mode is not only the passive
+  one this entry was filed for — a weak session model being inherited — but an
+  active one, where the panel is downgraded against an explicit instruction and
+  nothing in the round note, `preflight.json` or the verdict records that it
+  happened. Whatever is built here must therefore **record the model each lens
+  actually ran as** (option 1) rather than assume config describes reality;
+  reading config would have reported "no override" for a round that ran entirely
+  on Sonnet.
+
 - **Stop the cycle reviewing its own work. DONE.** Measured across 76 `/qa-cycle`
   sessions, 21 projects, 267 round-records: **56% of rounds >= 2** carried at least
   one finding on code an earlier round of the same cycle wrote (0 of 106 round-1
