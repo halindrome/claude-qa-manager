@@ -27,11 +27,21 @@ via qa_introduced_total and routed by SKILL.md Step 3B.>
 
 <merged-or-claude-only report body>
 
-<from round 2 on, one line naming the fix-diff review (SKILL.md Step 3B.5):>
+<from round 2 on, the fix-diff review (SKILL.md Step 3B.5). BOTH values, always:>
 Fix review: <clean | findings, N addressed and amended into this round's commit
              | skipped:round-1 | skipped:no-fix-commit | skipped:spawn-refused>
+            reviewed <short sha the reviewer ACTUALLY ran on>
 
-<A skipped fix review is NEVER written as a clean one. `skipped:spawn-refused`
+<`state` describes what the REVIEWER returned. An amend made for any other reason
+does not make it `findings` — say separately what the amendment contained.
+
+The reviewed sha is NOT the sha in the QA-Fix-Commit trailer whenever the commit
+was amended after the review, which is the normal case on this path. State both.
+On the first live round the note named the pushed sha as the reviewed range and a
+by-hand correction was needed; a reader who assumes the trailer was reviewed is
+being misled about what evidence exists.
+
+A skipped fix review is NEVER written as a clean one. `skipped:spawn-refused`
 means this round's fix went in unreviewed, and the note says so — invariant 2.>
 
 <for each reviewer that was attempted but failed (`do:deepseek-v4-pro`,

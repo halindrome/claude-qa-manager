@@ -146,9 +146,14 @@ project `<repo>/.claude/skills/qa-cycle/config.json`.
 ## Watch the token cost
 
 `skills/qa-cycle/SKILL.md` is the spine and is deliberately small. It was 41.9k tokens
-on-invoke; it is now ~16.1k. Check with `plugin details` after editing it, and treat any
+on-invoke; it is now ~16.3k. Check with `plugin details` after editing it, and treat any
 rise above that as a regression to justify or undo. Depth belongs in `references/`, which
 costs nothing until read.
+
+**The next addition comes out of existing spine text, not out of this number.** It has
+been raised twice in one day (15.1k → 16.1k → 16.3k), each time for real new behaviour,
+and each raise makes the next one easier to wave through. That is how a budget stops
+being one.
 
 The current figure is ~1k above the 15.1k it held for a long time, and that is a
 *justified* rise, not drift: Step 3B.5 (the fix-diff review), the Step 3B minor-routing

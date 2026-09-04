@@ -104,6 +104,29 @@ skipped:no-fix-commit | skipped:spawn-refused`. A skipped review is **never** re
 as a clean one — invariant 2. If the spawn was refused, the note says the round's fix
 is unreviewed, which is a fact about the round, not a detail to omit.
 
+`state` reports **what the reviewer returned**, nothing else. A round may amend its
+commit for reasons the review never raised — a comment correction, a message fix — and
+that does not make the state `findings`. Conflating the two would make `clean` mean "no
+amendment happened", which is not a claim anyone needs and destroys the one that matters.
+
+### `reviewed_sha`, and why it differs from the trailer
+
+The reviewer runs on the commit **as first written**; any amendment afterwards rewrites
+the SHA, so the `QA-Fix-Commit` trailer names a commit that did not exist when the review
+ran. On this path amending is the normal case, not the exception, so the two SHAs differ
+routinely.
+
+Record both. A reader who sees only the trailer reasonably assumes that is what was
+reviewed, and on the first live round the note asserted exactly that — naming the pushed
+SHA as the reviewed range — until it was corrected by hand. The honest note names the
+reviewed SHA and characterises the delta ("comment and commit-message text only; no
+executable line differs; the spec was re-run green after"), which is a stronger statement
+than a matching pair of SHAs would have been.
+
+Do **not** re-run the lens to force the SHAs to agree. It costs a second reviewer to look
+at an amendment whose content the first one has already effectively seen, and it produces
+a new SHA of its own the moment anything else is amended.
+
 ### Why the push moved
 
 Step 3B commits but no longer pushes; 3B.5 pushes after the review. A fix the review

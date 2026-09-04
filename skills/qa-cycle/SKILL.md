@@ -542,14 +542,21 @@ cd <target-path>
 git push <remote> <feature-branch>
 ```
 
-Record `fix_review.state` in the note: `clean`, `findings`, or `skipped:<why>`. **A
-skipped fix review is never reported as a clean one** (invariant 2) — a refused spawn is
-`skipped:spawn-refused` and the note says the fix is unreviewed.
+Record in the note **both**:
+
+- `fix_review.state` — `clean`, `findings`, or `skipped:<why>`. **A skipped review is
+  never reported as a clean one** (invariant 2). It reports what the *reviewer* returned;
+  an amend made for any other reason does not make it `findings`.
+- `fix_review.reviewed_sha` — **the SHA the reviewer actually ran on**. Amending rewrites
+  it, so this routinely differs from the `QA-Fix-Commit` trailer, and a reader who sees
+  only the trailer will assume that is what was reviewed. Say which SHA was reviewed and
+  what the amendment changed; do not re-run the lens to make them match.
 
 Why one lens: runtime regressions in the cycle's own fixes are the only class a reviewer
-must catch (91 of 199 measured, holding 21 of 33 blocking findings), and the alternative
-is a full panel finding them a round later. Same model as the panel per invariant 6 —
-the saving is width, not strength. Depth: `references/fix-review.md`.
+must catch, and the alternative is a full panel finding them a round later. Same model as
+the panel per invariant 6 — the saving is width, not strength.
+Measurements, the class breakdown, and the `reviewed_sha` reasoning:
+`references/fix-review.md`.
 
 
 ## Step 3B.6 — revoke an approval before posting a dirty re-round
