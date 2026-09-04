@@ -84,6 +84,26 @@ SCHEMA_CHANGE_PATH=$(brief schema_change_path)
 MANDATE_PATH=$(brief tool_mandate_path)
 PROPORTIONALITY_PATH=$(brief proportionality_path)
 STATUS_FILE=$(brief status_path)
+LENS_MCP=$(brief lens_mcp_path)
+LENS_MCP_STATE=$(brief lens_mcp_state)
+
+# The pinned tool surface. Preflight generates it from this machine's own
+# registration -- it cannot be shipped, because --mcp-config takes launch
+# commands and those are machine-local.
+[ -n "$LENS_MCP" ] || LENS_MCP="$S/lens-mcp.json"
+if [ ! -f "$LENS_MCP" ]; then
+  # A scratch dir from before preflight generated this. An empty config is the
+  # honest fallback -- --strict-mcp-config with no servers means the lens uses
+  # Read/grep, which is a correct review -- but it is announced, because a silent
+  # empty config looks identical to a working one right up until the mandate
+  # names a tool that is not there.
+  printf '{"mcpServers":{}}\n' > "$LENS_MCP"
+  LENS_MCP_STATE="none:not-generated"
+fi
+case "${LENS_MCP_STATE:-}" in
+  ok|'') : ;;
+  *) echo "run-panel: lens tool surface is ${LENS_MCP_STATE} — lenses run without the tools the mandate names" >&2 ;;
+esac
 
 [ -d "$TARGET_ABS" ] || die_internal "target_abs is not a directory: $TARGET_ABS"
 printf '%s' "$LENSES_JSON" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 \
@@ -262,7 +282,7 @@ for lens in $LENSES; do
     set -- -p
     [ -n "$model" ] && set -- "$@" --model "$model"
     set -- "$@" --plugin-dir "$PLUGIN" --agent claude-qa-manager:qa-reviewer \
-                --strict-mcp-config --mcp-config "$S/lens-mcp.json" \
+                --strict-mcp-config --mcp-config "$LENS_MCP" \
                 --no-session-persistence \
                 --output-format json --json-schema "$SCHEMA"
     # --no-session-persistence: up to six lenses run concurrently in ONE checkout,

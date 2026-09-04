@@ -1237,6 +1237,117 @@ _probe_registered() {  # $1 = plugin/server name
 CMM_AVAILABLE=false; _probe_registered "codebase-memory-mcp" && CMM_AVAILABLE=true
 CTX_AVAILABLE=false; _probe_registered "context-mode"        && CTX_AVAILABLE=true
 
+# ---------------------------------------------------------------------------
+# Lens MCP config -> $QA_SCRATCH/lens-mcp.json
+# ---------------------------------------------------------------------------
+# lib/run-panel.sh runs each lens as `claude -p --strict-mcp-config --mcp-config
+# <this file>`, which makes the lens tool surface a property of the PLUGIN rather
+# than of the operator's account. That matters for a measured reason: a broken
+# account connector once polluted a real lens's ToolSearch result with a 404
+# notice, and the Agent path has no way to exclude it.
+#
+# It cannot be a file the plugin ships. `--mcp-config` takes LAUNCH COMMANDS, and
+# those are machine-local -- an absolute path to a binary, or a node invocation
+# against a checkout. So the config is GENERATED here, from the operator's own
+# registration, keeping exactly the two servers the mandate names.
+#
+# `_probe_registered` above answers "is it registered". This answers the strictly
+# harder question "and what launches it", which is what the lens actually needs.
+# The two can disagree -- a plugin can be enabled with its .mcp.json unreadable --
+# and when they do, the honest report is `partial`, never a config that quietly
+# omits a server the mandate goes on to promise.
+_server_from_file() {  # $1 = json file, $2 = server name -> the entry, or nothing
+  # Recursive, matching _registered_in_file: ~/.claude.json nests per-project
+  # mcpServers maps, so the entry is not always at the top level.
+  jq -e -c --arg n "$2" '
+    [ .. | objects | (.mcpServers? // empty) | objects | select(has($n)) | .[$n] ]
+    | map(select(type == "object")) | .[0] // empty
+  ' "$1" 2>/dev/null
+}
+_server_from_plugin_cache() {  # $1 = plugin name -> the entry, or nothing
+  # A PLUGIN-provided MCP server (context-mode is one) has no entry in any
+  # mcpServers map at all: its launch command lives in the plugin's own .mcp.json,
+  # written against ${CLAUDE_PLUGIN_ROOT}. Resolve that placeholder here, because
+  # the lens subprocess is a different plugin and would expand it to the wrong
+  # directory -- or, under --strict-mcp-config, to nothing at all.
+  local name="$1" root cache_roots="" p prev="" pj pdir entry
+  for root in $(_claude_roots | sort -u); do
+    [ -d "$root/plugins/cache" ] && cache_roots="$cache_roots $root/plugins/cache"
+  done
+  p="${CLAUDE_PLUGIN_ROOT:-}"
+  while [ -n "$p" ] && [ "$p" != "/" ] && [ "$p" != "$prev" ]; do
+    case "$p" in */plugins/cache) [ -d "$p" ] && cache_roots="$cache_roots $p"; break ;; esac
+    prev="$p"; p="$(dirname "$p")"
+  done
+  for root in $(printf '%s\n' $cache_roots | sort -u); do
+    for pj in $(find "$root" -maxdepth 7 -name plugin.json -path '*/.claude-plugin/*' \
+                  -exec grep -l "\"name\"[[:space:]]*:[[:space:]]*\"$name\"" {} \; 2>/dev/null); do
+      pdir=$(dirname "$(dirname "$pj")")
+      [ -f "$pdir/.mcp.json" ] || continue
+      # The server key inside a plugin's .mcp.json need not equal the plugin name;
+      # fall back to the sole entry when there is exactly one, and to nothing when
+      # there are several (guessing which of three servers was meant is worse than
+      # reporting that it could not be resolved).
+      entry=$(jq -e -c --arg n "$name" --arg d "$pdir" '
+        ((.mcpServers[$n]? // (if (.mcpServers | length) == 1
+                               then (.mcpServers | to_entries[0].value) else empty end))
+         // empty)
+        | walk(if type == "string"
+               then gsub("\\$\\{CLAUDE_PLUGIN_ROOT\\}"; $d) | gsub("\\$CLAUDE_PLUGIN_ROOT"; $d)
+               else . end)
+      ' "$pdir/.mcp.json" 2>/dev/null) || continue
+      [ -n "$entry" ] && { printf '%s' "$entry"; return 0; }
+    done
+  done
+  return 1
+}
+_resolve_server() {  # $1 = server name -> the launch entry, or nothing
+  local name="$1" root f e
+  for root in $(_project_roots | sort -u); do
+    for f in "$root/.mcp.json" "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
+      [ -f "$f" ] && e=$(_server_from_file "$f" "$name") && [ -n "$e" ] && { printf '%s' "$e"; return 0; }
+    done
+  done
+  for root in $(_claude_roots | sort -u); do
+    for f in "$root/.mcp.json" "$root/settings.local.json" "$root/settings.json" "$root/.claude.json"; do
+      [ -f "$f" ] && e=$(_server_from_file "$f" "$name") && [ -n "$e" ] && { printf '%s' "$e"; return 0; }
+    done
+  done
+  [ -f "$HOME/.claude.json" ] && e=$(_server_from_file "$HOME/.claude.json" "$name") \
+    && [ -n "$e" ] && { printf '%s' "$e"; return 0; }
+  _server_from_plugin_cache "$name"
+}
+
+LENS_MCP_FILE="$QA_SCRATCH/lens-mcp.json"
+LENS_MCP_JSON='{"mcpServers":{}}'
+LENS_MCP_MISSING=""
+for _srv in codebase-memory-mcp context-mode; do
+  # Only try to resolve what is registered. An unregistered server is not a
+  # resolution failure and must not be reported as one.
+  case "$_srv" in
+    codebase-memory-mcp) [ "$CMM_AVAILABLE" = "true" ] || continue ;;
+    context-mode)        [ "$CTX_AVAILABLE" = "true" ] || continue ;;
+  esac
+  if _e=$(_resolve_server "$_srv") && [ -n "$_e" ]; then
+    LENS_MCP_JSON=$(printf '%s' "$LENS_MCP_JSON" \
+      | jq -c --arg n "$_srv" --argjson e "$_e" '.mcpServers[$n] = $e')
+  else
+    # Registered but unlaunchable. Named, because the mandate is about to tell
+    # every lens to use this server: silence here would make the mandate a promise
+    # nothing keeps, which is an absent check reporting as a pass.
+    LENS_MCP_MISSING="$LENS_MCP_MISSING $_srv"
+  fi
+done
+LENS_MCP_MISSING="${LENS_MCP_MISSING# }"
+_lens_mcp_n=$(printf '%s' "$LENS_MCP_JSON" | jq -r '.mcpServers | length')
+if   [ -n "$LENS_MCP_MISSING" ]; then LENS_MCP_STATE="partial:$(printf '%s' "$LENS_MCP_MISSING" | tr ' ' ',')"
+elif [ "$_lens_mcp_n" = "0" ];   then LENS_MCP_STATE="none:not-registered"
+else                                  LENS_MCP_STATE="ok"; fi
+printf '%s\n' "$LENS_MCP_JSON" | jq . > "$LENS_MCP_FILE" \
+  || die_internal "could not write $LENS_MCP_FILE"
+[ -n "$LENS_MCP_MISSING" ] && \
+  WARNINGS+=("lens_mcp_unresolved:${LENS_MCP_MISSING// /,} (registered, but no launch command found — a lens gets no such tool)")
+
 MANDATE_FILE="$QA_SCRATCH/tool-mandate.md"
 : > "$MANDATE_FILE"   # default: empty => spawn prompts inject nothing (silent Read/grep fallback)
 # Written further down, once REVIEW_MODE is known — see "Tool mandate" below.
@@ -1676,6 +1787,11 @@ MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
   printf 'sast_path=%s\n'              "$SAST_REPORT"
   printf 'schema_change_path=%s\n'     "$QA_SCRATCH/schema-change.md"
   printf 'tool_mandate_path=%s\n'      "$MANDATE_FILE"
+  # The pinned lens tool surface, generated above from this machine's own
+  # registration. lib/run-panel.sh passes it as --strict-mcp-config --mcp-config,
+  # so what is NOT in here is what a lens cannot reach.
+  printf 'lens_mcp_path=%s\n'          "$LENS_MCP_FILE"
+  printf 'lens_mcp_state=%s\n'         "$LENS_MCP_STATE"
   printf 'proportionality_path=%s\n'   "$PROPORTIONALITY_FILE"
   printf 'schema_change_detected=%s\n' "$SCHEMA_DETECTED"
   printf 'qa_token_ok=%s\n'            "$QA_TOKEN_OK"
@@ -1777,6 +1893,8 @@ PREFLIGHT_JSON=$(jq -n \
   --argjson docs_only "$DOCS_ONLY" \
   --argjson cmm_available "$CMM_AVAILABLE" --argjson ctx_available "$CTX_AVAILABLE" \
   --arg tool_mandate_path "$MANDATE_FILE" \
+  --arg lens_mcp_path "$LENS_MCP_FILE" \
+  --arg lens_mcp_state "$LENS_MCP_STATE" \
   --arg fix_mandate_path "$FIX_MANDATE_FILE" \
   --arg commit_subject "$COMMIT_SUBJECT" \
   --argjson approval_eligible "$APPROVAL_ELIGIBLE" \
@@ -1823,7 +1941,14 @@ PREFLIGHT_JSON=$(jq -n \
     docs_only: $docs_only,
     round: $round,
     proportionality_path: $proportionality_path,
-    tooling: { cmm_available: $cmm_available, ctx_available: $ctx_available, mandate_path: $tool_mandate_path, fix_mandate_path: $fix_mandate_path },
+    tooling: { cmm_available: $cmm_available, ctx_available: $ctx_available, mandate_path: $tool_mandate_path, fix_mandate_path: $fix_mandate_path,
+               # `*_available` is REGISTRATION; lens_mcp_state is whether a launch
+               # command was actually found for it. lib/run-panel.sh passes this
+               # file under --strict-mcp-config, so `partial:` means the mandate
+               # names a tool the lens will not have. Two fields because they are
+               # two questions, and collapsing them is how a promise outlives what
+               # keeps it.
+               lens_mcp_path: $lens_mcp_path, lens_mcp_state: $lens_mcp_state },
     commit_subject: $commit_subject,
     approval_eligible: $approval_eligible,
     manager_brief_path: $manager_brief_path,

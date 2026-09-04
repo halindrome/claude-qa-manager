@@ -2362,6 +2362,86 @@ for _f in "$p"/scratch/lens-*.json; do
 done
 rm -rf "$p"
 
+# --- lens-mcp.json: generated from THIS machine's registration ---------------
+# It cannot be a shipped file: --mcp-config takes launch commands, which are
+# machine-local. The cases below drive the real preflight and assert on what it
+# wrote, because "registered" and "launchable" are two different questions and
+# the whole point of the block is that it answers the second one.
+echo "[lens-mcp.json — the pinned lens tool surface]"
+
+# (a) nothing registered -> an EMPTY config with a state that says so, never a
+# config that merely looks fine.
+r=$(mkfixture "feature/x" "main")
+out=$(run_preflight "$r" 73 mono)
+lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
+eq "unregistered -> lens-mcp.json still written" "$([ -f "$lm" ] && echo yes || echo no)" "yes"
+eq "  ...with no servers"   "$(jq -r '.mcpServers | length' "$lm")" "0"
+eq "  ...and state says so" "$(jq -r '.tooling.lens_mcp_state' <<<"$out")" "none:not-registered"
+rm -rf "$r"
+
+# (b) a plain mcpServers registration -> the LAUNCH COMMAND is carried over, not
+# just the name. A config naming a server with no command starts nothing.
+r=$(mkfixture "feature/x" "main")
+cat > "$r/repo/.mcp.json" <<'JSON'
+{ "mcpServers": { "codebase-memory-mcp": { "command": "/opt/bin/cmm", "args": ["--stdio"] } } }
+JSON
+out=$(run_preflight "$r" 73 mono)
+lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
+eq "registered server is resolved to a launch command" \
+   "$(jq -r '.mcpServers["codebase-memory-mcp"].command' "$lm")" "/opt/bin/cmm"
+eq "  args carried through"  "$(jq -r '.mcpServers["codebase-memory-mcp"].args[0]' "$lm")" "--stdio"
+eq "  state ok"              "$(jq -r '.tooling.lens_mcp_state' <<<"$out")" "ok"
+# --strict-mcp-config means what is absent is unreachable, so an unrelated
+# account connector must not be carried into the lens.
+cat > "$r/repo/.mcp.json" <<'JSON'
+{ "mcpServers": { "codebase-memory-mcp": { "command": "/opt/bin/cmm" },
+                  "some-account-connector": { "command": "/opt/bin/other" } } }
+JSON
+out=$(run_preflight "$r" 73 mono)
+lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
+eq "  an unrelated connector is NOT carried into the lens" \
+   "$(jq -r '.mcpServers | has("some-account-connector")' "$lm")" "false"
+rm -rf "$r"
+
+# (c) registered but UNLAUNCHABLE. This is the case the two fields exist for: an
+# enabledPlugins entry proves registration and carries no command, so the mandate
+# would name a tool the lens cannot reach.
+r=$(mkfixture "feature/x" "main")
+cat > "$r/repo/.claude/settings.json" <<'JSON'
+{ "enabledPlugins": { "context-mode@somewhere": true } }
+JSON
+out=$(run_preflight "$r" 73 mono)
+lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
+eq "registered-but-unlaunchable -> reported, not silently dropped" \
+   "$(jq -r '.tooling.lens_mcp_state' <<<"$out")" "partial:context-mode"
+eq "  ...and ctx still reads as AVAILABLE (registration is a different question)" \
+   "$(jq -r '.tooling.ctx_available' <<<"$out")" "true"
+eq "  ...so the config is empty and the divergence is the finding" \
+   "$(jq -r '.mcpServers | length' "$lm")" "0"
+eq "  ...and it warns" \
+   "$(jq -r '[.warnings[]?|select(startswith("lens_mcp_unresolved"))]|length' <<<"$out")" "1"
+rm -rf "$r"
+
+# (d) a plugin-provided server: the command lives in the PLUGIN's .mcp.json,
+# written against ${CLAUDE_PLUGIN_ROOT}. Passing that placeholder through
+# unexpanded hands the lens subprocess a path that resolves to the wrong plugin,
+# or under --strict-mcp-config to nothing.
+r=$(mkfixture "feature/x" "main")
+pcache="$r/home/.config/claude-code/plugins/cache/mkt/context-mode/1.0.0"
+mkdir -p "$pcache/.claude-plugin"
+printf '{"name":"context-mode","version":"1.0.0"}\n' > "$pcache/.claude-plugin/plugin.json"
+cat > "$pcache/.mcp.json" <<'JSON'
+{ "mcpServers": { "context-mode": { "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/start.mjs"] } } }
+JSON
+out=$(run_preflight "$r" 73 mono)
+lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
+eq "plugin-provided server is resolved from the plugin cache" \
+   "$(jq -r '.mcpServers["context-mode"].command' "$lm")" "node"
+eq "  \${CLAUDE_PLUGIN_ROOT} is expanded to the plugin's own dir" \
+   "$(jq -r '.mcpServers["context-mode"].args[0]' "$lm")" "$pcache/start.mjs"
+rm -rf "$r"
+
 # --- the schema is a wire payload as well as documentation -------------------
 eq "lens-schema.json survives comment-stripping" \
    "$(jq -c 'del(.. | objects | ."$comment")' "$REPO_SRC/config/lens-schema.json" >/dev/null 2>&1 && echo ok || echo broken)" "ok"
