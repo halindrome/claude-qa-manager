@@ -85,7 +85,14 @@ belongs_here() {
 newest=""; newest_mtime=0
 for f in "$SCRATCH_ROOT"/qa-cycle-*/status; do
   [ -f "$f" ] || continue
-  IFS='|' read -r _mr _tg _rd _ph _dn _tt _st _ta < "$f" || continue
+  # NINE fields, not eight. With IFS='|' the LAST variable absorbs every remaining
+  # field, so reading 8 from a 9-field line silently makes _ta "<target_abs>|<stall>"
+  # — which never equals any directory, so belongs_here rejected EVERY round and the
+  # fragment rendered nothing at all, for every project, from the moment
+  # lens_stall_seconds became the 9th field. Observed live. The producers are locked
+  # at 9 by preflight.test.sh; this consumer was not, which is why only the writers
+  # were kept honest.
+  IFS='|' read -r _mr _tg _rd _ph _dn _tt _st _ta _ls < "$f" || continue
   [ -n "${_mr:-}" ] || continue
   # A line written before target_abs was carried in-band: recover it from the
   # round's own preflight.json rather than dropping the round off the display.

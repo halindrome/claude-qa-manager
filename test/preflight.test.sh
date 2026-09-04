@@ -487,6 +487,20 @@ eq "project B sees only its round"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRA
 eq "unrelated project sees neither" "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/c | wc -c | tr -d ' ')" "0"
 # A session opened INSIDE the submodule under review still matches.
 eq "session inside the target"      "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a/apps/rest-api)" "QA !706 rest-api r1"
+# ...and it must still match on a NINE-field line, which is what preflight, the
+# manager and the sequential path all actually write. Every scoping fixture above
+# is 8-field, and that is why the consumer's short read went unnoticed for so
+# long: with IFS='|' the last variable absorbs the remainder, so target_abs became
+# "<path>|<lens_stall>". A session ABOVE the target still matched on the prefix —
+# which is exactly why the stall cases further down kept passing — but a session
+# IN the target compared "<path>|1200" against "<path>" and matched nothing, so
+# the fragment rendered NOTHING AT ALL. Observed live, for every round, in the
+# common submodule case.
+printf '706|rest-api|1|lenses|3|6|%s|/repo/a/apps/rest-api|1200\n' "$(( $(date +%s) - 240 ))" > "$sroot/qa-cycle-abc-706/status"
+eq "  9-field line, session in target"  "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a/apps/rest-api)" "QA !706 rest-api r1"
+eq "  9-field line, session above it"   "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a)" "QA !706 rest-api r1"
+eq "  9-field line leaks no count"      "$(QA_CYCLE_SCRATCH_ROOT="$sroot" bash "$FRAG" /repo/a | grep -cE '[0-9]+/[0-9]+')" "0"
+printf '706|rest-api|1|lenses|3|6|%s|/repo/a/apps/rest-api\n' "$(( $(date +%s) - 240 ))" > "$sroot/qa-cycle-abc-706/status"
 rm -rf "$sroot/qa-cycle-def-99"
 # THE case this exists for: a crashed panel leaves the file behind, so existence
 # cannot mean "running". Age of the last write is what separates them.
@@ -1792,6 +1806,7 @@ done
 # forgets to clear still reports the right count.
 eq "watcher filters lens files by fanout" \
    "$( grep -c 'lt "\$fo"' "$REPO_SRC/lib/watch-round.sh" )" "1"
+
 # The fallback must also carry the round-level bookkeeping the manager does.
 for m in 'fanout' 'tree-before' 'record-timing.sh' 'lens-'; do
   eq "  sequential does '$m'"   "$( [ "$(grep -c -- "$m" "$SEQ")" -ge 1 ] && echo yes || echo no )" "yes"
