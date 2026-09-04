@@ -231,6 +231,78 @@ This contradicts the do-not-relitigate entry justifying plugin packaging partly 
 "the design depends on Agent subagents nesting two deep." Amend that entry explicitly if
 the driver architecture is adopted; it remains a plugin either way.
 
+### Phase 1 parity result (2026-09-04) — 3 of 4 criteria pass; `-p` reviews BETTER
+
+The spike proved mechanism, not review quality; the plan made that a stop-the-plan gate.
+It has now been run. **The driver architecture is not stopped.**
+
+One recovered lens prompt (`contract-security`, round 2 of PR #89, a 35-file /
++3624/-75 diff) replayed through `claude -p` and compared against the Agent arm's
+own artifacts. Criteria were **fixed in writing before the result was seen**, because
+the baseline made one of them awkward (below) and choosing a reading afterwards is the
+rationalisation principle 4 exists to prevent.
+
+| criterion | Agent arm | `claude -p` | verdict |
+|---|---|---|---|
+| 1. valid JSON in the lens schema | fenced block, parses | **markdown round-note, no JSON at all** | **FAIL** |
+| 2. findings overlap, no serious finding lost | 3 findings, 24 contract rows | **7 findings, 39 contract rows** | **PASS** |
+| 3. actually *called* CMM | **0 CMM calls** | 1 `search_graph` | **PASS** |
+| 4. wall clock within ~2x | 435s | 603s (1.39x) | **PASS** |
+
+Cost and shape: `-p` **19 turns / 1.61M cache-read / $4.42**; the Agent lens **45 turns /
+4.73M cache-read**. Fewer than half the turns and ~3x less cache-read, for more than twice
+the findings. `stop_reason: end_turn`, `permission_denials: 0`, no hang; hooks fired in the
+`-p` session (13 emissions), confirming the enforcement layer is not lost by leaving `Agent`.
+
+**Criterion 1 is a real defect and its cause is known.** `--agent claude-qa-manager:qa-reviewer`
+loads `agents/qa-reviewer.md`, which prescribes a `## Header` markdown round-note; that
+**system** prompt beat the **user** prompt's "Return a fenced ```json block". The Agent arm
+had the identical conflict and JSON won — so the format is not stable, it is a coin toss
+that the two paths happen to resolve differently. The driver owns the invocation and must
+force the format outright rather than ask twice and hope. **This is a required Phase 3 fix,
+not a reason to stop:** it is an output-format failure, not a review-quality one.
+
+**Criterion 3, and an honest retraction of the spike's headline.** The spike claimed "`-p`
+is the arm that used it" and that reads stronger than the evidence now supports. On a real
+prompt `-p` made **one** graph call, and its `Navigation: cmm+ctx` line — accurate, and
+matching its tool log — explains that `get_code_snippet`/`trace_path` were loaded and
+judged unnecessary for a diff of bash hooks with no cross-file call graph. That is exactly
+the "loading them and judging the graph unnecessary is a correct call" case the mandate
+names, not a triumph. The criterion was applied **as the plan writes it (absolute, not
+parity)**: had it been read as parity, 0-vs-0 would have been scored a tie.
+
+**Why the review was better, concretely.** The `-p` arm ran the hooks under test with
+crafted stdin and cited return codes: an unbalanced apostrophe in a comment silently
+disarming the `# ctx-truncate-ok` escape hatch; `>` inside `(( a > b ))` read as a
+redirect *in both* the hook and the analyser. It also strictly superseded the Agent arm's
+one unmatched minor — where the Agent said the suggested replacement was "unpasteable",
+`-p` showed it is a **semantically different program** (`if (( a )); then` runs its branch
+whenever `a` is non-zero). No Agent finding was lost.
+
+**Confounds controlled** (all verified from artifacts, not assumed):
+
+- **Model.** The Agent lens ran `claude-opus-5` on all 45 turns, read from its transcript.
+  `-p` `modelUsage` confirms `claude-opus-5` for the work — plus `claude-fable-5-1` for
+  107k input tokens of helper traffic, which the `Agent` path gives no way to see at all.
+- **System prompt.** The recovered 11k prompt is only the lens's *user* prompt. `--agent`
+  supplies the rest; bare `-p` would not have had the output schema. **Add `--agent` and
+  `--plugin-dir` to the "verified invocation" — the plan's flag set omits both.**
+- **Tree state.** Not reproducible in place: PR #89 has merged, so today's
+  `origin/develop..HEAD` yields 5 files / -174. The reflog pins develop at review time to
+  `7bfbd5d`, and `7bfbd5d..b9cc572` reproduces preflight's recorded diffstat exactly.
+  Replayed in a clone with develop rewound.
+- **Prompt.** Byte-identical (11,153 bytes) except one line, the repo root. Proven by
+  `diff`, not asserted.
+- **The mandate handicap is deliberate.** The recovered prompt carries the OLD bare-name
+  mandate. The Agent baseline is historical and cannot be re-run, so splicing the fixed
+  mandate into the replay would have confounded it the other way. Both arms carry the same
+  handicap; the runtime is the only variable.
+- **One asymmetry favours `-p` and is not a test artifact.** `--strict-mcp-config` gave it
+  exactly the two pinned servers; the Agent arm took whatever the session had. That is a
+  *design property* of the driver path, and it is why the property is worth having.
+  Incidentally it settles the prefix question: under `--mcp-config` the ctx tools resolve
+  as `mcp__context-mode__`, the direct form.
+
 ### Smaller, independent items
 
 - **Lens reviewers silently inherit a weak session model — invariant 6 has no
