@@ -157,6 +157,58 @@ A worked example of what a gate would buy, from the same day: the manager passed
 override. A `PreToolUse:Agent` gate rejecting an unauthorized `model` on a `qa-reviewer`
 spawn would have stopped that; no amount of prose did.
 
+### Spike result — `claude -p` lenses beat `Agent` lenses on every measured axis
+
+Run 2026-09-04 against a lens panel from a real round (3 lenses, a 649-line diff, a
+CMM-indexed repo) versus a `claude -p` probe in the same repo on the same machine.
+
+**1. Tool reachability — `-p` wins, and not narrowly.** The `-p` session loaded the CMM
+graph tools and **called `search_graph` successfully, 12 rows returned**. The three Agent
+lenses, given a mandate reading *"The tools below ARE available in your session; use them
+for all code work. Do NOT default to Read + grep"*, loaded the same tools and called them
+**zero times** — falling back to `ctx_execute` and `Bash`. So the objection that `-p` would
+lose code navigation is backwards: `-p` is the arm that used it.
+
+Two separate defects surfaced underneath that, both worth fixing regardless of
+architecture:
+- the injected mandate names **bare** tool names (`search_graph`), which `ToolSearch`
+  cannot resolve — every lens burns a round-trip discovering it needs
+  `mcp__codebase-memory-mcp__search_graph`. Fix the mandate to emit qualified names.
+- after loading them, the lenses used them anyway not at all. A lens reporting
+  `navigation: cmm+ctx` while making zero CMM calls is a self-report contradicted by its
+  own tool log — the same class as every other failure in the section above.
+
+**2. Unattended completion — pass.** `exit 0`, `stop_reason: end_turn`,
+`terminal_reason: completed`, 9.5s API / 13s wall, no hang and no interactive prompt. A
+denied tool call was recorded structurally in `permission_denials[]` **and the run
+continued to completion**. A denial is data, not a wedge. Note also that the denial came
+from the project's own `PreToolUse` enforcer — hooks apply to `-p` sessions, so the
+enforcement layer is not lost by moving off `Agent`.
+
+**3. Cost — startup is modest; parity on real work is NOT yet proven.** The probe cost
+$0.25, 4 turns, ~107k cache-read + 56k cache-creation. Read that as session-init overhead:
+×6 lenses ≈ 640k cache-read, against the Agent arm's **8.4M cache-read for three lenses**.
+Startup is not the expensive part. But the probe did trivial work where a real lens runs
+15–21 tool calls over a full diff, so this is *not* apples to apples and review-quality
+parity remains untested. That is the one open risk.
+
+**Bonus: `--output-format json` gives observability the Agent path does not.**
+`permission_denials`, `subagent_stats` (spawned / refused / killed, by reason),
+`total_cost_usd`, `num_turns`, `duration_ms`, and **`modelUsage` naming the model actually
+used** — which answers the model-recording problem in the entry below directly, with no
+hook required.
+
+**Consequence.** A driver script invoking lenses via `claude -p` makes most of the proposed
+enforcement unnecessary rather than built: the model becomes an argument, output filenames
+belong to the driver, the progress counter is written after each `wait`, `failed_lenses` is
+an exit code, and a wedged lens is a watchdog kill. Before committing, run **one real lens
+prompt** through `-p` and compare its findings against the Agent arm's — mechanism is
+proven, equivalence is not.
+
+This contradicts the do-not-relitigate entry justifying plugin packaging partly because
+"the design depends on Agent subagents nesting two deep." Amend that entry explicitly if
+the driver architecture is adopted; it remains a plugin either way.
+
 ### Smaller, independent items
 
 - **Lens reviewers silently inherit a weak session model — invariant 6 has no
