@@ -129,7 +129,19 @@ rm -f "$S"/lens-*.json "$S"/failed-*.json "$S"/raw-*.json "$S"/err-*.txt
 # absent check reporting clean. The driver owns them now because the driver is
 # what brackets the panel.
 date +%s > "$S/fanout"
-snap() { ( cd "$TARGET_ABS" && git status --porcelain=v1 2>/dev/null | sort ); }
+# HEAD and the branch name are in the snapshot, NOT just the porcelain status.
+# Porcelain alone catches a lens editing a file, but a clean branch switch leaves
+# it byte-identical -- so a second round checking out its own branch in the same
+# working tree would compare equal and report the tree unmutated. `-uall` because
+# porcelain collapses an untracked DIRECTORY to one `?? dir/` line, which hides a
+# lens dropping a new file inside one. Both of these are inherited from the
+# manager's snap (agents/qa-manager.md), deliberately: this replaces that code,
+# so it has to carry the reasons that code was written the way it was.
+snap() {
+  git -C "$TARGET_ABS" rev-parse HEAD 2>/dev/null
+  git -C "$TARGET_ABS" rev-parse --abbrev-ref HEAD 2>/dev/null
+  git -C "$TARGET_ABS" status --porcelain -uall 2>/dev/null
+}
 snap > "$S/tree-before.txt"
 
 # phase=lenses. lens-landed.sh deliberately PRESERVES phase (it owns the counter,
@@ -251,7 +263,14 @@ for lens in $LENSES; do
     [ -n "$model" ] && set -- "$@" --model "$model"
     set -- "$@" --plugin-dir "$PLUGIN" --agent claude-qa-manager:qa-reviewer \
                 --strict-mcp-config --mcp-config "$S/lens-mcp.json" \
+                --no-session-persistence \
                 --output-format json --json-schema "$SCHEMA"
+    # --no-session-persistence: up to six lenses run concurrently in ONE checkout,
+    # so all six would persist sessions into the same per-directory project slug.
+    # Nothing resumes a lens -- it is one non-interactive shot whose entire result
+    # is the envelope we capture -- so the session file is write contention for a
+    # thing no one reads. Phase 1 did not pass this flag, but Phase 1 ran a single
+    # lens; concurrency is what makes it matter.
 
     cd "$TARGET_ABS" || exit 9
     claude "$@" < "$S/prompt-$lens.txt" > "$S/raw-$lens.json" 2> "$S/err-$lens.txt" &

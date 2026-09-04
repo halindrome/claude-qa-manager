@@ -2074,6 +2074,9 @@ mkpanel() {   # -> echoes a root dir with plugin/, repo/, scratch/, bin/
 
   git init -q -b main "$repo"
   git -C "$repo" config user.email t@t.t; git -C "$repo" config user.name t
+  # A real commit, so the snapshot's HEAD line is a real sha rather than empty —
+  # an empty HEAD would make the tree-mutation snapshot compare equal by accident.
+  echo x > "$repo/a.sh"; git -C "$repo" add a.sh; git -C "$repo" commit -qm init
 
   # Field 9 is the resolved stall tolerance and the driver takes its watchdog
   # bound from it — 2s here so the hang case costs two seconds, not twenty
@@ -2139,6 +2142,19 @@ case "$mode" in
   noschema) envelope "claude-opus-5" "" ;;
   garbage)  envelope "claude-opus-5" '{"nope":true}' ;;
   mismatch) envelope "claude-haiku-4-5" "$SO" ;;
+  # A real envelope carries HELPER traffic alongside the reviewer's own model —
+  # the Phase 1 replay showed claude-fable-5-1 with 107k input tokens next to the
+  # opus reviewer. Picking the wrong key here would report the wrong model ran.
+  helper)
+    cat <<JSON
+{ "type":"result","subtype":"success","is_error":false,"stop_reason":"tool_use",
+  "num_turns":4,"duration_ms":47557,"total_cost_usd":4.42,"permission_denials":[],
+  "structured_output": $SO,
+  "modelUsage": {
+    "claude-fable-5-1": { "inputTokens": 107000, "outputTokens": 210, "costUSD": 1.62 },
+    "claude-opus-5":    { "inputTokens": 40, "outputTokens": 31505, "costUSD": 2.80 } } }
+JSON
+    ;;
   *)        envelope "claude-opus-5" "$SO" ;;
 esac
 STUB
@@ -2184,6 +2200,18 @@ eq "  passes --agent claude-qa-manager:qa-reviewer" \
 # downgrade the moment the session runs on something stronger (invariant 6).
 eq "  omits --model when neither override is configured" \
    "$(case "$argv" in *--model*) echo present ;; *) echo absent ;; esac)" "absent"
+# Up to six lenses run concurrently in ONE checkout; without this they all persist
+# sessions into the same per-directory project slug, and nothing ever resumes one.
+eq "  passes --no-session-persistence (six lenses, one checkout)" \
+   "$(case "$argv" in *--no-session-persistence*) echo yes ;; *) echo no ;; esac)" "yes"
+
+# The tree snapshot must carry HEAD and the branch name, not just porcelain: a
+# concurrent round doing a CLEAN branch switch in the same working tree leaves
+# porcelain byte-identical, and tree_mutated would compare equal.
+eq "  snapshot carries HEAD" \
+   "$(head -1 "$p/scratch/tree-before.txt" | grep -cE '^[0-9a-f]{40}$')" "1"
+eq "  snapshot carries the branch name" \
+   "$(sed -n 2p "$p/scratch/tree-before.txt")" "main"
 
 # --- prompt composition -------------------------------------------------------
 eq "  a prompt is composed per lens" "$(ls "$p/scratch"/prompt-*.txt | wc -l | tr -d ' ')" "3"
@@ -2273,6 +2301,18 @@ eq "  ...and its findings still land" \
    "$([ -f "$p/scratch/lens-contract-security.json" ] && echo present || echo absent)" "present"
 eq "  the actual model is on the record" \
    "$(jq -r '."contract-security".model' "$p/scratch/panel-models.json")" "claude-haiku-4-5"
+rm -rf "$p"
+
+# A real envelope carries helper traffic in modelUsage alongside the reviewer's
+# own model. Picking the wrong key reports the wrong model as the one that ran —
+# and a wrong model on the record is worse than none, because it looks checked.
+p=$(mkpanel)
+FAKE_MODES="contract-security:helper" run_panel "$p" >/dev/null
+eq "the reviewer's model wins over helper traffic" \
+   "$(jq -r '."contract-security".model' "$p/scratch/panel-models.json")" "claude-opus-5"
+eq "  ...and the helper is still on the record" \
+   "$(jq -r '."contract-security".all_models | sort | join(",")' "$p/scratch/panel-models.json")" \
+   "claude-fable-5-1,claude-opus-5"
 rm -rf "$p"
 
 # --- stale files from the PREVIOUS round must not count as this round's work --
