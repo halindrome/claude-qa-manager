@@ -2042,6 +2042,296 @@ if [ -e "$SKILL_SRC/detect-workflows-support.sh" ]; then
   bad "detect-workflows-support.sh is gone" "still present"
 else ok "detect-workflows-support.sh is gone"; fi
 
+# ===========================================================================
+# lib/run-panel.sh — the `claude -p` lens driver
+#
+# The stub is a fake `claude` on $PATH, one layer below the driver, for the same
+# reason the forge cases stub `glab` rather than lib/forge.sh: stubbing anything
+# higher would re-implement the driver's own logic in the test. Its success
+# envelope is the SHAPE of a real `--output-format json` run recorded on
+# 2026-09-04 (claude 2.1.260) — `modelUsage` with camelCase token keys,
+# `structured_output` as an object, `stop_reason: tool_use` on a multi-turn run.
+# Those three are exactly what the driver reads, and each was a guess before the
+# run: a hand-invented envelope would have had snake_case, a string
+# `structured_output`, and `end_turn`, and the driver would have passed its tests
+# and failed in production on all three.
+# ===========================================================================
+echo "[run-panel.sh — the lens driver]"
+
+RUNPANEL_SRC="$REPO_SRC/lib/run-panel.sh"
+
+mkpanel() {   # -> echoes a root dir with plugin/, repo/, scratch/, bin/
+  local root; root=$(mktemp -d)
+  local plugin="$root/plugin" repo="$root/repo" S="$root/scratch" bin="$root/bin"
+  mkdir -p "$plugin/lib" "$plugin/config" "$repo" "$S" "$bin"
+
+  # The REAL driver and the REAL counter helper. lens-landed.sh is what makes the
+  # progress counter ground-truth, so a stub here would assert against a copy of
+  # the property under test.
+  cp "$RUNPANEL_SRC" "$plugin/lib/run-panel.sh"
+  cp "$REPO_SRC/lib/lens-landed.sh" "$plugin/lib/"
+  cp "$REPO_SRC/config/lens-catalog.json" "$REPO_SRC/config/lens-schema.json" "$plugin/config/"
+
+  git init -q -b main "$repo"
+  git -C "$repo" config user.email t@t.t; git -C "$repo" config user.name t
+
+  # Field 9 is the resolved stall tolerance and the driver takes its watchdog
+  # bound from it — 2s here so the hang case costs two seconds, not twenty
+  # minutes.
+  printf '73|mono|2|preflight|0|3|%s|%s|2\n' "$(date +%s)" "$repo" > "$S/status"
+  printf 'x\n' > "$S/proportionality.md"
+  printf 'use the graph tools\n' > "$S/tool-mandate.md"
+
+  {
+    printf 'target_abs=%s\n' "$repo"
+    printf 'mr=73\nround=2\n'
+    printf 'feature_branch=feature/x\ntarget_branch=main\n'
+    printf 'diff_range=origin/main..HEAD\n'
+    printf 'lenses=["contract-security","regression-edges","test-quality"]\n'
+    printf 'review_model=\n'
+    printf 'lens_models={}\n'
+    printf 'qa_scratch=%s\n' "$S"
+    printf 'contract_path=%s/contract.md\n' "$S"
+    printf 'sast_path=%s/sast.md\n' "$S"
+    printf 'schema_change_path=%s/schema-change.md\n' "$S"
+    printf 'tool_mandate_path=%s/tool-mandate.md\n' "$S"
+    printf 'proportionality_path=%s/proportionality.md\n' "$S"
+    printf 'status_path=%s/status\n' "$S"
+  } > "$S/manager-brief.txt"
+
+  cat > "$bin/claude" <<'STUB'
+#!/usr/bin/env bash
+# Fake `claude`. Records its own argv per lens so the driver's invocation is
+# asserted from what the CLI actually SAW, never from the driver's intent.
+prompt=$(cat)
+lens=$(printf '%s\n' "$prompt" | sed -n '1s/^# QA lens: \([a-z-]*\).*/\1/p')
+[ -n "$lens" ] || lens=unknown
+printf '%s\n' "$*" > "$FAKE_LOG/argv-$lens.txt"
+printf '%s' "$prompt" > "$FAKE_LOG/stdin-$lens.txt"
+
+mode=$(printf '%s\n' ${FAKE_MODES:-} | sed -n "s/^$lens://p")
+[ -n "$mode" ] || mode=success
+
+envelope() {  # $1 = model id in modelUsage, $2 = structured_output or empty
+  local so="$2"
+  if [ -n "$so" ]; then so="\"structured_output\": $so,"; else so=""; fi
+  cat <<JSON
+{
+  "type": "result", "subtype": "success", "is_error": false,
+  "stop_reason": "tool_use", "terminal_reason": "completed",
+  "num_turns": 4, "duration_ms": 47557, "total_cost_usd": 0.2844136,
+  "permission_denials": [],
+  $so
+  "modelUsage": { "$1": {
+      "inputTokens": 4, "outputTokens": 3921,
+      "cacheReadInputTokens": 51158, "cacheCreationInputTokens": 58741,
+      "costUSD": 0.2844136, "canonicalModel": "$1", "provider": "firstParty" } }
+}
+JSON
+}
+SO='{"navigation":"cmm","schema_change_detected":false,"contract_verification":[],
+     "findings":[{"title":"t","area_file":"a.sh","line_low":1,"severity":"minor",
+                  "relevance":"regression","status":"confirmed"}]}'
+
+case "$mode" in
+  nonzero)  echo "stub lens failure" >&2; exit 7 ;;
+  hang)     exec sleep 120 ;;
+  noschema) envelope "claude-opus-5" "" ;;
+  garbage)  envelope "claude-opus-5" '{"nope":true}' ;;
+  mismatch) envelope "claude-haiku-4-5" "$SO" ;;
+  *)        envelope "claude-opus-5" "$SO" ;;
+esac
+STUB
+  chmod +x "$bin/claude"
+  echo "$root"
+}
+
+run_panel() {  # $1 root, rest: env assignments already exported by the caller
+  local root="$1"; shift
+  ( cd "$root/repo" && env PATH="$root/bin:$PATH" FAKE_LOG="$root/scratch" \
+      bash "$root/plugin/lib/run-panel.sh" "$root/scratch" "$@" 2>"$root/panel.err" )
+}
+
+# --- clean panel --------------------------------------------------------------
+p=$(mkpanel)
+out=$(run_panel "$p"); rc=$?
+eq "clean panel -> exit 0" "$rc" "0"
+eq "  three lens files landed" "$(ls "$p/scratch"/lens-*.json 2>/dev/null | wc -l | tr -d ' ')" "3"
+eq "  no failed-*.json"        "$(ls "$p/scratch"/failed-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+eq "  counter reached 3/3"     "$(awk -F'|' '{print $5"/"$6}' "$p/scratch/status")" "3/3"
+eq "  phase is lenses during the panel" "$(awk -F'|' '{print $4}' "$p/scratch/status")" "lenses"
+eq "  lens payload is the structured_output, not the envelope" \
+   "$(jq -r '.navigation' "$p/scratch/lens-contract-security.json")" "cmm"
+# fanout + tree snapshots: absent, these two degrade to "no history row" and
+# "tree_mutated=false" — an absent check reporting clean.
+eq "  fanout stamp written"      "$([ -s "$p/scratch/fanout" ] && echo yes || echo no)" "yes"
+eq "  tree-before.txt written"   "$([ -f "$p/scratch/tree-before.txt" ] && echo yes || echo no)" "yes"
+eq "  tree-after.txt written"    "$([ -f "$p/scratch/tree-after.txt" ] && echo yes || echo no)" "yes"
+eq "  lens-models-actual records the model that RAN" \
+   "$(jq -r '."contract-security".model' "$p/scratch/panel-models.json")" "claude-opus-5"
+eq "  ...and its cost, from the run record not a self-report" \
+   "$(jq -r '."test-quality".cost_usd' "$p/scratch/panel-models.json")" "0.2844136"
+
+# --- the invocation itself, asserted from what the CLI saw --------------------
+argv=$(cat "$p/scratch/argv-contract-security.txt")
+eq "  passes --strict-mcp-config" \
+   "$(case "$argv" in *--strict-mcp-config*) echo yes ;; *) echo no ;; esac)" "yes"
+eq "  passes --json-schema (the format is forced, not requested)" \
+   "$(case "$argv" in *--json-schema*) echo yes ;; *) echo no ;; esac)" "yes"
+eq "  passes --agent claude-qa-manager:qa-reviewer" \
+   "$(case "$argv" in *"--agent claude-qa-manager:qa-reviewer"*) echo yes ;; *) echo no ;; esac)" "yes"
+# Empty review_model/lens_models means INHERIT. Naming a model here would be a
+# downgrade the moment the session runs on something stronger (invariant 6).
+eq "  omits --model when neither override is configured" \
+   "$(case "$argv" in *--model*) echo present ;; *) echo absent ;; esac)" "absent"
+
+# --- prompt composition -------------------------------------------------------
+eq "  a prompt is composed per lens" "$(ls "$p/scratch"/prompt-*.txt | wc -l | tr -d ' ')" "3"
+eq "  mandate arrives as a TITLED section, not a preamble" \
+   "$(grep -c '^## Code navigation' "$p/scratch/prompt-regression-edges.txt")" "1"
+eq "  proportionality arrives as a titled section" \
+   "$(grep -c '^## Proportionality' "$p/scratch/prompt-regression-edges.txt")" "1"
+eq "  the lens focus is the catalog's, verbatim" \
+   "$(grep -c 'OWNS the Contract Verification table' "$p/scratch/prompt-contract-security.txt")" "1"
+eq "  ...and each lens gets its OWN focus" \
+   "$(grep -c 'OWNS the Contract Verification table' "$p/scratch/prompt-test-quality.txt")" "0"
+eq "  contract path is offered by default" \
+   "$(grep -c 'Contract / acceptance criteria' "$p/scratch/prompt-contract-security.txt")" "1"
+rm -rf "$p"
+
+# --skip-contract-verification is a per-invocation flag preflight never sees.
+# This case is why prompt composition lives in the driver and not in preflight.
+p=$(mkpanel)
+run_panel "$p" --skip-contract-verification >/dev/null
+eq "--skip-contract-verification reaches the prompt" \
+   "$(grep -c 'Contract: SKIPPED at user request' "$p/scratch/prompt-contract-security.txt")" "1"
+rm -rf "$p"
+
+# --- the mandate is ABSENT, not empty, when no graph tooling is registered ----
+p=$(mkpanel)
+rm -f "$p/scratch/tool-mandate.md"
+out=$(run_panel "$p"); rc=$?
+eq "absent tool-mandate -> panel still runs" "$rc" "0"
+eq "  no empty Code navigation section" \
+   "$(grep -c '^## Code navigation' "$p/scratch/prompt-test-quality.txt")" "0"
+rm -rf "$p"
+
+# A MISSING proportionality file is different: it always exists in production, so
+# its absence is reported rather than passed over. A round run without it is not
+# comparable to one run with it.
+p=$(mkpanel)
+rm -f "$p/scratch/proportionality.md"
+run_panel "$p" >/dev/null
+eq "missing proportionality is announced in the prompt" \
+   "$(grep -c 'NOT AVAILABLE' "$p/scratch/prompt-test-quality.txt")" "1"
+rm -rf "$p"
+
+# --- every failure mode is distinguishable, and none reports clean ------------
+# The shared assertion: a failed lens writes failed-<lens>.json and NOT
+# lens-<lens>.json. round-return.sh derives failed_lenses as
+# `preflight.lenses - basename(lens-*.json)`, so a failure file matching that
+# glob would make a dead lens count as landed.
+panel_failure_case() {  # $1 label, $2 FAKE_MODES, $3 expected state, $4 expected rc
+  local p; p=$(mkpanel)
+  FAKE_MODES="$2" run_panel "$p" >/dev/null; local rc=$?
+  eq "$1 -> exit $4" "$rc" "$4"
+  eq "  $1: state recorded" \
+     "$(jq -r '.state' "$p/scratch/failed-contract-security.json" 2>/dev/null)" "$3"
+  eq "  $1: no lens-contract-security.json" \
+     "$([ -f "$p/scratch/lens-contract-security.json" ] && echo present || echo absent)" "absent"
+  eq "  $1: the other two still landed" \
+     "$(ls "$p/scratch"/lens-*.json 2>/dev/null | wc -l | tr -d ' ')" "2"
+  rm -rf "$p"
+}
+panel_failure_case "nonzero exit"     "contract-security:nonzero"  "nonzero_exit"   1
+panel_failure_case "no structured_output" "contract-security:noschema" "invalid_output" 1
+panel_failure_case "wrong-shaped structured_output" "contract-security:garbage" "invalid_output" 1
+# A wedged lens is today undetectable except by a stall heuristic. macOS has no
+# timeout(1), so this proves the background+watchdog idiom actually fires.
+panel_failure_case "watchdog kill"    "contract-security:hang"     "watchdog_killed" 1
+
+# All three dead -> exit 3, distinct from a partial panel. A caller that treats
+# every non-zero the same cannot tell "no review happened" from "most of it did".
+p=$(mkpanel)
+FAKE_MODES="contract-security:nonzero regression-edges:nonzero test-quality:nonzero" \
+  run_panel "$p" >/dev/null; rc=$?
+eq "whole panel dead -> exit 3" "$rc" "3"
+eq "  nothing landed" "$(ls "$p/scratch"/lens-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+rm -rf "$p"
+
+# --- a weaker model running unnoticed is the failure invariant 6 exists for ---
+p=$(mkpanel)
+sed -i.bak 's/^review_model=$/review_model=opus/' "$p/scratch/manager-brief.txt"
+FAKE_MODES="contract-security:mismatch" run_panel "$p" >/dev/null
+eq "requested model is passed through" \
+   "$(case "$(cat "$p/scratch/argv-test-quality.txt")" in *"--model opus"*) echo yes ;; *) echo no ;; esac)" "yes"
+eq "  a model swap is RECORDED, not silently accepted" \
+   "$(jq -r '.state' "$p/scratch/failed-contract-security.json")" "model_mismatch"
+# ...and the findings still land: the review happened, and discarding real
+# findings would be a second defect on top of the first.
+eq "  ...and its findings still land" \
+   "$([ -f "$p/scratch/lens-contract-security.json" ] && echo present || echo absent)" "present"
+eq "  the actual model is on the record" \
+   "$(jq -r '."contract-security".model' "$p/scratch/panel-models.json")" "claude-haiku-4-5"
+rm -rf "$p"
+
+# --- stale files from the PREVIOUS round must not count as this round's work --
+# $QA_SCRATCH is keyed to the MR, not the round.
+p=$(mkpanel)
+echo '{"navigation":"cmm"}' > "$p/scratch/lens-contract-security.json"
+FAKE_MODES="contract-security:nonzero" run_panel "$p" >/dev/null
+eq "a stale lens file does not survive into the new round" \
+   "$([ -f "$p/scratch/lens-contract-security.json" ] && echo present || echo absent)" "absent"
+rm -rf "$p"
+
+# --- a lens name with no catalog entry is fatal, never an invented mandate ----
+p=$(mkpanel)
+sed -i.bak 's/"test-quality"/"no-such-lens"/' "$p/scratch/manager-brief.txt"
+run_panel "$p" >/dev/null
+eq "unknown lens -> recorded, not invented" \
+   "$(jq -r '.state' "$p/scratch/failed-no-such-lens.json")" "unknown_lens"
+eq "  no prompt was composed for it" \
+   "$([ -f "$p/scratch/prompt-no-such-lens.txt" ] && echo present || echo absent)" "absent"
+rm -rf "$p"
+
+# --- the catalog must cover every name preflight can emit --------------------
+# These two lists drifting apart is invisible until a real round selects the
+# conditional lens that was never added here.
+_known=$(sed -n "s/^KNOWN_LENS_NAMES_RE=.*(\(.*\)).*/\1/p" "$PREFLIGHT_SRC" | tr '|' ' ')
+eq "preflight's lens-name enum is readable" \
+   "$(printf '%s' "$_known" | wc -w | tr -d ' ')" "7"
+for _n in $_known; do
+  eq "catalog covers preflight's lens '$_n'" \
+     "$(jq -r --arg n "$_n" 'has($n)' "$REPO_SRC/config/lens-catalog.json")" "true"
+done
+
+# --- the `lens-*.json` glob is a namespace, not just a filename --------------
+# round-return.sh:101 derives failed_lenses as `preflight.lenses - basename(
+# lens-*.json)` and lens-landed.sh counts the same glob for the progress
+# denominator. Any OTHER file the driver writes under that prefix reports as a
+# landed lens. This is not hypothetical: the driver's own run record was called
+# lens-models-actual.json for exactly one test run, and every panel came back
+# one lens over.
+p=$(mkpanel)
+run_panel "$p" >/dev/null
+for _f in "$p"/scratch/lens-*.json; do
+  _b=$(basename "$_f" .json); _b=${_b#lens-}
+  eq "  lens-*.json holds only real lenses ($_b)" \
+     "$(printf '%s' '["contract-security","regression-edges","test-quality"]' \
+        | jq -r --arg n "$_b" 'index($n) != null')" "true"
+done
+rm -rf "$p"
+
+# --- the schema is a wire payload as well as documentation -------------------
+eq "lens-schema.json survives comment-stripping" \
+   "$(jq -c 'del(.. | objects | ."$comment")' "$REPO_SRC/config/lens-schema.json" >/dev/null 2>&1 && echo ok || echo broken)" "ok"
+# Every required key is one round-return.sh actually reads. A schema that stops
+# requiring `schema_change_detected` silently un-arms the Step 3E schema gate.
+for _k in navigation schema_change_detected findings; do
+  eq "  schema requires $_k" \
+     "$(jq -r --arg k "$_k" '[.required[]] | index($k) != null' "$REPO_SRC/config/lens-schema.json")" "true"
+done
+
 # ---------------------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

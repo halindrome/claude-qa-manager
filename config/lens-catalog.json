@@ -1,0 +1,42 @@
+{
+  "$comment": "Per-lens focus text, keyed by the names lib/preflight.sh can emit in `lenses`. Lifted verbatim from the prose catalog that lived in agents/qa-manager.md, so that lib/run-panel.sh can compose a lens prompt without a model transcribing it. Data, not instructions: preflight decides WHICH lenses run and that selection is not second-guessed here. A name in `lenses` with no entry here is a hard error in the driver -- never an invented mandate, which is how a lens silently reviews nothing in particular. The `_core` flag is documentation; preflight owns the actual selection.",
+
+  "contract-security": {
+    "_core": true,
+    "focus": "OWNS the Contract Verification table. Verify every acceptance criterion in the contract file against the diff; weigh the NEW-vs-baseline SAST findings in the SAST report. Security posture of the change (auth, injection, secret/token handling)."
+  },
+
+  "regression-edges": {
+    "_core": true,
+    "focus": "Regressions, backward-compat, null/empty/huge inputs, mid-flight failures, concurrency, downstream callers of modified functions; guarantees the change silently drops."
+  },
+
+  "test-quality": {
+    "_core": true,
+    "focus": "Test-coverage gaps for the change AND an audit of the tests THEMSELVES: do they actually exercise the code, or pass vacuously? Drive the suite; where feasible, mutate the code under test and confirm the tests notice. A test that passes against broken code is a finding. (This is the role that, on this skill's own MR, caught a test suite where 7 of 8 deliberate breaks shipped green.)"
+  },
+
+  "schema-propagation": {
+    "_core": false,
+    "_when": "conditional; DB/schema changes",
+    "focus": "Schema-change propagation to the configured schema file(s) -- the file(s) a provisioner reads to create a new instance -- AND code-only schema dependencies (code reading/writing a column or table not present in the base file, even with no .sql change: the production-outage class in docs/CASE-STUDIES.md section schema-drift, and the ONLY mechanism that catches it, so this lens is selected by the `schema` tag whether or not a schema file changed). Evidence is in the schema-change report. Surface and judge propagation; do NOT judge rollout readiness (that is the human gate)."
+  },
+
+  "api-envelope": {
+    "_core": false,
+    "_when": "conditional; API services",
+    "focus": "The {reqStatus, errorMessage, data} response contract (check reqStatus before data), the no-NULL rule (use 0 / '' / {} / []), and timestamps in seconds not milliseconds. Flag any handler that breaks the envelope or a consumer that trusts data without reqStatus."
+  },
+
+  "ui-styling": {
+    "_core": false,
+    "_when": "conditional; webapp/mobile",
+    "focus": "Custom --ccs-* CSS variables only (never Ionic vars or hex literals), and no function calls in Angular templates (pre-compute in component properties). Flag Ionic-var/hex usage and template-bound method calls."
+  },
+
+  "performance": {
+    "_core": false,
+    "_when": "conditional; code services",
+    "focus": "Hot-path and complexity regressions in the changed code: O(n^2) scans in loops, allocation in loops, unbounded recursion, deep transitive loop nesting. When CMM is available, query its complexity metrics (transitive_loop_depth, linear_scan_in_loop, alloc_in_loop) for the touched functions rather than eyeballing."
+  }
+}

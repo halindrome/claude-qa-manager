@@ -1,0 +1,67 @@
+{
+  "$comment": "The lens return contract. Passed to `claude -p --json-schema` by lib/run-panel.sh, so the shape is FORCED rather than requested. Before this file the shape was prose in agents/qa-manager.md and a coin toss in practice: agents/qa-reviewer.md prescribes a markdown round-note, the spawn prompt asked for JSON, and whichever won varied by run. Measured on the Phase 1 parity replay -- the -p arm returned markdown and failed the only criterion it failed. Every required key below is one a consumer actually reads (lib/round-return.sh, lib/attribute-findings.sh); nothing is here speculatively. There is deliberately NO markdown blob: references/round-note.md renders from the MERGED findings, so per-lens prose would be output tokens nobody reads.",
+  "type": "object",
+  "required": ["navigation", "schema_change_detected", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "navigation": {
+      "$comment": "Read by lib/round-return.sh into the verdict's lens_navigation map. Self-reported, and known to be unreliable on its own -- a lens once reported cmm+ctx while making zero CMM calls -- so it is a claim to cross-check against lens-models-actual.json, not evidence.",
+      "type": "string",
+      "enum": ["cmm", "ctx", "cmm+ctx", "read-grep-fallback", "unknown"]
+    },
+    "schema_change_detected": {
+      "$comment": "Read by lib/round-return.sh; ORs across lenses and arms the Step 3E schema gate. Dropping it silently un-arms that gate, which is why it is required rather than optional-with-a-default.",
+      "type": "boolean"
+    },
+    "contract_verification": {
+      "$comment": "The contract-security lens OWNS this table; other lenses emit [].",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "verdict"],
+        "properties": {
+          "criterion": { "type": "string" },
+          "verdict": { "type": "string", "enum": ["pass", "fail", "partial", "not-verifiable"] },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "area_file", "line_low", "severity", "relevance", "status"],
+        "properties": {
+          "title": {
+            "$comment": "Carried into the round note and the observations ledger.",
+            "type": "string"
+          },
+          "area_file": {
+            "$comment": "Repo-relative. lib/attribute-findings.sh blames this path to decide qa_introduced; an absolute path or a bare basename defeats attribution silently.",
+            "type": "string"
+          },
+          "line_low": { "type": "integer" },
+          "line_high": { "type": "integer" },
+          "severity": { "type": "string", "enum": ["critical", "major", "minor"] },
+          "relevance": { "type": "string", "enum": ["contract", "regression", "observation"] },
+          "status": {
+            "$comment": "Only `confirmed` findings block. A hypothetical is reported, never acted on.",
+            "type": "string",
+            "enum": ["confirmed", "hypothetical"]
+          },
+          "category": { "type": "string" },
+          "what_tested": { "type": "string" },
+          "expected": { "type": "string" },
+          "actual_risk": { "type": "string" },
+          "description": { "type": "string" },
+          "evidence": {
+            "$comment": "The 4-axis prose agents/qa-reviewer.md already requires per finding. It lives in the finding rather than in a separate markdown blob so the note renderer gets it from the merged set.",
+            "type": "string"
+          },
+          "impact": { "type": "string" },
+          "schema_change": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}
