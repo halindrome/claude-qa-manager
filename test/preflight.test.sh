@@ -2549,6 +2549,186 @@ for _k in navigation schema_change_detected findings; do
      "$(jq -r --arg k "$_k" '[.required[]] | index($k) != null' "$REPO_SRC/config/lens-schema.json")" "true"
 done
 
+# ===========================================================================
+# lib/gate-approve.sh — the Step 3E preconditions, as a gate that FAILS CLOSED
+#
+# The property under test is not "does it approve a good round" but "does it
+# refuse everything it cannot see". Every case below that ends in `refuse` is one
+# the prose version could have waved through, because reading a rule is not the
+# same as evaluating it.
+# ===========================================================================
+echo "[gate-approve.sh — approval preconditions, failing closed]"
+
+GATE_SRC="$REPO_SRC/lib/gate-approve.sh"
+
+mkgate() {  # $1 = jq filter over the base preflight.json -> echoes root dir
+  local root; root=$(mktemp -d)
+  local S="$root/scratch" repo="$root/repo" bin="$root/bin" plug="$root/plugin"
+  mkdir -p "$S" "$repo" "$bin" "$plug"
+  cp "$GATE_SRC" "$plug/gate-approve.sh"
+  # The REAL forge seam, as everywhere else in this suite: stubbing it would test
+  # a copy of the logic. $PATH is what gets stubbed, one layer lower.
+  cp "$REPO_SRC/lib/forge.sh" "$REPO_SRC/lib/forge-gitlab.sh" "$REPO_SRC/lib/forge-github.sh" "$plug/"
+  git init -q -b main "$repo"
+  git -C "$repo" config user.email t@t.t; git -C "$repo" config user.name t
+  echo x > "$repo/a"; git -C "$repo" add a; git -C "$repo" commit -qm init
+  git -C "$repo" remote add origin 'git@host.invalid:grp/proj.git'
+  local head; head=$(git -C "$repo" rev-parse HEAD)
+  jq -n --arg t "$repo" --arg h "$head" '{
+      mr: 7, project: "grp/proj", remote: "origin", target_abs: $t,
+      mr_author: "devuser", expected_qa_user: "qa-bot",
+      qa_token_ok: true, approval_eligible: true,
+      schema: { detected: false },
+      qa_token_env: "GATE_TEST_TOKEN", qa_token_file: "/nonexistent"
+    }' | jq "${1:-.}" > "$S/preflight.json"
+  # glab stub, shaped like the ones the forge_head_ci block already uses: the
+  # GitLab backend reads `.head_pipeline` off `merge_requests/<n>`, NOT a
+  # /pipelines endpoint. A stub answering the wrong endpoint returns `none`, and
+  # `none` is a legitimate blocking answer — so the mistake looked exactly like a
+  # working gate refusing correctly, which is why it survived a whole run.
+  #
+  # The approvals endpoint also matches `merge_requests/<n>`, so it is matched
+  # FIRST; reversing these two silently feeds pipeline JSON to the approvers
+  # parser.
+  cat > "$bin/glab" <<STUB
+#!/usr/bin/env bash
+ST="\${GATE_CI_STATUS:-success}"
+SHA="\${GATE_CI_SHA:-$head}"
+case "\$*" in
+  *approvals*|*approval_state*)
+      printf '%s\n' "\${GATE_APPROVALS:-\$(jq -nc '{approved_by:[]}')}" ;;
+  *"merge_requests/7"*)
+      if [ "\$ST" = "none" ]; then jq -nc --arg s "\$SHA" '{sha:\$s}'
+      else jq -nc --arg t "\$ST" --arg s "\$SHA" '{head_pipeline:{status:\$t,sha:\$s},sha:\$s}'; fi ;;
+  *)  echo '{}' ;;
+esac
+STUB
+  chmod +x "$bin/glab"
+  echo "$root"
+}
+run_gate() { local root="$1"; shift
+  ( cd "$root/repo" && env PATH="$root/bin:$PATH" QA_FORGE=gitlab GATE_TEST_TOKEN=tok \
+      bash "$root/plugin/gate-approve.sh" "$root/scratch" "$@" 2>/dev/null ); }
+
+# --- the happy path, so the refusals below mean something --------------------
+g=$(mkgate)
+out=$(run_gate "$g" --round-blocking false); rc=$?
+eq "clean round, CI green on HEAD -> approve" "$(jq -r '.decision' <<<"$out")" "approve"
+eq "  ...and exit code agrees"                "$rc" "0"
+eq "  ...with zero blockers"                  "$(jq -r '.blockers' <<<"$out")" "0"
+rm -rf "$g"
+
+# --- a missing input is UNEVALUABLE, never "assume clean" ---------------------
+g=$(mkgate)
+out=$(run_gate "$g"); rc=$?
+eq "no --round-blocking -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+eq "  ...and it is unevaluable, not fail" \
+   "$(jq -r '.reasons[]|select(.check=="round-clean")|.state' <<<"$out")" "unevaluable"
+eq "  ...exit 1"                   "$rc" "1"
+rm -rf "$g"
+
+# --- each precondition refuses on its own ------------------------------------
+gate_case() {  # $1 label, $2 preflight jq mutation, $3 env prefix, $4 expected failing check
+  local g; g=$(mkgate "$2")
+  local out; out=$( cd "$g/repo" && env PATH="$g/bin:$PATH" QA_FORGE=gitlab GATE_TEST_TOKEN=tok $3 \
+      bash "$g/plugin/gate-approve.sh" "$g/scratch" --round-blocking false 2>/dev/null )
+  eq "$1 -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+  eq "  ...blamed on $4" \
+     "$(jq -r --arg c "$4" '[.reasons[]|select(.check==$c and .state!="pass")]|length' <<<"$out")" "1"
+  rm -rf "$g"
+}
+gate_case "no QA token"              '.qa_token_ok = false'       ''  qa-token
+gate_case "not approval-eligible"    '.approval_eligible = false' ''  approval-eligible
+# Blocking findings take --round-blocking true, so it needs its own call rather
+# than gate_case's fixed `--round-blocking false`.
+g=$(mkgate)
+out=$(run_gate "$g" --round-blocking true)
+eq "blocking findings -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+eq "  ...blamed on round-clean" \
+   "$(jq -r '[.reasons[]|select(.check=="round-clean" and .state=="fail")]|length' <<<"$out")" "1"
+rm -rf "$g"
+# CI: every non-success answer blocks, and they are DIFFERENT answers. Reporting an
+# unrun pipeline as a failure sends someone hunting a defect that does not exist.
+gate_case "CI still running"         '.' 'GATE_CI_STATUS=running'     ci
+gate_case "CI failed"                '.' 'GATE_CI_STATUS=failed'      ci
+gate_case "no CI at all"             '.' 'GATE_CI_STATUS=none'        ci
+# `canceled` is deliberately NOT `failed`: there is no verdict to act on, so the
+# operator is told to re-run rather than sent hunting a defect.
+gate_case "pipeline cancelled"       '.' 'GATE_CI_STATUS=canceled'    ci
+
+# The sha mismatch is its own case: CI PASSED, but on different code. That is
+# worse than no answer, and a gate that only checks `status == success` waves it
+# through — which is precisely the round that was approved while the pipeline for
+# its own fix commit was still running.
+g=$(mkgate)
+out=$( cd "$g/repo" && env PATH="$g/bin:$PATH" QA_FORGE=gitlab GATE_TEST_TOKEN=tok \
+   GATE_CI_SHA=0000000000000000000000000000000000000000 \
+   bash "$g/plugin/gate-approve.sh" "$g/scratch" --round-blocking false 2>/dev/null )
+eq "CI green on the WRONG sha -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+eq "  ...matches_head is false"          "$(jq -r '.ci.matches_head' <<<"$out")" "false"
+rm -rf "$g"
+
+# --- schema MRs need a human who is NEITHER the author NOR the QA agent -------
+# Without that exclusion, "a human approved" is satisfied by the two identities
+# the gate exists to rule out.
+g=$(mkgate '.schema.detected = true')
+out=$(run_gate "$g" --round-blocking false --schema-ack true)
+eq "schema MR, no third-party approver -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+rm -rf "$g"
+
+g=$(mkgate '.schema.detected = true')
+out=$( cd "$g/repo" && env PATH="$g/bin:$PATH" QA_FORGE=gitlab GATE_TEST_TOKEN=tok \
+   GATE_APPROVALS='{"approved_by":[{"user":{"username":"devuser"}},{"user":{"username":"qa-bot"}}]}' \
+   bash "$g/plugin/gate-approve.sh" "$g/scratch" --round-blocking false --schema-ack true 2>/dev/null )
+eq "schema MR approved only by author+QA agent -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+eq "  ...blamed on the human-approval check" \
+   "$(jq -r '[.reasons[]|select(.check=="schema-human-approval" and .state=="fail")]|length' <<<"$out")" "1"
+rm -rf "$g"
+
+g=$(mkgate '.schema.detected = true')
+out=$( cd "$g/repo" && env PATH="$g/bin:$PATH" QA_FORGE=gitlab GATE_TEST_TOKEN=tok \
+   GATE_APPROVALS='{"approved_by":[{"user":{"username":"a-real-human"}}]}' \
+   bash "$g/plugin/gate-approve.sh" "$g/scratch" --round-blocking false --schema-ack true 2>/dev/null )
+eq "schema MR with a third-party approver -> approve" "$(jq -r '.decision' <<<"$out")" "approve"
+rm -rf "$g"
+
+# An unacknowledged rollout checklist blocks even with a human approval present.
+g=$(mkgate '.schema.detected = true')
+out=$( cd "$g/repo" && env PATH="$g/bin:$PATH" QA_FORGE=gitlab GATE_TEST_TOKEN=tok \
+   GATE_APPROVALS='{"approved_by":[{"user":{"username":"a-real-human"}}]}' \
+   bash "$g/plugin/gate-approve.sh" "$g/scratch" --round-blocking false 2>/dev/null )
+eq "schema MR without --schema-ack -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+rm -rf "$g"
+
+# --- the deferred-findings exit rests on the NOTE, not on absence of findings --
+g=$(mkgate)
+out=$(run_gate "$g" --round-blocking true --deferred-exit true)
+eq "deferred exit with no note URL -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+out=$(run_gate "$g" --round-blocking true --deferred-exit true --deferred-note-url "https://x.invalid/n/1")
+eq "deferred exit WITH the enumerating note -> approve" "$(jq -r '.decision' <<<"$out")" "approve"
+rm -rf "$g"
+
+# --- fails closed when it cannot see at all ----------------------------------
+# No forge CLI on PATH: the probe cannot run, so CI and approvers are unknown.
+# "I could not ask" must never read as "the answer was yes".
+# The gate still needs jq and git to run AT ALL, so remove only `glab` rather than
+# emptying $PATH — an empty $PATH tests "the script cannot start", which is a
+# different and much weaker claim.
+g=$(mkgate)
+rm -f "$g/bin/glab"
+out=$( cd "$g/repo" && env PATH="$g/bin:$PATH" QA_FORGE=gitlab GATE_TEST_TOKEN=tok \
+   bash "$g/plugin/gate-approve.sh" "$g/scratch" --round-blocking false 2>/dev/null )
+eq "no forge CLI reachable -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+eq "  ...and says unevaluable, not failed" \
+   "$(jq -r '[.reasons[]|select(.state=="unevaluable")]|length >= 1' <<<"$out")" "true"
+rm -rf "$g"
+
+# --- usage errors are exit 2, distinct from a refusal -------------------------
+eq "no scratch dir -> exit 2" \
+   "$(bash "$GATE_SRC" 2>/dev/null; echo $?)" "2"
+eq "scratch dir without preflight.json -> exit 2" \
+   "$(bash "$GATE_SRC" "$(mktemp -d)" 2>/dev/null; echo $?)" "2"
+
 # ---------------------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
