@@ -171,9 +171,17 @@ lose code navigation is backwards: `-p` is the arm that used it.
 
 Two separate defects surfaced underneath that, both worth fixing regardless of
 architecture:
-- the injected mandate names **bare** tool names (`search_graph`), which `ToolSearch`
+- ~~the injected mandate names **bare** tool names (`search_graph`), which `ToolSearch`
   cannot resolve — every lens burns a round-trip discovering it needs
-  `mcp__codebase-memory-mcp__search_graph`. Fix the mandate to emit qualified names.
+  `mcp__codebase-memory-mcp__search_graph`.~~ **FIXED 2026-09-04.** The bootstrap line now
+  builds its `select:` list from the regime preflight actually detected. Fixing it turned
+  up a second, unreported defect in the same line: the example listed the five **CMM** tool
+  names *unconditionally*, so a ctx-only session was told to load five tools it did not
+  have and none of the ones it did.
+  The ctx prefix is **not knowable from the probe** — a plugin install is
+  `mcp__plugin_context-mode_context-mode__`, a direct server registration is
+  `mcp__context-mode__` — so both are emitted. An unmatched name in a `select:` list costs
+  nothing; a missing one costs the round-trip the fix exists to remove.
 - after loading them, the lenses used them anyway not at all. A lens reporting
   `navigation: cmm+ctx` while making zero CMM calls is a self-report contradicted by its
   own tool log — the same class as every other failure in the section above.
@@ -186,9 +194,12 @@ from the project's own `PreToolUse` enforcer — hooks apply to `-p` sessions, s
 enforcement layer is not lost by moving off `Agent`.
 
 **3. Cost — startup is modest; parity on real work is NOT yet proven.** The probe cost
-$0.25, 4 turns, ~107k cache-read + 56k cache-creation. Read that as session-init overhead:
-×6 lenses ≈ 640k cache-read, against the Agent arm's **8.4M cache-read for three lenses**.
-Startup is not the expensive part. But the probe did trivial work where a real lens runs
+$0.25 over 4 turns. **Startup is turn-1 `cache_creation + cache_read`: `-p` ~50k against an
+Agent lens's ~64k.** (An earlier version of this paragraph read "~107k cache-read startup".
+That was wrong twice — the figure was the *cumulative* re-read across all four turns, not
+turn 1, and it was compared against nothing. Corrected 2026-09-04.) So `-p` starts
+*cheaper*, and either way startup is ~2% of the round: the Agent arm burned **8.4M
+cache-read for three lenses** doing the actual work. But the probe did trivial work where a real lens runs
 15–21 tool calls over a full diff, so this is *not* apples to apples and review-quality
 parity remains untested. That is the one open risk.
 
@@ -197,6 +208,17 @@ parity remains untested. That is the one open risk.
 `total_cost_usd`, `num_turns`, `duration_ms`, and **`modelUsage` naming the model actually
 used** — which answers the model-recording problem in the entry below directly, with no
 hook required.
+
+**Correction to the plan's Phase 2: `config/lens-mcp.json` cannot be a shipped static
+file.** `--mcp-config` takes server *launch commands*, and those are machine-local — on this
+machine CMM is `{"codebase-memory-mcp":{"command":"~/.local/bin/codebase-memory-mcp"}}`  <!-- scrub-ok: local install path -->
+in `~/.config/claude-code/.mcp.json`, and context-mode is a plugin with no entry there at
+all. A file shipped in `config/` would name a path that exists on one machine. Preflight
+must **generate** the lens MCP config into `$QA_SCRATCH` from the operator's own
+registration, keeping only the two servers. That preserves the property the plan wanted —
+the lens tool surface is a property of the plugin, not of the operator's connector list —
+without hardcoding anyone's filesystem. Deferred until the driver exists; nothing reads the
+file before then.
 
 **Consequence.** A driver script invoking lenses via `claude -p` makes most of the proposed
 enforcement unnecessary rather than built: the model becomes an argument, output filenames

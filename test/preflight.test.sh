@@ -379,6 +379,11 @@ tm=$(jq -r '.tooling.mandate_path' <<<"$out")
 eq "  lens mandate bans scanning /"     "$(grep -q 'Never scan outside the repository' "$tm" && echo yes || echo no)" "yes"
 eq "  and rejects -maxdepth as the fix" "$(grep -q 'or without \`-maxdepth\`' "$tm" && echo yes || echo no)" "yes"
 eq "  and gives the resolver instead"   "$(grep -q 'require.resolve' "$tm" && echo yes || echo no)" "yes"
+# The ToolSearch bootstrap line listed the five CMM tool names unconditionally, so a
+# ctx-only session was told to load five tools it does not have and none of the ones
+# it does. The list has to follow the regime that was actually detected.
+eq "  ctx-only bootstrap loads ctx"     "$(grep -c 'select:[^\"]*ctx_execute' "$tm")" "1"
+eq "  and does not name graph tools"    "$(grep -c 'select:[^\"]*search_graph' "$tm")" "0"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------
@@ -1034,6 +1039,13 @@ eq "manager path renders a mandate"        "$( [ -s "$m" ] && echo yes || echo n
 eq "  (and it really is the manager path)" "$MANDATE_MODE" "manager"
 eq "  asserts availability"                "$(grep -c 'ARE available' "$m")" "1"
 eq "  orders the ToolSearch bootstrap"     "$(grep -c 'Load them FIRST' "$m")" "1"
+# ...and the bootstrap has to name tools ToolSearch can actually resolve. It listed
+# BARE names (`select:search_graph`), which do not resolve, so every lens burned a
+# round-trip rediscovering `mcp__codebase-memory-mcp__search_graph`. Scoped to the
+# select: line on purpose — the descriptive bullets above it stay bare, and asserting
+# "no bare name anywhere" would fail on those.
+eq "  and qualifies the CMM tool names"    "$(grep -c 'select:mcp__codebase-memory-mcp__search_graph' "$m")" "1"
+eq "  and no bare name survives there"     "$(grep -c 'select:search_graph' "$m")" "0"
 eq "  requires the disclosure line"        "$(grep -c 'Navigation: <cmm' "$m")" "1"
 # The last mile: resolving the CMM schema is not enough — the graph tools take a
 # `project`, and a lens that cannot name it abandons them. Every lens on one round

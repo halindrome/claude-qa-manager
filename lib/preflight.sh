@@ -1480,11 +1480,37 @@ if [ "$CMM_AVAILABLE" = "true" ] || [ "$CTX_AVAILABLE" = "true" ]; then
     # files. Observed: three of six lenses on one round lost CMM this way while
     # the other three, which happened to fetch first, kept it. The mandate named
     # the tools but never said how to obtain them.
+    # `select:` matches FULLY-QUALIFIED tool names. The example named bare ones
+    # (`select:search_graph`), which resolve to nothing, so every lens burned a
+    # round-trip rediscovering `mcp__codebase-memory-mcp__search_graph` — and a
+    # ctx-only session was handed five CMM names it did not have and none of the
+    # ctx ones it did. Build the list from the regime actually detected.
+    #
+    # The ctx prefix is install-mode dependent and NOT knowable from the probe:
+    # a plugin install is `mcp__plugin_context-mode_context-mode__`, a direct
+    # server registration is `mcp__context-mode__`. Emit both; an unmatched name
+    # in a `select:` list costs nothing, a missing one costs the round-trip this
+    # fix exists to remove.
+    MANDATE_SELECT=""
+    if [ "$CMM_AVAILABLE" = "true" ]; then
+      for _mtool in search_graph get_code_snippet trace_path get_architecture search_code; do
+        MANDATE_SELECT="${MANDATE_SELECT:+$MANDATE_SELECT,}mcp__codebase-memory-mcp__$_mtool"
+      done
+    fi
+    if [ "$CTX_AVAILABLE" = "true" ]; then
+      for _mpfx in mcp__plugin_context-mode_context-mode__ mcp__context-mode__; do
+        for _mtool in ctx_execute ctx_batch_execute ctx_search; do
+          MANDATE_SELECT="${MANDATE_SELECT:+$MANDATE_SELECT,}${_mpfx}${_mtool}"
+        done
+      done
+    fi
     echo "**These tools are DEFERRED** — not yet in your schema, so calling one"
     echo "directly fails with \"no such tool\". That is NOT evidence the tool is"
-    echo "unavailable. Load them FIRST with a single ToolSearch call, e.g."
-    echo "\`ToolSearch(query=\"select:search_graph,get_code_snippet,trace_path,get_architecture,search_code\")\`,"
+    echo "unavailable. Load them FIRST with a single ToolSearch call:"
+    echo "\`ToolSearch(query=\"select:${MANDATE_SELECT}\")\`"
     echo "and only then use them. Batch every tool you expect to need into ONE call."
+    echo "Those are the fully-qualified names \`select:\` matches; a bare name"
+    echo "(\`search_graph\`) resolves to nothing and costs you a wasted round-trip."
     echo
     echo "**If they do not load, that is a LENS FAILURE, not a fallback.** Preflight"
     echo "verified these are registered before this round started, and the environment"
