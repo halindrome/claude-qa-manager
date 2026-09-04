@@ -578,6 +578,84 @@ eq "no fanout stamp -> no row"   "$(cat "$thome"/.config/claude-qa-manager/timin
 rm -rf "$tdir" "$thome"
 
 # ---------------------------------------------------------------------------
+echo "[round-return — the verdict is COMPUTED, not composed]"
+# The manager named its merged-findings file seven different ways across 21 real
+# rounds and the spec named it nowhere, so a helper that read a file by name would
+# find it a third of the time. Findings come in on stdin; this script owns the name.
+RR="$REPO_SRC/lib/round-return.sh"
+rrd=$(mktemp -d); rr="$rrd/qa-cycle-rr-42"; mkdir -p "$rr"
+rrepo=$(mktemp -d); git init -q "$rrepo"
+git -C "$rrepo" config user.email t@t.t; git -C "$rrepo" config user.name t
+printf 'a\nb\nc\n' > "$rrepo/prod.ts"; printf 'x\n' > "$rrepo/prod.spec.ts"
+git -C "$rrepo" add -A; git -C "$rrepo" commit -qm author
+printf 'a\nQAFIX\nb\nc\n' > "$rrepo/prod.ts"; git -C "$rrepo" add -A; git -C "$rrepo" commit -qm "qa round 1"
+RRFIX=$(git -C "$rrepo" rev-parse HEAD)
+jq -n --arg ta "$rrepo" --arg sha "$RRFIX" \
+  '{round:2, target_abs:$ta, qa_fix_commits:[$sha], test_path_pattern:"",
+    lenses:["contract-security","regression-edges","test-quality"], schema:{detected:false}}' \
+  > "$rr/preflight.json"
+printf '42|api|2|merging|3|3|1700000000|%s|1200\n' "$rrepo" > "$rr/status"
+printf '{"lens":"contract-security","navigation":"cmm+ctx","schema_change_detected":false}\n' > "$rr/lens-contract-security.json"
+printf '{"lens":"regression-edges","navigation":"ctx","schema_change_detected":true}\n'      > "$rr/lens-regression-edges.json"
+# test-quality never landed -> must appear in failed_lenses, derived not remembered
+printf 'snap\n' > "$rr/tree-before.txt"; printf 'snap\n' > "$rr/tree-after.txt"
+: > "$rr/note-round1.md"; : > "$rr/note-round2.md"
+# A round-2 finding ON the round-1 fix line (blocking), one on author code, one
+# observation, one minor in a spec file.
+RRF='[{"title":"on qa line","area_file":"prod.ts","line_low":2,"severity":"major","relevance":"regression"},
+      {"title":"author line","area_file":"prod.ts","line_low":1,"severity":"major","relevance":"regression"},
+      {"title":"an observation","area_file":"prod.ts","line_low":3,"severity":"minor","relevance":"observation"},
+      {"title":"spec nit","area_file":"prod.spec.ts","line_low":1,"severity":"minor","relevance":"regression"}]'
+rrout=$(printf '%s' "$RRF" | bash "$RR" "$rr" --summary "two majors" --contract-all-pass true 2>/dev/null)
+eq "counts are derived"            "$(jq -c '.counts' <<<"$rrout")" '{"critical":0,"major":2,"minor":2}'
+eq "  round_has_critical_or_major" "$(jq -r '.round_has_critical_or_major' <<<"$rrout")" "true"
+# The field that exceeded its own denominator in 62 of 262 measured rounds. Here
+# TWO findings sit on the fix commit, but only ONE of them is blocking.
+eq "qa_introduced_blocking is blocking-only" "$(jq -r '.qa_introduced_blocking' <<<"$rrout")" "1"
+eq "  qa_introduced_total counts all"        "$(jq -r '.qa_introduced_total'    <<<"$rrout")" "1"
+eq "observations are filtered on relevance"  "$(jq -r '.observations_count'     <<<"$rrout")" "1"
+eq "  and carry their location"              "$(jq -r '.observations[0].area_file' <<<"$rrout")" "prod.ts"
+# Derived from what LANDED, so a lens that died cannot be omitted by forgetting it.
+eq "failed_lenses derived from disk"  "$(jq -c '.failed_lenses' <<<"$rrout")" '["test-quality"]'
+eq "lens_navigation derived per lens" "$(jq -r '.lens_navigation."regression-edges"' <<<"$rrout")" "ctx"
+eq "schema_change_detected ORs lenses" "$(jq -r '.schema_change_detected' <<<"$rrout")" "true"
+eq "tree_mutated from the snapshots"   "$(jq -r '.tree_mutated' <<<"$rrout")" "false"
+# THIS round's note, by number -- the scratch dir keeps every round's, and an
+# earlier one gets touched whenever a trailer is appended at Step 3C.
+eq "note_path is this round's note"    "$(basename "$(jq -r '.note_path' <<<"$rrout")")" "note-round2.md"
+# Model-authored fields pass through untouched.
+eq "blocking_summary passes through"   "$(jq -r '.blocking_summary' <<<"$rrout")" "two majors"
+eq "contract_all_pass passes through"  "$(jq -r '.contract_all_pass' <<<"$rrout")" "true"
+# Side effects, so they cannot be the step that is skipped.
+eq "attribution written back to disk"  "$(jq '[.[]|select(has("qa_introduced"))]|length' "$rr/merged-findings.json")" "4"
+eq "  in_test_file stamped too"        "$(jq '[.[]|select(.in_test_file==true)]|length'  "$rr/merged-findings.json")" "1"
+eq "  canonical filename is owned"     "$( [ -f "$rr/merged-findings.json" ] && echo yes || echo no )" "yes"
+eq "  status advanced to done"         "$(cut -d'|' -f4 "$rr/status")" "done"
+eq "  and preserved its other fields"  "$(cut -d'|' -f1,2,3,7,9 "$rr/status")" "42|api|2|1700000000|1200"
+# diminishing_returns is COMPUTED: 1 of 2 blocking is below max(2, ceil(2/2)).
+eq "dim-returns not raised below threshold" \
+   "$(jq -c '[.decisions_needed[]|select(.kind=="diminishing_returns")]|length' <<<"$rrout")" "0"
+# Two self-inflicted blocking findings out of two -> raised, without being asked.
+RRF2='[{"title":"qa1","area_file":"prod.ts","line_low":2,"severity":"major","relevance":"regression"},
+       {"title":"qa2","area_file":"prod.ts","line_low":2,"severity":"critical","relevance":"regression"}]'
+rrout2=$(printf '%s' "$RRF2" | bash "$RR" "$rr" --summary s 2>/dev/null)
+eq "dim-returns raised at/above threshold" \
+   "$(jq -r '[.decisions_needed[]|select(.kind=="diminishing_returns")]|length' <<<"$rrout2")" "1"
+eq "  and carries the arithmetic"  "$(jq -r '.decisions_needed[0].self_referential' <<<"$rrout2")" "2"
+eq "  against the blocking total"  "$(jq -r '.decisions_needed[0].blocking_total'   <<<"$rrout2")" "2"
+# A model-supplied one is not duplicated.
+rrout3=$(printf '%s' "$RRF2" | bash "$RR" "$rr" --summary s \
+          --decisions '[{"kind":"diminishing_returns","reason":"mine"}]' 2>/dev/null)
+eq "  a supplied dim-returns is not doubled" \
+   "$(jq -r '[.decisions_needed[]|select(.kind=="diminishing_returns")]|length' <<<"$rrout3")" "1"
+# Refusals: a bad decisions payload must not produce a half-valid verdict.
+printf '%s' "$RRF" | bash "$RR" "$rr" --decisions 'not-json' >/dev/null 2>&1
+eq "non-array --decisions -> exit 2" "$?" "2"
+printf 'not-an-array' | bash "$RR" "$rr" >/dev/null 2>&1
+eq "non-array stdin -> exit 2"       "$?" "2"
+rm -rf "$rrd" "$rrepo"
+
+# ---------------------------------------------------------------------------
 echo "[lens-landed — progress that cannot be forgotten or drift from disk]"
 # The manager used to do two hand-written Bash writes per lens return: save the
 # findings, then rewrite the status line copying six fields through and

@@ -275,15 +275,12 @@ artifact that looks like a fresh one is worse than no artifact. The fan-out stam
 is the start of the round's longest silence; without it that gap cannot be
 measured afterwards.
 
-**When the round is finished** (after the note is rendered/posted, phase `done`):
-
-```bash
-bash "${CLAUDE_PLUGIN_ROOT}/lib/record-timing.sh" "$qa_scratch"
-```
-
-That appends this round's observed timing to a per-project history so a future
-stall threshold can be derived from what YOUR project actually does instead of a
-constant someone guessed. It only observes; nothing reads it yet.
+**When the round is finished**, you do nothing here. `round-return.sh` sets phase
+`done` and calls `record-timing.sh` as a side effect of producing your return value
+(see **Output** below), so the round's timing is appended to the per-project history
+whether or not you remember it. That history is what lets a future stall threshold be
+derived from what YOUR project actually does instead of a constant someone guessed.
+It only observes; nothing reads it yet.
 
 Set `phase` to `lenses` while the panel runs, then `merging`, `rendering`,
 `posting`, and finally `done`. **Rewrite it at every transition**, even when
@@ -347,25 +344,21 @@ whether it sits in test scaffolding rather than in code a customer executes. Ste
 routes minor self-inflicted findings by it. Carry it through into the findings you
 hand back; do not recompute or second-guess it.
 
-#### Counting them — the two numbers, defined
+#### The two numbers, defined
 
-Compute both from the attributed findings and report both:
+`round-return.sh` computes both — do not count them yourself. What they mean:
 
 | field | counts findings where |
 |---|---|
-| `qa_introduced_blocking` | `qa_introduced == true` **AND** `severity` is `critical` or `major` |
+| `qa_introduced_blocking` | `qa_introduced == true` **AND** `critical`/`major` |
 | `qa_introduced_total` | `qa_introduced == true`, at **any** severity |
 
-`qa_introduced_blocking` is **blocking-only** — that is what its name says and what
-every consumer wants: SKILL.md's `>= 2` surface rule, the ⚠ note line that reads
-"K of M **blocking** findings", and the `diminishing_returns` rule below all compare
-it against the blocking total. Reporting an all-severity count there makes it exceed
-`counts.critical + counts.major`, which is how it read in 62 of 262 measured rounds —
-including rounds with **zero** blocking findings and a `qa_introduced_blocking` of 2
-to 5. A number that can exceed its own denominator cannot gate anything.
-
-`qa_introduced_total` is the all-severity count. The observations ledger and the
-minor-routing rule want it; keep them separate rather than overloading one field.
+Blocking-only is what every consumer wants: SKILL.md's `>= 2` rule, the ⚠ note line
+reading "K of M **blocking** findings", and `diminishing_returns` all compare it
+against the blocking total. An all-severity count there exceeds
+`counts.critical + counts.major` — how it read in 62 of 262 measured rounds — and a
+number that can exceed its own denominator cannot gate anything. That is why it is
+computed now rather than counted.
 
 ### 4. Render the round note
 
@@ -485,7 +478,41 @@ handle it.
 Capture the resulting note URL. If `post_note=false` or `qa_token_ok=false`, skip
 posting; the caller will post from `$qa_scratch/note-round<round>.md`.
 
-## Output — return ONLY this compact JSON (nothing else)
+## Output — produce it with `round-return.sh`, do not compose it by hand
+
+Pipe your merged findings in. Its stdout **is** your final message:
+
+```bash
+printf '%s' "<merged findings JSON array>" \
+  | bash "${CLAUDE_PLUGIN_ROOT}/lib/round-return.sh" "$qa_scratch" \
+      --summary "<=2 sentences, or 'none'" \
+      --contract-all-pass <true|false> \
+      --decisions '<the decisions_needed array you assembled>' \
+      --posted <true|false> [--note-url "<url>"]
+```
+
+Everything else in the schema below is **computed from the round's own artifacts** —
+counts, `round_has_critical_or_major`, both `qa_introduced_*` fields, `observations`,
+`failed_lenses` (what preflight asked for minus what landed), `lens_navigation`,
+`schema_change_detected`, `tree_mutated`, `note_path`. Do not pass them and do not
+count them yourself: a number you count is a number that drifts, and
+`qa_introduced_blocking` exceeded its own denominator in 62 of 262 measured rounds.
+
+It also **re-runs attribution and writes the result back** to
+`$qa_scratch/merged-findings.json`, so the numbers you return and the file on disk
+cannot disagree. Re-running blame is idempotent and costs milliseconds; on the round
+that motivated this, attribution had been run, used in the note, and never persisted,
+so nothing downstream could see which findings were self-inflicted.
+
+The end-of-round bookkeeping — `phase=done`, `record-timing.sh` — happens as a **side
+effect of returning**, so it is not a step that can be skipped.
+
+Only three inputs need a mind: the prose summary, the human-decision list, and
+`contract_all_pass`. `diminishing_returns` is computed and merged into your decisions
+automatically at `qa_introduced_blocking >= max(2, ceil(blocking_total / 2))`; supply
+your own only if a lens volunteered it, and it will not be duplicated.
+
+For reference, the shape it emits:
 
 ```json
 {
@@ -570,5 +597,7 @@ Rules for `decisions_needed`:
   drop a needed human decision.
 
 Do NOT modify code, commit, approve, or apply fixes. Your final message MUST be
-the JSON object above and nothing else — it is the return value the main loop
-parses, not a human-facing report.
+`round-return.sh`'s stdout verbatim and nothing else — it is the return value the
+main loop parses, not a human-facing report. Do not reformat it, do not add fields,
+and do not wrap it in prose: the whole point of computing it is that what you return
+and what is on disk cannot disagree.
