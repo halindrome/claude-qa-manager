@@ -128,7 +128,20 @@ JSON
   # that block fails and these stubs must be updated.
   cat > "$plugin/lib/fetch-sast-gitlab.sh" <<'SH'
 #!/usr/bin/env bash
-out=""; while [ $# -gt 0 ]; do [ "$1" = "--output" ] && out="$2"; shift; done
+out=""; tp=""
+while [ $# -gt 0 ]; do
+  [ "$1" = "--output" ] && out="$2"
+  [ "$1" = "--target-path" ] && tp="$2"
+  shift
+done
+# Record what the helper was HANDED, and whether it could actually see it.
+[ -n "${SAST_TP_LOG:-}" ] && printf '%s\n%s\n' "$tp" "$( [ -d "$tp" ] && echo resolvable || echo UNRESOLVABLE )" > "$SAST_TP_LOG"
+# Mirror the real helper's FIRST ACT: `[ -d "$TARGET_PATH" ] || exit 3`
+# (fetch-sast-gitlab.sh:74-77). Without this the stub happily scans a path it
+# cannot see, and the "gate is not helper-failed" assertion passes even with the
+# bug reinstated — a stub that is more forgiving than the real thing turns its
+# own test vacuous. Caught by the red-first run: only 2 of 4 assertions went red.
+[ -n "$tp" ] && [ ! -d "$tp" ] && { echo "stub: target path not found: $tp" >&2; exit 3; }
 [ -n "${SAST_STUB_EXIT:-}" ] && [ "$SAST_STUB_EXIT" != "0" ] && { echo "stub helper failure" >&2; exit "$SAST_STUB_EXIT"; }
 printf '%s\n' "${SAST_STUB_BODY:-## NEW SAST findings}" > "$out"
 exit 0
@@ -2722,6 +2735,47 @@ eq "no forge CLI reachable -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
 eq "  ...and says unevaluable, not failed" \
    "$(jq -r '[.reasons[]|select(.state=="unevaluable")]|length >= 1' <<<"$out")" "true"
 rm -rf "$g"
+
+# ===========================================================================
+# The SAST helper gets an ABSOLUTE target path
+#
+# Reported from a live cycle: on every mobile MR the SAST step came back
+# `skipped:helper-failed`. Preflight passed the target's RELATIVE path
+# (`apps/mobile`) and the helper resolves it against its own cwd — which is
+# wherever the operator invoked /qa-cycle, since preflight never cd's globally
+# (every git call is `(cd "$TARGET_ABS" && …)` in a subshell). Start a session
+# inside the submodule you are working on and the helper looks for
+# `<submodule>/apps/mobile`, fails its `[ -d ]` check, and the round loses its
+# SAST delta entirely.
+#
+# This fixture reproduces the MECHANISM (cwd is not the repo root) with a plain
+# subdirectory rather than a real submodule. That is the whole of the bug —
+# REPO_ROOT is already superproject-aware via --show-superproject-working-tree —
+# but it does mean this case would not catch a future submodule-specific defect.
+# ===========================================================================
+echo "[SAST helper receives a path it can actually resolve]"
+r=$(mkfixture "feature/x" "main" \
+    '.targets.sub = {"path":"apps/thing","base_branch":"main","remote":"origin","scope":"sub","security_stage":true}')
+mkdir -p "$r/repo/apps/thing"
+echo x > "$r/repo/apps/thing/f.txt"
+git -C "$r/repo" add -A >/dev/null 2>&1; git -C "$r/repo" commit -qm subdir >/dev/null 2>&1
+tplog="$r/target-path.log"
+# cwd = the subdirectory, i.e. the "already inside the submodule" case.
+out=$( cd "$r/repo/apps/thing" && env -u CLAUDE_PLUGIN_ROOT -u CLAUDE_PROJECT_DIR \
+        HOME="$r/home" CLAUDE_CONFIG_DIR="$r/home/.config/claude-code" \
+        PATH="$r/bin:$PATH" SAST_TP_LOG="$tplog" \
+        bash "$r/plugin/lib/preflight.sh" 73 sub 2>/dev/null )
+eq "invoked from a subdirectory, the helper's path resolves" \
+   "$(sed -n 2p "$tplog" 2>/dev/null)" "resolvable"
+eq "  ...because it is absolute" \
+   "$(case "$(sed -n 1p "$tplog" 2>/dev/null)" in /*) echo absolute ;; *) echo RELATIVE ;; esac)" "absolute"
+# basename alone was too weak to fail: `apps/thing` and the correct absolute path
+# share it. Assert the whole path against the real directory.
+eq "  ...and it is exactly the target dir, not a doubled path" \
+   "$(sed -n 1p "$tplog" 2>/dev/null)" "$(cd "$r/repo/apps/thing" && pwd -P)"
+eq "  ...so the gate is not helper-failed" \
+   "$(jq -r '.sast.gate_state' <<<"$out")" "clean"
+rm -rf "$r"
 
 # --- the spine must REACH the gate, and must not restate its conditions -------
 # A gate nothing calls is prose, which is the failure mode that produced

@@ -929,9 +929,24 @@ else
   # alerts off an API — genuinely different mechanisms, sharing only the output
   # contract (the headings this block classifies below).
   SAST_HELPER="$PLUGIN_ROOT/lib/fetch-sast-${FORGE}.sh"
+  # $TARGET_ABS, not $TARGET_PATH. The helper uses this purely as a FILESYSTEM
+  # path -- `[ -d ]`, then `<path>/osv-scanner-baseline.json` and
+  # `<path>/.trivyignore` -- and it resolves a relative one against ITS OWN cwd,
+  # which is whatever directory the operator invoked /qa-cycle from. Preflight
+  # itself never cd's (every git call is `(cd "$TARGET_ABS" && …)` in a
+  # subshell), so the two only agree when the session happens to start at the
+  # repo root. Start it inside a submodule -- the natural place to be when
+  # working on that submodule -- and `apps/mobile` resolves to
+  # `<submodule>/apps/mobile`, the helper exits on "target path not found", and
+  # the round reports `skipped:helper-failed` with no SAST delta. Reported from a
+  # live cycle where it recurred on every mobile MR.
+  #
+  # $TARGET_ABS is already correct for this: REPO_ROOT resolves via
+  # --show-superproject-working-tree before --show-toplevel, so it is the
+  # superproject root even when cwd is inside a submodule.
   if SAST_HELPER_ERR=$(bash "$SAST_HELPER" \
         --project "$FORGE_PROJECT" --mr "$MR_NUMBER" \
-        --target-path "$TARGET_PATH" --output "$SAST_REPORT" 2>&1 >/dev/null); then
+        --target-path "$TARGET_ABS" --output "$SAST_REPORT" 2>&1 >/dev/null); then
     # Classify POSITIVELY off the helper's own headings. Never default to
     # "clean": `clean` asserts a real SAST delta was computed against a finished
     # pipeline, and Step 3E writes that assertion into a permanent GitLab
