@@ -442,6 +442,59 @@ recorded is "exceeded 1200s". Distinguishing a wedge from slow-but-working needs
 `--output-format stream-json` captured to disk or a `--max-budget-usd` ceiling. Neither
 is built.
 
+### Four more driver rounds (2026-09-06/07) — the panel is fine; its self-reporting was not
+
+Read from the scratch dirs of every post-driver round. The **mechanism** is healthy:
+19 of 19 lenses landed across four rounds, no `failed-*.json`, every `err-*.txt`
+zero bytes, `permission_denials: 0` throughout (so the hook stack is not blocking
+lenses), and every envelope schema-shaped. Cost ran $13.95–$19.45 per round.
+
+Both defects found were in what the driver **says about itself**, and both reached
+an MR. Fixed in `462d537`.
+
+**The per-lens model was decided by a coin toss.** Every envelope carries two
+`modelUsage` keys — the reviewer and Claude Code's own helper traffic — and the
+primary was picked by `max_by(outputTokens)`. On a short lens that margin is noise:
+the same lens, same config, went `helper 4043 / reviewer 3873` one round and
+`helper 2368 / reviewer 2676` the next. The first of those published *"the
+ui-styling lens ran on `<the helper model>`"* to a live MR. Input is the real
+discriminator and is not close — the reviewer carries the cached round context
+(cacheRead 333k–2.6M in all 14 envelopes measured), the helper reads no cache at
+all — so ranking by total input picks the reviewer 14 of 14 by better than 10×.
+The suite was green throughout because its fixture gave the reviewer 40 input
+tokens, no cache fields, and the helper a 210-token output: every possible rule
+picked the reviewer, so the case could not fail. **A stub more forgiving than
+reality is a test that reports clean** — the second time that exact shape has been
+caught in this repo.
+
+Related, and worse: with the default config (`review_model=""`, `lens_models={}`)
+no `--model` is passed, so `model_mismatch` has nothing to compare and can never
+fire. The downgrade check was inert in the configuration everybody runs.
+`panel-models.json` now carries `model_check: not-requested | requested`.
+
+**The manager was writing `status` as prose, and three scripts laundered it.**
+Three consecutive rounds, two sessions, two different tools:
+`printf 'phase=lenses round=1 lenses=0/5\n' > .../status`. That is a faithful
+rendering of what `qa-manager.md` §1.5 asked for — "set phase to merging, then
+rendering, posting", "rewrite it at every transition", "use **Bash**" — which
+never said the file is nine pipe-delimited fields. Field 1 (mr) became prose,
+2–3 emptied, and by round end the counter and epoch start were zeroed, so the
+statusline rendered `QA !phase=lenses round=1 lenses=0/5  r` at the operator.
+
+It spread because `run-panel.sh`, `round-return.sh` and `lens-landed.sh` each
+carried their own copy of the nine-field `printf`, each **copying fields 1–3
+through from the file** — one bad write preserved by all three for the round.
+`lib/set-phase.sh` is now the only writer: closed phase vocabulary, fields
+rebuilt from `manager-brief.txt`, `done` counted from disk. A corrupted line now
+**heals at the next transition** instead of degrading.
+
+**Open, and the honest caveat:** the scripts heal the line, but nothing yet proves
+the *manager stops writing prose* — §1.5 is still an instruction, and this repo's
+whole thesis is that instructions fail. The first round whose manager reads the
+new §1.5 is the test; check its subagent transcript for `set-phase.sh` calls and
+zero `printf … > …/status`. Until then the claim is "scripts heal it", not
+"the manager stopped".
+
 ### Smaller, independent items
 
 - **Lens reviewers silently inherit a weak session model — invariant 6 has no

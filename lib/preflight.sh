@@ -1742,8 +1742,13 @@ LENSES_JSON=$(printf '%s\n' "${LENSES[@]}" | jq -R . | jq -s .)
 # ---------------------------------------------------------------------------
 # Round progress -> $QA_SCRATCH/status
 # ---------------------------------------------------------------------------
-# One line, pipe-delimited, rewritten by the manager as each lens returns:
-#   <mr>|<target>|<round>|<phase>|<lenses_done>|<lenses_total>|<epoch_start>|<target_abs>
+# One line, NINE pipe-delimited fields, rewritten by lib/set-phase.sh -- which is
+# the only writer, precisely so the shape survives:
+#   <mr>|<target>|<round>|<phase>|<lenses_done>|<lenses_total>|<epoch_start>|<target_abs>|<lens_stall_seconds>
+#
+# It used to say "rewritten by the manager", and the manager duly rewrote it as
+# `phase=lenses round=1 lenses=0/5` -- one field where nine belong. See the header
+# of set-phase.sh.
 #
 # target_abs is the LAST field and is what scopes a round to a project. The
 # scratch directory name is a hash and cannot be reversed, so without this a
@@ -1796,6 +1801,11 @@ printf '%s|%s|%s|preflight|0|%s|%s|%s|%s\n' \
 MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
 {
   printf 'target_abs=%s\n'             "$TARGET_ABS"
+  # The short name, alongside the path. set-phase.sh rebuilds the status line's
+  # identity fields from this brief rather than copying them through from a file
+  # a model can overwrite, and target is field 2 -- without it here the repair
+  # would have to fall back to the value it exists to distrust.
+  printf 'target=%s\n'                 "$TARGET"
   printf 'mr=%s\n'                     "$MR_NUMBER"
   printf 'round=%s\n'                  "$ROUND"
   printf 'feature_branch=%s\n'         "$SOURCE_BRANCH"

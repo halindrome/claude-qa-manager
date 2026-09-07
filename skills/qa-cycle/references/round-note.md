@@ -84,7 +84,16 @@ QA-Fix-Commit: <full SHA of any further fix commit this round>
 
 ---
 <if QA_TOKEN_OK=true:>
-*QA performed by <qa_auth_user from preflight.json when qa_token_ok, else the dev identity that posted> via Claude Code (<the model the LENSES actually ran as. On the driver path this is recorded, not remembered: `jq -r '[.[].model] | unique | join(", ")' "$QA_SCRATCH/panel-models.json"` — the run record, taken from each lens's own `modelUsage`. On the sequential path, the model you are actually running as. Never a literal copied from this file; a hardcoded id rots and misattributes the review. If you cannot determine it, write "Claude Code" with no parenthetical>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` where tag is the reviewer's tag, e.g. ` + do:deepseek-v4-pro` or ` + do:openai-gpt-5.3-codex` or ` + qwen3-14b (LM Studio)`>
+*QA performed by <qa_auth_user from preflight.json when qa_token_ok, else the dev identity that posted> via Claude Code (<the model the LENSES actually ran as. On the driver path this is recorded, not remembered: `jq -r '[.[] | select(. != null) | .model] | unique | join(", ")' "$QA_SCRATCH/panel-models.json"` — the run record, taken from each lens's own `modelUsage`. The `select(. != null)` is load-bearing: a lens that dies before emitting anything is recorded as `null`, and without the guard the footer of the round note reads `null` as one of the models that reviewed the MR. On the sequential path, the model you are actually running as. Never a literal copied from this file; a hardcoded id rots and misattributes the review. If you cannot determine it, write "Claude Code" with no parenthetical>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` where tag is the reviewer's tag, e.g. ` + do:deepseek-v4-pro` or ` + do:openai-gpt-5.3-codex` or ` + qwen3-14b (LM Studio)`>
+
+**Do not narrate a model downgrade from this file into the note body.** A round note
+once told an MR that one lens "ran on `<a smaller model>`" — it had not; the driver
+picked the wrong `modelUsage` key. Only `failed-<lens>.json` with
+`state == model_mismatch` means a requested model was not honoured, and
+`panel-models.json`'s `model_check` says whether one was ever requested:
+`not-requested` means the session model was inherited, which is the default and is
+not a finding. Absent a `model_mismatch` file, there is nothing to report beyond
+the footer line above.
 <else (QA_TOKEN_OK=false): omit the "<username> via " prefix:>
 *QA performed by Claude Code (<the model you are actually running as — see the note above>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` as above>
 

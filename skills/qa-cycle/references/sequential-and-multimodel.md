@@ -42,16 +42,18 @@ a retry on a file you rewrite several times.
             git -C "<target-abs>" status --porcelain; }
    snap > "$QA_SCRATCH/tree-before.txt"
    ```
-2. **Rewrite `status`** at every phase transition — `reviewing`, then `merging`,
-   `rendering`, `posting`, `done`. Copy every field through from the line already
-   there except `phase` and the completed count; `epoch_start`, `target_abs` and
-   `lens_stall_seconds` are resolved by preflight and must not be re-derived:
+2. **Change `phase` with the script**, at every transition — `reviewing`, then
+   `merging`, `rendering`, `posting`; `round-return.sh` sets `done`:
    ```bash
-   printf '%s|%s|%s|reviewing|%s|%s|%s|%s|%s\n' \
-     "$mr" "$target" "$round" "$done" "$total" "$start" "$target_abs" "$lens_stall" \
-     > "$QA_SCRATCH/status"
+   bash "$CLAUDE_PLUGIN_ROOT/lib/set-phase.sh" "$QA_SCRATCH" reviewing
    ```
-   The file's mtime is what proves the round is alive, so rewrite it even when the
+   Never write `status` by hand. This block used to be the nine-field `printf`
+   itself, with the fields to copy through explained in prose; on the manager path
+   the same instruction produced `phase=lenses round=1 lenses=0/5` on two live
+   rounds. `set-phase.sh` rebuilds every field from the brief and counts the lenses
+   from disk, so there is nothing to copy and nothing to get wrong.
+
+   The file's mtime is what proves the round is alive, so call it even when the
    count has not moved.
 3. **When the reviewer returns**, pipe its findings through the same helper the
    manager path uses — it writes `lens-<name>.json` and refreshes the progress

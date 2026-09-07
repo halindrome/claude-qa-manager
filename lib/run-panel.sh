@@ -180,12 +180,14 @@ snap > "$S/tree-before.txt"
 # status line sits at `preflight` for the whole panel and
 # statusline-fragment.sh never arms the long lens-stall fuse -- every healthy round
 # would then be reported as stalled at the short one.
-if [ -f "$STATUS_FILE" ]; then
-  IFS='|' read -r _m _t _r _p _d _tt _st _ta _ls < "$STATUS_FILE"
-  printf '%s|%s|%s|lenses|0|%s|%s|%s|%s\n' \
-    "$_m" "$_t" "$_r" "$TOTAL" "${_st:-$(date +%s)}" "${_ta:-$TARGET_ABS}" "${_ls:-$LIMIT}" \
-    > "$STATUS_FILE"
-fi
+#
+# Delegated rather than printf'd here, and that is the fix for a live defect: this
+# used to copy fields 1-3 through from the file, so a manager that had overwritten
+# `status` with a prose line got that prose PRESERVED into the mr field for the
+# whole round. set-phase.sh rebuilds them from the brief instead, which means the
+# panel heals a corrupted line rather than laundering it.
+bash "$HERE/set-phase.sh" "$S" lenses >/dev/null \
+  || echo "run-panel: could not stamp phase=lenses; the round is unaffected but the stall fuse is on the short setting" >&2
 
 # ---------------------------------------------------------------------------
 # Prompt composition.
@@ -336,10 +338,24 @@ for lens in $LENSES; do
     fi
 
     # Model actually used, from the run record rather than from the lens's word
-    # for it. `modelUsage` carries helper traffic too, so the primary is the entry
-    # that produced the output tokens.
-    actual=$(jq -r '.modelUsage | to_entries
-                    | max_by(.value.outputTokens // .value.output_tokens // 0) | .key' \
+    # for it. Every envelope carries TWO modelUsage keys -- the reviewer and
+    # Claude Code's own helper traffic -- so which one is "the model" has to be
+    # decided, and the first rule for deciding it was wrong.
+    #
+    # It ranked by outputTokens, and on a short lens that margin is noise:
+    #   1153 ui-styling  opus out=3873  helper out=4043  -> reported the helper
+    #   1152 ui-styling  opus out=2676  helper out=2368  -> reported the reviewer
+    # Same lens, same config, 4% apart, opposite answers -- and the losing round
+    # published "the ui-styling lens ran on <helper model>" to a real MR. The one
+    # number this script exists to stop the manager inventing, it invented.
+    #
+    # INPUT is the discriminator, and it is not close: the reviewer carries the
+    # cached round context (cacheRead 333k-2.6M across all 14 envelopes measured)
+    # while the helper never reads cache at all (0, every time). Ranking by total
+    # input picks the reviewer in 14 of 14, by better than 10x rather than 4%.
+    _rank='(.value.inputTokens // 0) + (.value.cacheReadInputTokens // 0)
+           + (.value.cacheCreationInputTokens // 0)'
+    actual=$(jq -r ".modelUsage | to_entries | max_by($_rank) | .key" \
                  "$S/raw-$lens.json" 2>/dev/null)
     if [ -n "$model" ] && [ -n "$actual" ] && [ "$actual" != "null" ]; then
       case "$actual" in
@@ -386,9 +402,22 @@ snap > "$S/tree-after.txt"
     # an empty file prints nothing and exits 0 -- so the fallback never fires and
     # the object comes out as `"contract-security": ,` which is not JSON. The
     # guard has to be on the output, not on the exit code.
-    _pm=$(jq -c '{ model: (.modelUsage | to_entries
-                     | max_by(.value.outputTokens // .value.output_tokens // 0) | .key),
+    # `model_check` is the "did not run" state this pair was missing. With the
+    # default config -- review_model="" and lens_models={} -- no --model is
+    # passed, so the mismatch branch above has nothing to compare and can never
+    # fire. That is invariant 2 exactly: the downgrade check was silent in the
+    # one configuration everybody runs, and silence read as clean. It now says
+    # `not-requested` out loud, so the round note can report "inherited" instead
+    # of asserting a model nobody asked for.
+    _mc=not-requested
+    [ -n "$(printf '%s' "$LENS_MODELS" | jq -r --arg l "$lens" '.[$l] // empty' 2>/dev/null)$REVIEW_MODEL" ] \
+      && _mc=requested
+    _pm=$(jq -c --arg mc "$_mc" \
+            '{ model: (.modelUsage | to_entries
+                 | max_by((.value.inputTokens // 0) + (.value.cacheReadInputTokens // 0)
+                          + (.value.cacheCreationInputTokens // 0)) | .key),
              all_models: (.modelUsage | keys),
+             model_check: $mc,
              cost_usd: .total_cost_usd, num_turns: .num_turns,
              duration_ms: .duration_ms,
              permission_denials: (.permission_denials | length),

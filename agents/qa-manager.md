@@ -175,10 +175,21 @@ than assumed. See `docs/CASE-STUDIES.md` §lens-contamination.
 ### 1.5 Progress reporting — the driver owns the panel, you own the rest
 
 You run in the background, and `status` is the only external signal that the round
-is alive. During the panel the driver writes it: `phase=lenses`, and the counter
-refreshed as each lens lands via `lens-landed.sh`, which counts `done` from the
-files on disk rather than from a number anyone remembers. It also clears the
-previous round's lens files and stamps `fanout`.
+is alive. **You never write that file yourself** — it is nine pipe-delimited
+fields, not prose, and every change to it goes through one script:
+
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/lib/set-phase.sh" "$qa_scratch" <phase>
+```
+
+`<phase>` is one of `lenses`, `merging`, `rendering`, `posting`, `done`; anything
+else is refused rather than written. The script rebuilds every other field from
+the brief and counts the lenses from disk, so there is nothing here for you to
+format or remember.
+
+During the panel the driver calls it for you, and `lens-landed.sh` calls it again
+as each lens returns. It also clears the previous round's lens files and stamps
+`fanout`.
 
 That division exists because the model half of it did not hold. Stated here as
 MANDATORY, it still produced a live round where four lens files landed across a
@@ -187,12 +198,17 @@ arrived, then jumped to `4/4 done`. A counter that only ever reads `0/N` or `N/N
 a latch, not progress, and it breaks the stall fuse, which was tuned assuming a
 write per return.
 
-**After the panel you take it back.** Set `phase` to `merging`, then `rendering`,
-`posting`; `round-return.sh` sets `done`. Rewrite it at every transition even when
-the counter has not changed — the file's mtime is what proves the round is still
-alive, so a long phase that never touches it reads as a stall. Use **Bash**, not the
-`Write` tool: `Write` refuses to overwrite a file it has not read this session, so
-every rewrite costs an error plus a Read plus a retry.
+**After the panel you take it back** — by calling the script again, not by writing
+the file. `set-phase.sh "$qa_scratch" merging`, then `rendering`, then `posting`;
+`round-return.sh` sets `done`. Call it at every transition even when the counter
+has not changed — the file's mtime is what proves the round is still alive, so a
+long phase that never touches it reads as a stall.
+
+The instruction here used to be "rewrite it with **Bash**", with no statement of
+the format, and the manager reasonably wrote `phase=lenses round=1 lenses=0/5` —
+one field where nine belong. Two live rounds, two sessions, two different tools,
+same result: the round's mr, target and round fields became a sentence, and every
+downstream writer copied it forward. That is why this is a script call now.
 
 **When the round is finished**, you do nothing here. `round-return.sh` sets phase
 `done` and calls `record-timing.sh` as a side effect of producing your return value

@@ -59,17 +59,12 @@ if [ ! -f "$S/status" ]; then
   exit 0
 fi
 
-IFS='|' read -r MR TARGET ROUND PHASE DONE TOTAL START TARGET_ABS LENS_STALL < "$S/status" || {
-  echo "lens-landed: unreadable status line; findings saved, progress NOT refreshed" >&2
-  exit 0
-}
-[ -n "${MR:-}" ] || { echo "lens-landed: empty status line; findings saved, progress NOT refreshed" >&2; exit 0; }
-
-# Ground truth, not an increment. `ls | wc -l` over the round's own files cannot
-# drift from reality the way a remembered counter does.
-DONE_NOW=0
-for f in "$S"/lens-*.json; do [ -f "$f" ] && DONE_NOW=$((DONE_NOW + 1)); done
-
+# The counter refresh is delegated: `-` means keep the phase and rebuild
+# everything else. That is one nine-field printf in the tree instead of three,
+# which matters because all three used to copy fields 1-3 through from the file
+# -- so a single prose overwrite by the manager was preserved by every one of
+# them for the rest of the round. See the header of set-phase.sh.
+#
 # PHASE is preserved, never asserted. This script owns the counter; the caller owns
 # what the round is doing. Hardcoding `lenses` here was wrong on the sequential
 # path and shipped that way for one live round: the fallback's vocabulary is
@@ -77,10 +72,13 @@ for f in "$S"/lens-*.json; do [ -f "$f" ] && DONE_NOW=$((DONE_NOW + 1)); done
 # there means review is OVER, so stamping `lenses` both mislabels the phase and
 # hands the round the LONG lens-stall fuse (statusline-fragment.sh keys the 1200s
 # limit on phase == "lenses") for merge/render work that should get the short one.
-# On the manager path nothing changes: the manager has already set `lenses` at
-# fan-out, so preserving it keeps exactly the value hardcoding produced.
-printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
-  "$MR" "$TARGET" "$ROUND" "$PHASE" "$DONE_NOW" "$TOTAL" "$START" "$TARGET_ABS" "$LENS_STALL" \
-  > "$S/status"
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if ! bash "$HERE/set-phase.sh" "$S" - >/dev/null; then
+  echo "lens-landed: status refresh failed; findings saved, progress NOT refreshed" >&2
+  exit 0
+fi
 
+# Reported from the line that was just written, not from a second count, so this
+# message cannot disagree with the file an operator is watching.
+IFS='|' read -r _ _ _ _ DONE_NOW TOTAL _ < "$S/status"
 printf 'lens-landed: %s (%s/%s)\n' "$NAME" "$DONE_NOW" "$TOTAL"

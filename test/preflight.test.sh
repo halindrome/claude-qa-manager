@@ -1712,6 +1712,12 @@ eq "default lens_models is {}"        "$(jq -r '.lens_models' <<<"$out")" "{}"
 brief=$(jq -r '.manager_brief_path' <<<"$out")
 eq "  brief carries review_model="    "$(grep -c '^review_model=$' "$brief")" "1"
 eq "  brief carries lens_models={}"   "$(grep -c '^lens_models={}$' "$brief")" "1"
+# set-phase.sh rebuilds the status line's identity fields from the brief rather
+# than copying them through from a file a model can overwrite. Field 2 is the
+# target SHORT name, so without this key the repair falls back to the very value
+# it exists to distrust.
+eq "  brief carries the target short name" \
+   "$( [ "$(grep -c '^target=' "$brief")" -eq 1 ] && echo yes || echo no )" "yes"
 rm -rf "$r"
 # A global override applies; lens_models stays empty.
 r=$(mkfixture "feature/x" "main" '.review.model = "opus"'); commit_lines "$r/repo" 5 f.js
@@ -1888,18 +1894,28 @@ echo "[status-line format agrees across BOTH review paths]"
 # and still did not happen (four lens files landed while status sat at 0/4). This
 # assertion therefore follows the format to the script that now owns it — checking
 # qa-manager.md would only prove the prose still exists, which was never the problem.
-MGR="$REPO_SRC/lib/lens-landed.sh"; SEQ="$REPO_SRC/skills/qa-cycle/references/sequential-and-multimodel.md"
-# Count the SEPARATORS, not the %s: each writer stamps its own phase as a literal
-# (`|preflight|0|`, `|lenses|`, `|reviewing|`), so a format string is not all %s.
+#
+# There are now exactly TWO writers, and that is itself the fix: preflight seeds
+# the line, lib/set-phase.sh owns every change after it. The manager path, the
+# sequential path and round-return.sh used to each carry their own copy of this
+# printf, copying fields 1-3 through from the file — so one prose overwrite was
+# laundered by all of them. `only ONE script may write this line` at the end of
+# this suite is the guard against that coming back.
+MGR="$REPO_SRC/lib/set-phase.sh"
+SEQ="$REPO_SRC/skills/qa-cycle/references/sequential-and-multimodel.md"
+# Count the SEPARATORS, not the %s: preflight stamps its own phase as a literal
+# (`|preflight|0|`), so a format string is not all %s.
 fields() { local fmt; fmt=$(grep -ohE "printf '[^']*\|[^']*\\\\n'" "$1" | grep '|%s' | head -1)
            echo $(( $(printf '%s' "$fmt" | tr -cd '|' | wc -c | tr -d ' ') + 1 )); }
 eq "preflight seeds 9 status fields"  "$(fields "$REPO_SRC/lib/preflight.sh")" "9"
-eq "  manager path writes 9"          "$(fields "$MGR")" "9"
-eq "  sequential path writes 9"       "$(fields "$SEQ")" "9"
-# Both must be told to preserve the preflight-resolved fields rather than re-derive.
+eq "  set-phase.sh writes 9"          "$(fields "$MGR")" "9"
+# The preflight-resolved fields must be preserved, never re-derived here. This
+# used to compare `grep -c` against itself, which passes for any value including
+# zero — a check that could not fail, guarding the field that a live round came
+# back with as `0`.
 for f in epoch_start target_abs lens_stall; do
-  eq "  manager preserves $f"    "$(grep -c "$f" "$MGR")" "$( [ "$(grep -c "$f" "$MGR")" -ge 1 ] && grep -c "$f" "$MGR" || echo 0 )"
-  eq "  sequential mentions $f"  "$( [ "$(grep -c "$f" "$SEQ")" -ge 1 ] && echo yes || echo no )" "yes"
+  eq "  set-phase preserves $f" \
+     "$( [ "$(grep -c "$f" "$MGR")" -ge 1 ] && echo yes || echo no )" "yes"
 done
 # Both writers must CLEAR the previous round's per-lens files. The scratch dir is
 # keyed to the MR, not the round, so leftovers read as this round's results —
@@ -1922,7 +1938,7 @@ done
 # Agent fan-out it replaced. Both halves matter: a doc that still tells the manager
 # to spawn qa-reviewer subagents gives it two contradictory ways to run the panel,
 # and prose the model can cite is prose the model will follow.
-MANAGER_MD="$REPO_SRC/agents/qa-manager.md"   # NOT $MGR — that is lens-landed.sh
+MANAGER_MD="$REPO_SRC/agents/qa-manager.md"   # NOT $MGR — that is set-phase.sh
 eq "qa-manager.md runs the panel via run-panel.sh" \
    "$( [ "$(grep -c 'run-panel\.sh' "$MANAGER_MD")" -ge 1 ] && echo yes || echo no )" "yes"
 eq "  ...and no longer spawns qa-reviewer Agents" \
@@ -2109,7 +2125,7 @@ mkpanel() {   # -> echoes a root dir with plugin/, repo/, scratch/, bin/
   # progress counter ground-truth, so a stub here would assert against a copy of
   # the property under test.
   cp "$RUNPANEL_SRC" "$plugin/lib/run-panel.sh"
-  cp "$REPO_SRC/lib/lens-landed.sh" "$plugin/lib/"
+  cp "$REPO_SRC/lib/lens-landed.sh" "$REPO_SRC/lib/set-phase.sh" "$plugin/lib/"
   cp "$REPO_SRC/config/lens-catalog.json" "$REPO_SRC/config/lens-schema.json" "$plugin/config/"
 
   git init -q -b main "$repo"
@@ -2131,6 +2147,7 @@ mkpanel() {   # -> echoes a root dir with plugin/, repo/, scratch/, bin/
 
   {
     printf 'target_abs=%s\n' "$repo"
+    printf 'target=api\n'
     printf 'mr=73\nround=2\n'
     printf 'feature_branch=feature/x\ntarget_branch=main\n'
     printf 'diff_range=origin/main..HEAD\n'
@@ -2188,17 +2205,34 @@ case "$mode" in
   noschema) envelope "claude-opus-5" "" ;;
   garbage)  envelope "claude-opus-5" '{"nope":true}' ;;
   mismatch) envelope "claude-haiku-4-5" "$SO" ;;
-  # A real envelope carries HELPER traffic alongside the reviewer's own model —
-  # the Phase 1 replay showed claude-fable-5-1 with 107k input tokens next to the
-  # opus reviewer. Picking the wrong key here would report the wrong model ran.
+  # A real envelope carries HELPER traffic alongside the reviewer's own model.
+  # Picking the wrong key here reports the wrong model as the one that ran.
+  #
+  # These numbers are COPIED FROM A LIVE ENVELOPE (round 1153, the ui-styling
+  # lens), and the shape is the whole point of the case. The earlier fixture gave
+  # the reviewer `inputTokens: 40` and no cache fields at all, and the helper a
+  # tiny 210-token output — so ANY rule picked the reviewer and the case could
+  # not fail. Reality is the opposite on both axes:
+  #
+  #   reviewer:  in 12, cacheRead 345109, cacheCreate 54699,  out 3873
+  #   helper:    in 73955, cacheRead 0,   cacheCreate 0,      out 4043
+  #
+  # The helper WINS on output by 4% and LOSES on input by 10x. A fixture that
+  # does not reproduce that inversion is a fixture that cannot catch the defect
+  # it exists for — which is exactly what happened: this suite was green while a
+  # live round published "the ui-styling lens ran on claude-fable-5-1" to an MR.
   helper)
     cat <<JSON
 { "type":"result","subtype":"success","is_error":false,"stop_reason":"tool_use",
   "num_turns":4,"duration_ms":47557,"total_cost_usd":4.42,"permission_denials":[],
   "structured_output": $SO,
   "modelUsage": {
-    "claude-fable-5-1": { "inputTokens": 107000, "outputTokens": 210, "costUSD": 1.62 },
-    "claude-opus-5":    { "inputTokens": 40, "outputTokens": 31505, "costUSD": 2.80 } } }
+    "claude-fable-5-1": { "inputTokens": 73955, "outputTokens": 4043,
+                          "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0,
+                          "costUSD": 1.62 },
+    "claude-opus-5":    { "inputTokens": 12, "outputTokens": 3873,
+                          "cacheReadInputTokens": 345109, "cacheCreationInputTokens": 54699,
+                          "costUSD": 2.80 } } }
 JSON
     ;;
   *)        envelope "claude-opus-5" "$SO" ;;
@@ -2347,6 +2381,8 @@ eq "  ...and its findings still land" \
    "$([ -f "$p/scratch/lens-contract-security.json" ] && echo present || echo absent)" "present"
 eq "  the actual model is on the record" \
    "$(jq -r '."contract-security".model' "$p/scratch/panel-models.json")" "claude-haiku-4-5"
+eq "  ...and model_check records that a model WAS requested" \
+   "$(jq -r '."contract-security".model_check' "$p/scratch/panel-models.json")" "requested"
 rm -rf "$p"
 
 # A real envelope carries helper traffic in modelUsage alongside the reviewer's
@@ -2359,6 +2395,19 @@ eq "the reviewer's model wins over helper traffic" \
 eq "  ...and the helper is still on the record" \
    "$(jq -r '."contract-security".all_models | sort | join(",")' "$p/scratch/panel-models.json")" \
    "claude-fable-5-1,claude-opus-5"
+# The discriminator, asserted as a discriminator: on this envelope the helper
+# out-produces the reviewer, so a rule that ranks by output tokens gets it
+# BACKWARDS. Naming the losing rule here is what stops it being reinstated as a
+# simplification.
+eq "  ...even though the helper emitted MORE output tokens" \
+   "$(jq -r 'if (.modelUsage["claude-fable-5-1"].outputTokens
+                 > .modelUsage["claude-opus-5"].outputTokens) then "yes" else "no" end' \
+        "$p/scratch/raw-contract-security.json")" "yes"
+# Invariant 2: with no --model requested the mismatch check has nothing to
+# compare and can never fire. Silence there read as clean for the whole life of
+# the driver, in the DEFAULT configuration. It has to say so.
+eq "  no model requested -> model_check says so, rather than nothing" \
+   "$(jq -r '."contract-security".model_check' "$p/scratch/panel-models.json")" "not-requested"
 rm -rf "$p"
 
 # --- stale files from the PREVIOUS round must not count as this round's work --
@@ -2806,6 +2855,155 @@ eq "no scratch dir -> exit 2" \
    "$(bash "$GATE_SRC" 2>/dev/null; echo $?)" "2"
 eq "scratch dir without preflight.json -> exit 2" \
    "$(bash "$GATE_SRC" "$(mktemp -d)" 2>/dev/null; echo $?)" "2"
+
+# ---------------------------------------------------------------------------
+# lib/set-phase.sh — the status line survives a manager that writes prose
+# ---------------------------------------------------------------------------
+# WHY. qa-manager.md said "set phase to merging, then rendering, posting" and
+# "use Bash, not the Write tool", and never said the file is nine pipe-delimited
+# fields. The manager wrote the sentence it was given, on two consecutive live
+# rounds, in two sessions, through two different tools:
+#
+#   printf 'phase=lenses round=1 lenses=0/5\n' > .../status
+#
+# Nothing caught it, because all three writers COPIED FIELDS 1-3 THROUGH from the
+# file — so the prose was preserved into the mr field by every one of them for the
+# rest of the round, and statusline-fragment.sh rendered `QA !phase=lenses round=1
+# lenses=0/5  r` at the operator.
+SETPHASE_SRC="$REPO_SRC/lib/set-phase.sh"
+
+mkstatus() {   # a scratch dir with a brief, and whatever status line $1 says
+  local d; d=$(mktemp -d)
+  cat > "$d/manager-brief.txt" <<'BRIEF'
+target_abs=/repo/apps/api
+target=api
+mr=42
+round=3
+lenses=["contract-security","regression-edges","test-quality"]
+BRIEF
+  [ -n "${1:-}" ] && printf '%s\n' "$1" > "$d/status"
+  echo "$d"
+}
+f() { awk -F'|' -v n="$2" '{print $n}' "$1/status"; }
+
+# --- the repair, which is the whole point ------------------------------------
+d=$(mkstatus 'phase=lenses round=1 lenses=0/5')
+bash "$SETPHASE_SRC" "$d" lenses >/dev/null
+eq "prose status -> mr is REBUILT from the brief, not preserved" "$(f "$d" 1)" "42"
+eq "  ...target too"                                            "$(f "$d" 2)" "api"
+eq "  ...and round"                                             "$(f "$d" 3)" "3"
+eq "  ...phase is what was asked for"                           "$(f "$d" 4)" "lenses"
+eq "  ...total comes from the brief's lens array"               "$(f "$d" 6)" "3"
+eq "  ...and the line is nine fields again" \
+   "$(awk -F'|' '{print NF}' "$d/status")" "9"
+rm -rf "$d"
+
+# --- the counter is counted, never carried -----------------------------------
+d=$(mkstatus '42|api|3|lenses|0|3|1700000000|/repo/apps/api|1200')
+echo '{}' > "$d/lens-contract-security.json"; echo '{}' > "$d/lens-test-quality.json"
+bash "$SETPHASE_SRC" "$d" merging >/dev/null
+eq "done is counted from disk, not passed in" "$(f "$d" 5)" "2"
+eq "  epoch_start is preserved across a transition" "$(f "$d" 7)" "1700000000"
+rm -rf "$d"
+
+# --- round-return's zeroing regression ---------------------------------------
+# Round 1153 finished as `…|done|0|0|0||1200`: every `${_d:-0}` in round-return.sh
+# faithfully preserved a field the manager had already destroyed, including the
+# epoch start that elapsed time is measured from.
+d=$(mkstatus 'phase=returning round=2 lenses=5/5')
+bash "$SETPHASE_SRC" "$d" done >/dev/null
+eq "a destroyed epoch_start is replaced, not preserved as 0" \
+   "$( [ "$(f "$d" 7)" -gt 0 ] 2>/dev/null && echo positive || echo ZERO )" "positive"
+eq "  ...and target_abs comes back" "$(f "$d" 8)" "/repo/apps/api"
+rm -rf "$d"
+
+# --- refusals: an invented phase is not a phase -------------------------------
+d=$(mkstatus '42|api|3|lenses|0|3|1700000000|/repo/apps/api|1200')
+eq "an unknown phase is refused (exit 2)" \
+   "$(bash "$SETPHASE_SRC" "$d" 'phase=lenses round=1' >/dev/null 2>&1; echo $?)" "2"
+eq "  ...and the good line is left untouched" "$(f "$d" 4)" "lenses"
+eq "no phase argument -> exit 2" "$(bash "$SETPHASE_SRC" "$d" >/dev/null 2>&1; echo $?)" "2"
+eq "no scratch dir -> exit 2"    "$(bash "$SETPHASE_SRC" >/dev/null 2>&1; echo $?)" "2"
+rm -rf "$d"
+
+# --- keep-phase records `unknown` rather than guessing or blanking ------------
+# Invariant 2 in miniature: an empty phase field is indistinguishable from one
+# nobody set, and substituting `lenses` would hand merge work the LONG stall fuse.
+d=$(mkstatus 'phase=lenses round=1 lenses=0/5')
+bash "$SETPHASE_SRC" "$d" - >/dev/null 2>&1
+eq "unrecognisable phase + keep -> 'unknown', not empty" "$(f "$d" 4)" "unknown"
+rm -rf "$d"
+d=$(mkstatus '42|api|3|rendering|0|3|1700000000|/repo/apps/api|1200')
+bash "$SETPHASE_SRC" "$d" - >/dev/null
+eq "  ...but a real phase IS preserved by keep" "$(f "$d" 4)" "rendering"
+rm -rf "$d"
+
+# --- no brief (a scratch dir from before this landed) -------------------------
+d=$(mkstatus '9|web|2|lenses|0|4|1700000000|/a/b|900'); rm -f "$d/manager-brief.txt"
+bash "$SETPHASE_SRC" "$d" merging >/dev/null
+eq "with no brief the existing fields are kept" "$(f "$d" 1)/$(f "$d" 2)/$(f "$d" 3)" "9/web/2"
+eq "  ...including the project's own stall tolerance" "$(f "$d" 9)" "900"
+rm -rf "$d"
+
+# --- lens-landed delegates, and heals the line on the way through -------------
+d=$(mkstatus 'phase=lenses round=1 lenses=0/5')
+echo '{"navigation":"cmm"}' | bash "$SETPHASE_SRC" "$d" lenses >/dev/null
+echo '{"navigation":"cmm"}' | bash "$REPO_SRC/lib/lens-landed.sh" "$d" contract-security >/dev/null
+eq "lens-landed leaves a nine-field line" "$(awk -F'|' '{print NF}' "$d/status")" "9"
+eq "  ...with the mr repaired"            "$(f "$d" 1)" "42"
+eq "  ...and the counter advanced"        "$(f "$d" 5)" "1"
+eq "  ...and the findings saved"          \
+   "$([ -f "$d/lens-contract-security.json" ] && echo present || echo absent)" "present"
+rm -rf "$d"
+
+# --- only ONE script may write this line --------------------------------------
+# The copy-through existed in three places, which is why one bad write spread.
+# preflight.sh seeds it; set-phase.sh owns every change after that.
+eq "exactly two files write the nine-field status line" \
+   "$(grep -rl "printf '%s|%s|%s|" "$REPO_SRC/lib" | sed 's:.*/::' | sort | tr '\n' ',')" \
+   "preflight.sh,set-phase.sh,"
+
+# --- the instruction that caused it, in every place it appears (invariant 4) ---
+# $MANAGER_MD and $SEQ are the ones defined for the status-format block above;
+# a second pair of names for the same two files is how the two blocks drift.
+QA_MANAGER_MD="$MANAGER_MD"
+SEQ_MD="$SEQ"
+eq "the manager is told to call set-phase.sh" \
+   "$( [ "$(grep -c 'set-phase\.sh' "$QA_MANAGER_MD")" -ge 1 ] && echo yes || echo no )" "yes"
+eq "  ...and told NOT to write the file itself" \
+   "$( grep -qi 'never write that file yourself\|Never write .status. by hand' "$QA_MANAGER_MD" \
+       && echo yes || echo no )" "yes"
+eq "  ...and no longer told to rewrite it with Bash" \
+   "$( grep -qi 'Rewrite it at every transition even when' "$QA_MANAGER_MD" && echo STALE || echo gone )" "gone"
+eq "the sequential path calls set-phase.sh too" \
+   "$( [ "$(grep -c 'set-phase\.sh' "$SEQ_MD")" -ge 1 ] && echo yes || echo no )" "yes"
+eq "  ...and no longer carries a raw nine-field printf" \
+   "$( grep -q "printf '%s|%s|%s|reviewing" "$SEQ_MD" && echo STALE || echo gone )" "gone"
+# Both files must exist, or every grep above scores 0 and reads as a real failure.
+eq "  ...and both files exist to be checked" \
+   "$( [ -f "$QA_MANAGER_MD" ] && [ -f "$SEQ_MD" ] && echo yes || echo no )" "yes"
+
+# --- the note is where a wrong model actually reached a human ------------------
+# panel-models.json is only half the defect: round-note.md is the consumer that
+# published "the ui-styling lens ran on <helper>" to an MR. Fixing the producer
+# without the renderer leaves the sentence that did the damage available.
+NOTE_MD="$REPO_SRC/skills/qa-cycle/references/round-note.md"
+eq "round-note.md exists to be checked" \
+   "$( [ -f "$NOTE_MD" ] && echo yes || echo no )" "yes"
+eq "  the model line drops null entries (a dead lens is not a model)" \
+   "$( grep -q 'select(\. != null)' "$NOTE_MD" && echo yes || echo no )" "yes"
+eq "  ...and a downgrade is reported from model_mismatch, not inferred" \
+   "$( grep -q 'model_check' "$NOTE_MD" && echo yes || echo no )" "yes"
+# Run the filter EXTRACTED FROM THE DOC, not a copy of it pasted here. A copy
+# would keep passing after someone edited the doc, which is the failure mode this
+# suite's header is about.
+_pmfix=$(mktemp -d)/pm.json
+printf '{"a":{"model":"claude-opus-5"},"b":null,"c":{"model":"claude-opus-5"}}\n' > "$_pmfix"
+_notejq=$(sed -n "s/.*jq -r '\(\[\.\[\][^']*\)'.*/\1/p" "$NOTE_MD")
+eq "  ...and the filter is extractable from the doc" \
+   "$( [ -n "$_notejq" ] && echo yes || echo no )" "yes"
+eq "  ...and yields the model, not 'null'" \
+   "$(jq -r "$_notejq" "$_pmfix" 2>&1)" "claude-opus-5"
 
 # ---------------------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

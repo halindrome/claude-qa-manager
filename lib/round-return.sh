@@ -184,9 +184,12 @@ jq -n \
 # Bookkeeping as a SIDE EFFECT of returning, so it cannot be the step that is
 # skipped. phase=done is what stops the stall detector reporting a finished round
 # as wedged; record-timing.sh only observes.
+#
+# Via set-phase.sh, not a printf here. The copy-through this replaced is what
+# turned round 1153's final line into `…|done|0|0|0||1200`: every `${_d:-0}`
+# faithfully preserved a field the manager had already destroyed, including the
+# epoch start that elapsed time is measured from.
 if [ -f "$S/status" ]; then
-  IFS='|' read -r _m _t _r _p _d _tt _st _ta _ls < "$S/status"
-  printf '%s|%s|%s|done|%s|%s|%s|%s|%s\n' \
-    "$_m" "$_t" "$_r" "${_d:-0}" "${_tt:-0}" "${_st:-0}" "${_ta:-}" "${_ls:-1200}" > "$S/status"
+  bash "$HERE/set-phase.sh" "$S" done >/dev/null || true
 fi
 bash "$HERE/record-timing.sh" "$S" >/dev/null 2>&1 || true
