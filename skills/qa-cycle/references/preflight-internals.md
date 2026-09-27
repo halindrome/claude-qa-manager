@@ -392,3 +392,31 @@ git diff <remote>/<target-branch>..HEAD --stat
 Report the diff stat to the user. If the diff contains unintended deletions or reversions after syncing, warn: *"The branch may have been cut from a stale base. Consider rebuilding from the current base tip."* Ask the user to confirm before proceeding.
 
 ---
+
+## Step 3B verify — `lib/run-verify.sh` states and reasons
+
+The helper reads `verify.command`, the bound and `verify.timings_path` from
+`preflight.json` itself (`--from-preflight`). Do not retype `verify.command` into a shell
+line: it contains spaces and quotes. For the build side, pass `verify.build_command`
+explicitly as the second argument.
+
+`state` is one of:
+
+| state | meaning |
+|---|---|
+| `passed` | the only pass |
+| `failed` | the command exited non-zero |
+| `timeout` | killed at the bound; no execution evidence, like `none-found` |
+| `not-run` | nothing ran; no execution evidence |
+| `unconfirmed` | exit 0 that nothing corroborates |
+
+`unconfirmed` exists because a recipe that starts containers, runs tests and tears down
+exits 0 on the teardown alone, so a real abort reads as success.
+
+`reason` says which case applies:
+
+- `no_expect_configured`: set `verify.expect`.
+- `expect_not_met`: the suite ran and did not succeed.
+- `exceeded_baseline`: this suite normally finishes far sooner, so investigate a wedge.
+
+Configuration of the bound and the learned baseline: `docs/CONFIGURING.md` §verify.

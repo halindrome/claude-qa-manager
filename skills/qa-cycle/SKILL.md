@@ -90,7 +90,7 @@ it:
 | `forge` (`gitlab`\|`github`), `forge_cli` (`glab`\|`gh`) | which backend `lib/forge.sh` dispatches to, and which CLI it drives. Everything that touches the forge goes through `forge_*` — never call `glab`/`gh` directly, or the step works on one forge only. |
 | `project`,`project_enc`,`qa_scratch` | as named |
 | `commit_subject` | the Step 3B fix-commit subject, already rendered — scopeless in a single-project repo |
-| `verify.command`,`verify.source`,`verify.state`,`verify.kind`,`verify.build_command`,`verify.timeout_seconds`,`verify.timings_path` | the target's OWN test/build entry point, discovered from its Makefile / package.json / tox.ini. Step 3B runs it before committing, via `lib/run-verify.sh`, bounded by `timeout_seconds` and by the learned baseline in `timings_path`. `state=none-found` is not a pass; `kind=lint` is a linter, not a behavioural suite — run it and still report that nothing behavioural ran. |
+| `verify.*` | the target's OWN test/build entry point, discovered from its Makefile / package.json / tox.ini; Step 3B runs it via `lib/run-verify.sh`. `state=none-found` is not a pass; `kind=lint` is a linter, not a behavioural suite — run it and still report that nothing behavioural ran. |
 | `layout.multi_target`,`layout.target_is_submodule` | whether this project HAS subprojects, and whether this target is one. Gate subproject wording (Step 4) on these; never assume a repo has parts. |
 
 > `scope` is the target token; `diff_scope` is the diff numbers. preflight asserts the
@@ -134,9 +134,8 @@ Everything mechanical is preflight's; read its fields. Yours to parse from argv:
 `--double`, `--triple`, `--reviewer=`, `--non-interactive`, `--auto-approve`,
 `--skip-contract-verification` (`--help` was already handled at Step -1).
 
-`skip_contract_verification` is `false` unless `--skip-contract-verification` was passed —
-never asked: an absent Contract Verification table is a failure signal, not a pass, so
-skipping must be named on the command line.
+`skip_contract_verification` is `false` unless that flag was passed — never asked: a
+missing Contract Verification table is a failure signal, so skipping must be explicit.
 
 Policy detail: `references/preflight-internals.md`. The user-facing wording of every flag
 is `references/usage.md`; change one and change both.
@@ -288,16 +287,12 @@ Reasoning: `references/schema-gate.md`.
 
 ### Step 3A.1 — Delegate the round to the QA manager (default path)
 
-This is the **default review path**. Routing is **deterministic from preflight**:
-take this path when `review_mode == "manager"` (non-trivial diff), and the Step 3A
-sequential fallback when `review_mode == "sequential"` (tiny diff — a single
-reviewer beats the overhead). The one runtime exception preflight cannot predict:
-if the **manager spawn is refused** in this runtime (no Agent nesting), fall back to
-sequential Step 3A regardless of `review_mode`. That test is about the manager only:
-the lenses are subprocesses, so nesting depth does not constrain the panel.
-`DOUBLE`/`TRIPLE` do
-**not** change this routing — the manager runs the preflight-selected lens panel
-regardless; the multi-model flags only add second-opinion shims inside it.
+The **default review path**, routed **deterministically by preflight**: this path when
+`review_mode == "manager"`, the Step 3A sequential fallback when `"sequential"` (a tiny
+diff, where one reviewer beats the overhead). One runtime exception: if the **manager
+spawn is refused** (no Agent nesting), fall back to sequential regardless — the lenses are
+subprocesses, so nesting never constrains the panel. `DOUBLE`/`TRIPLE` do **not** change
+routing; they only add second-opinion shims inside the manager.
 
 **Why a manager subagent, not the `Workflow` tool** — a clean main loop, and hooks that
 reach the lenses. Reviewer correctness depends on neither: `references/design-notes.md`.
@@ -348,12 +343,9 @@ it returns those as `decisions_needed`. The main loop:
   revocation, *then* post `note_path`. This ordering is the whole point of the
   decision: the findings must not appear on a still-approved MR;
 - resolves `post_after_fixes` by running Step 3B, appending one `QA-Fix-Commit`
-  trailer per commit it made to `note_path`, and posting *that* — the manager runs
-  before any fix commit exists, so a note it posted could never carry the trailers
-  and the next round's `qa_fix_commits` would come back empty. With
-  `unapprove_before_post` too: revoke, fix, append, post — one post, not two;
-- sets `SCHEMA_CHANGE_DETECTED=true` when the verdict's
-  `schema_change_detected` is true (arms the Step 3E the schema-drift case gate);
+  trailer per fix commit to `note_path`, and posting *that* — the manager ran before any
+  fix commit existed, and without trailers the next round's `qa_fix_commits` is empty.
+  With `unapprove_before_post` too: revoke, fix, append, post — one post;
 - sets `ROUND_HAS_CRITICAL_OR_MAJOR` from `counts` (Step 3B.6);
 - resolves each `decisions_needed` entry: `approval` → the Step 3E confirm;
   `fixes` → the Step 3B ownership-gated triage; `contract_disambiguation` →
@@ -367,13 +359,10 @@ it returns those as `decisions_needed`. The main loop:
   you talked them into: consent recorded that way is indistinguishable from consent
   volunteered, and the note is the only record anyone reads later.
 - **`--non-interactive`**: pre-answer only the decisions whose default is *mechanical* —
-  it may never invent a human's answer. `approval` is not defaultable (needs
-  `--auto-approve` too), and two prompts are never answered at all: the **schema-change
-  rollout ACK** (silence is not an ACK — that is the schema-drift failure mode; record
-  `blocked: schema change rollout not acknowledged`, finish the round, stop before
-  approval) and the **exit-3 unexpected-deletions gate** (stop and report `sync.reason`;
-  never guess at a destructive sync). Per-decision policy:
-  `references/non-interactive.md`.
+  it may never invent a human's answer. `approval` needs `--auto-approve` too, and the
+  **schema-change rollout ACK** and the **exit-3 unexpected-deletions gate** are never
+  answered: silence is not an ACK, and a destructive sync is never guessed at. Per-decision
+  policy: `references/non-interactive.md`.
 
 **What main does with the verdict** (the manager's own contract — merge rules, lens
 failure handling, the verdict schema — lives in `agents/qa-manager.md`; do not restate
@@ -467,21 +456,12 @@ Do NOT apply fixes automatically. Instead:
         --from-preflight "$QA_SCRATCH/preflight.json" --log "$QA_SCRATCH/verify.log"
    ```
 
-   It reads the command, the bound and the timings path itself — do not retype
-   `verify.command` into a shell line, it contains spaces and quotes. Never run the command
-   by hand either: detection proves an entry point *exists*, never that it terminates, so a
-   watcher hangs the round with nothing to kill it. For the build side, pass
-   `verify.build_command` explicitly as the second argument.
-
-   `state` is `passed`, `failed`, `timeout`, `unconfirmed` or `not-run`. **Only `passed` is
-   a pass.** `timeout`, `not-run` and `unconfirmed` all mean the round has no execution
-   evidence — like `none-found` — and the note must say the fixes went unverified.
-   `unconfirmed` is exit 0 that nothing corroborates: a recipe that starts containers,
-   tests, and tears down exits 0 on the teardown alone, so a real abort reads as success.
-   `reason` says which it is (`no_expect_configured` → set `verify.expect`;
-   `expect_not_met` → the suite ran and did not succeed; `exceeded_baseline` → this suite
-   normally finishes far sooner, so investigate a wedge). On any non-`passed` state read
-   the log with `ctx_execute_file` and an `intent=`. See `docs/CONFIGURING.md` §verify.
+   Never by hand: detection proves an entry point *exists*, never that it terminates, so a
+   watcher hangs the round with nothing to kill it. **Only `state=passed` is a pass** —
+   exit 0 alone is not (a teardown exits 0 after an abort); any other state means the fixes
+   went unverified and the note says so. Read a non-`passed` log with `ctx_execute_file`
+   and an `intent=`. States, `reason` codes, the build-side call:
+   `references/preflight-internals.md` §Step 3B verify.
 
    This is the step whose absence produces the tail-chasing pattern: a round's fix is
    otherwise unverified until the *next* round's full panel finds it broken.
