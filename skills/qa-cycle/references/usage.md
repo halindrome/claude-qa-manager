@@ -30,8 +30,15 @@ FLAGS                                                    (all per-invocation)
                            `--reviewer qwen-local` works too; a bare --reviewer
                            with no id is an error, not a default.
 
+  --skip-contract-verification
+                           Review without verifying the contract. The reviewer
+                           prints "Contract Verification: SKIPPED at user
+                           request" instead of the table -- never omits it
+                           silently. Rarely what you want; the default is to
+                           verify, and you are not asked.
+
   --non-interactive        Pre-answer the gates whose default is mechanical:
-    (a.k.a. --yes)         skip-contract=No, SAST-wait=defer, fixes=report-only,
+    (a.k.a. --yes)         SAST-wait=defer, fixes=report-only,
                            ambiguous contract=highest-confidence (or block when
                            there is no candidate), and continue into round N+1
                            while the round is not clean, fixes were applied,

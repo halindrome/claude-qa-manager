@@ -74,7 +74,9 @@ _pass() { _add "$1" pass        "$2"; }
 _fail() { _add "$1" fail        "$2"; BLOCKERS=$((BLOCKERS+1)); }
 _unev() { _add "$1" unevaluable "$2"; BLOCKERS=$((BLOCKERS+1)); }
 
-pf() { jq -r "$1 // empty" "$PF" 2>/dev/null; }
+# Do NOT use `// empty` here: jq's `//` treats `false` like null, so a present
+# `false` would read as missing and every boolean check would lose its fail state.
+pf() { jq -r "($1) | select(. != null)" "$PF" 2>/dev/null; }
 
 MR=$(pf '.mr'); PROJECT=$(pf '.project'); REMOTE=$(pf '.remote')
 TARGET_ABS=$(pf '.target_abs'); MR_AUTHOR=$(pf '.mr_author')

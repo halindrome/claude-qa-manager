@@ -90,7 +90,7 @@ it:
 | `forge` (`gitlab`\|`github`), `forge_cli` (`glab`\|`gh`) | which backend `lib/forge.sh` dispatches to, and which CLI it drives. Everything that touches the forge goes through `forge_*` — never call `glab`/`gh` directly, or the step works on one forge only. |
 | `project`,`project_enc`,`qa_scratch` | as named |
 | `commit_subject` | the Step 3B fix-commit subject, already rendered — scopeless in a single-project repo |
-| `verify.command`,`verify.source`,`verify.state`,`verify.kind`,`verify.build_command` | the target's OWN test/build entry point, discovered from its Makefile / package.json / tox.ini. Step 3B runs it before committing. `state=none-found` is not a pass; `kind=lint` is a linter, not a behavioural suite — run it and still report that nothing behavioural ran. |
+| `verify.command`,`verify.source`,`verify.state`,`verify.kind`,`verify.build_command`,`verify.timeout_seconds`,`verify.timings_path` | the target's OWN test/build entry point, discovered from its Makefile / package.json / tox.ini. Step 3B runs it before committing, via `lib/run-verify.sh`, bounded by `timeout_seconds` and by the learned baseline in `timings_path`. `state=none-found` is not a pass; `kind=lint` is a linter, not a behavioural suite — run it and still report that nothing behavioural ran. |
 | `layout.multi_target`,`layout.target_is_submodule` | whether this project HAS subprojects, and whether this target is one. Gate subproject wording (Step 4) on these; never assume a repo has parts. |
 
 > `scope` is the target token; `diff_scope` is the diff numbers. preflight asserts the
@@ -131,8 +131,12 @@ the value from `preflight.json`.
 ## Step 0 — parse your own flags
 
 Everything mechanical is preflight's; read its fields. Yours to parse from argv:
-`--double`, `--triple`, `--reviewer=`, `--non-interactive`, `--auto-approve`
-(`--help` was already handled at Step -1).
+`--double`, `--triple`, `--reviewer=`, `--non-interactive`, `--auto-approve`,
+`--skip-contract-verification` (`--help` was already handled at Step -1).
+
+`skip_contract_verification` is `false` unless `--skip-contract-verification` was passed —
+never asked: an absent Contract Verification table is a failure signal, not a pass, so
+skipping must be named on the command line.
 
 Policy detail: `references/preflight-internals.md`. The user-facing wording of every flag
 is `references/usage.md`; change one and change both.
@@ -153,11 +157,14 @@ reviewer will verify against. Four decision branches:
 
 2. **Mentioned ticket ID in title or description.** If no formal link, regex-scan
    the MR title + description for `[A-Z]+-\d+`. For each match, call
-   `mcp__jira__jira_get`. If one or more resolve successfully, ask the user via
-   AskUserQuestion: *"Is `<TICKET>` (`<summary>`) the intended contract for this
-   MR?"* Options: yes (use it) / no — try next candidate (if more) / none of
-   these (proceed to synthesis). Record `contract_source=jira:<TICKET>` on
-   confirmation.
+   `mcp__jira__jira_get`.
+   - **Exactly one resolves** — use it, do NOT ask: one candidate leaves a human nothing
+     to decide, so the question only stalls the round. Record
+     `contract_source=jira:<TICKET> (auto: sole mentioned candidate)`; the marker is
+     required, so a wrong pick is visible rather than silent.
+   - **Two or more** — ask via AskUserQuestion: *"Is `<TICKET>` (`<summary>`) the intended
+     contract?"* yes / next candidate / none (→ synthesis).
+   - **None** — fall through to 3 or 4.
 
 3. **Synthesize from MR title + description.** If no ticket is found or the user
    declined all candidates, synthesize a contract from the MR title and
@@ -173,7 +180,7 @@ Always re-resolve the contract on each `/qa-cycle` invocation (including subsequ
 Write the resolved contract to `$QA_SCRATCH/contract.md` (see Step 0.4 for the per-invocation scratch directory), formatted as:
 
 ```
-# Contract (source: <jira:TICKET | synthesized>)
+# Contract (source: <jira:TICKET | jira:TICKET (auto: sole mentioned candidate) | synthesized>)
 
 Ticket: <TICKET or "n/a">
 Summary: <MR title or JIRA summary>
@@ -247,22 +254,9 @@ escalation would silently no-op on the one transition it exists for. The round n
 round N must be posted before re-running preflight, since that note is what makes the
 next derivation return N+1.
 
-### Pre-round-1 only — skip-verification prompt + `--double` reminder
+### Pre-round-1 only — `--double` reminder
 
-
-On **round 1 only** (and never on subsequent rounds):
-
-1. Ask via AskUserQuestion: *"Skip Contract Verification for this MR? Default:
-   No."* Options (default-first):
-   - *"No, run Contract Verification (recommended)"* — sets
-     `skip_contract_verification=false`.
-   - *"Yes, skip"* — sets `skip_contract_verification=true`.
-
-   Record the answer. It is passed to the reviewer prompt (and to the Qwen
-   wrapper via `--skip-contract` when `true`). The same value applies to every
-   round in this invocation; the question is NOT re-asked at round 2+.
-
-2. If `DOUBLE=false`, emit this one-line notice (not a question):
+On **round 1 only**, if `DOUBLE=false`, emit this one-line notice (not a question):
 
    ```
    ◆ Tip: pass --double for a second-opinion review via DigitalOcean
@@ -319,7 +313,9 @@ main-loop side — how to invoke it and what to do with the verdict.
 **Invoke it** with the Agent tool, `subagent_type: "claude-qa-manager:qa-manager"` and
 **`run_in_background: true`** — not optional: a foreground return lands the whole round
 in this context, the one thing the manager exists to prevent. A backgrounded agent
-returns a stub and a transcript pointer you must never read. Pass:
+returns a stub and a transcript pointer you must never read. A `completed` notice with
+**no verdict** is the manager pausing mid-panel, not finishing — its own panel events wake
+it. Stay silent: no progress reply, no SendMessage; only a verdict needs action. Pass:
 
 ```
 brief_path=<preflight.json .manager_brief_path>
@@ -329,9 +325,9 @@ DOUBLE=<t|f>  TRIPLE=<t|f>  reviewer_override=<qwen-local|"">
 skip_contract_verification=<true|false>
 ```
 
-**Always the plugin-qualified `claude-qa-manager:` prefix**, wherever an agent is
-spawned: a bare name resolves only while no sibling QA plugin claims it, and where one
-does the spawn fails outright — observed live.
+**Always the plugin-qualified `claude-qa-manager:` prefix and never a `model`
+parameter**, wherever an agent is spawned: a bare name fails once a sibling QA plugin
+claims it, and `model` overrides the agents' pinned frontier model (invariant 6).
 
 Everything else the manager needs — branches, diff range, lens panel, forge, every
 scratch path, the token env/file pair, `mr_approved`, `approval_eligible` — is already
@@ -463,11 +459,32 @@ Do NOT apply fixes automatically. Instead:
    deliberate, and explicitly best-effort, text sweep. A fix that hardens the cited line while a
    sibling still asserts the opposite is the single most common defect this cycle re-finds, and
    it is what makes round N+1 pay a full panel to catch round N's fix.
-4. **Run the project's own checks before committing.** `verify.command` in `preflight.json`,
-   from the target directory; `verify.source` names the file it was discovered in
-   (`verify.build_command` too when present). This is the step whose absence produces the
-   tail-chasing pattern: a round's fix is otherwise unverified until the *next* round's full
-   panel finds it broken.
+4. **Run the project's own checks before committing** — always through the helper, never
+   by hand:
+
+   ```
+   bash "$CLAUDE_PLUGIN_ROOT/lib/run-verify.sh" <target-abs-dir> \
+        --from-preflight "$QA_SCRATCH/preflight.json" --log "$QA_SCRATCH/verify.log"
+   ```
+
+   It reads the command, the bound and the timings path itself — do not retype
+   `verify.command` into a shell line, it contains spaces and quotes. Never run the command
+   by hand either: detection proves an entry point *exists*, never that it terminates, so a
+   watcher hangs the round with nothing to kill it. For the build side, pass
+   `verify.build_command` explicitly as the second argument.
+
+   `state` is `passed`, `failed`, `timeout`, `unconfirmed` or `not-run`. **Only `passed` is
+   a pass.** `timeout`, `not-run` and `unconfirmed` all mean the round has no execution
+   evidence — like `none-found` — and the note must say the fixes went unverified.
+   `unconfirmed` is exit 0 that nothing corroborates: a recipe that starts containers,
+   tests, and tears down exits 0 on the teardown alone, so a real abort reads as success.
+   `reason` says which it is (`no_expect_configured` → set `verify.expect`;
+   `expect_not_met` → the suite ran and did not succeed; `exceeded_baseline` → this suite
+   normally finishes far sooner, so investigate a wedge). On any non-`passed` state read
+   the log with `ctx_execute_file` and an `intent=`. See `docs/CONFIGURING.md` §verify.
+
+   This is the step whose absence produces the tail-chasing pattern: a round's fix is
+   otherwise unverified until the *next* round's full panel finds it broken.
    **This is the only place the suite runs** — lenses are forbidden from running it,
    so skipping here leaves the round with no execution evidence at all, and every
    claim in it rests on reading. If the detected command is unsafe to run at this

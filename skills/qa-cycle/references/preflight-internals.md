@@ -78,15 +78,18 @@ root. Record:
 Also parse two hands-free flags (see Step 3A.1 — they control how the QA
 manager's `decisions_needed` are resolved):
 - `NON_INTERACTIVE=true` if `--non-interactive` (a.k.a. `--yes`) appears in argv.
-  Pre-answers the *defaultable* gates without prompting (skip-contract=No,
-  SAST-wait=defer, fixes=report-only, ambiguous contract=highest-confidence or
-  BLOCK). A clean, non-approval round then runs fully hands-free.
+  Pre-answers the *defaultable* gates without prompting (SAST-wait=defer,
+  fixes=report-only, ambiguous contract=highest-confidence or BLOCK). A clean,
+  non-approval round then runs fully hands-free.
+- `SKIP_CONTRACT_VERIFICATION=true` if `--skip-contract-verification` appears in argv;
+  `false` otherwise. Never prompted for — an absent Contract Verification table is a
+  failure signal, not a pass, so skipping must be named on the command line.
 - `AUTO_APPROVE=true` if `--auto-approve` appears in argv. ONLY this flag lets a
   clean approval-eligible round approve without the Step 3E AskUserQuestion
   confirm. Never implied by `--non-interactive` — approval is a safety invariant.
 
 Documented argument surface:
-`<MR_NUMBER> <TARGET> [--double | --triple] [--reviewer=qwen-local] [--non-interactive] [--auto-approve] [--help]`. All flags
+`<MR_NUMBER> <TARGET> [--double | --triple] [--reviewer=qwen-local] [--non-interactive] [--auto-approve] [--skip-contract-verification] [--help]`. All flags
 are per-invocation — nothing is persisted between rounds; callers must pass the
 flags again on subsequent rounds to keep multi-model QA active.
 

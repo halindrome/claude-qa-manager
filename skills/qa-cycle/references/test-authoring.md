@@ -109,6 +109,13 @@ enforcer hook, but is only *advisory* inside a `ctx_execute` payload, and the fi
 suites through exactly those payloads. One session recorded 11 truncating payloads against
 1 truncating `Bash` call. Filter after capture, in code — never in the pipeline.
 
+`lib/run-verify.sh` is now the payload the fix step runs the suite through, and it holds
+the invariant for you: it redirects the suite's output to `--log` rather than piping it, so
+the status it reports is the command's own. That is also why it redirects — a pipe leaves
+an orphaned grandchild holding the write end, and the read blocks. Read the log afterwards
+with `ctx_execute_file` and an `intent=`; do not reintroduce a pipeline around the run to
+shorten it.
+
 ## Scope and placement
 
 - **State the command you ran, verbatim, in the round note.** `verify.command` may be

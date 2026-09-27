@@ -50,8 +50,9 @@
 #      hide behind "usage error".
 #
 # The only things the orchestrator still does as LLM/interactive turns after
-# this are: contract resolution (jira_get + synthesis / AskUserQuestion), the
-# round-1 skip-contract prompt, any SAST wait-gate prompt, and the review panel.
+# this are: contract resolution (jira_get + synthesis, and an AskUserQuestion
+# only when two or more mentioned tickets resolve), any SAST wait-gate prompt,
+# and the review panel.
 set -uo pipefail
 
 # exit 2 = the OPERATOR can fix it (bad args, unknown target, missing tool).
@@ -213,10 +214,11 @@ if [ "${NONSTRING_LENS_TAGS:-0}" -gt 0 ]; then
   die_usage "targets.$TARGET.lens_tags contains $NONSTRING_LENS_TAGS non-string element(s); tags must be strings."
 fi
 
-# review.model / review.lens_models -- the upgrade path invariant 6 leaves open
-# (never DOWNgrade the model; nothing stops an operator spending a STRONGER one).
-# Empty/absent means every lens inherits the session model, same as before this
-# existed. lens_models keys are LENS NAMES (contract-security, ui-styling, ...),
+# review.model / review.lens_models name the model every lens runs on, and
+# review.allowed_models is the floor they must clear (invariant 6). There is no
+# "inherit the session" state: a lens spawned without a model runs on whatever the
+# operator's session runs, so a Haiku session would get a Haiku panel.
+# lens_models keys are LENS NAMES (contract-security, ui-styling, ...),
 # not lens_tags (schema/api/ui/perf) -- that exact mix-up shipped in this repo's
 # own example once (fe0d99a), so validate against the real lens vocabulary
 # rather than trust it was typed right.
@@ -240,6 +242,23 @@ KNOWN_LENS_NAMES_RE='\A(contract-security|regression-edges|test-quality|schema-p
 UNKNOWN_LENS_MODEL_KEYS=$(jq -r --arg re "$KNOWN_LENS_NAMES_RE" \
   '[.review.lens_models // {} | keys[] | select(test($re) | not)] | join(" ")' "$BB" 2>/dev/null || echo "")
 LENS_MODELS_JSON=$(jq -c '.review.lens_models // {}' "$BB")
+
+# The floor is an enumerated allow-list, never a strength ranking: the plugin does
+# not order models, the operator names the acceptable ones. An entry admits any id
+# containing it (case-insensitive), so "opus" covers "claude-opus-5" and
+# "opus[1m]". An empty review.model fails here too -- it is the inherit case.
+jq -e '.review.allowed_models | type == "array" and length > 0
+       and all(.[]; type == "string" and length > 0)' "$BB" >/dev/null 2>&1 \
+  || die_usage "review.allowed_models must be a non-empty array of model-name strings, e.g. [\"opus\",\"fable\"]."
+ALLOWED_MODELS_JSON=$(jq -c '.review.allowed_models' "$BB")
+BELOW_FLOOR_MODELS=$(jq -r '
+  (.review.allowed_models | map(ascii_downcase)) as $ok
+  | [(.review.model // ""), (.review.lens_models // {} | .[])]
+  | map(select(. as $m | $ok | any(. as $p | $m | ascii_downcase | contains($p)) | not))
+  | unique | map(if . == "" then "(empty)" else . end) | join(" ")' "$BB")
+if [ -n "$BELOW_FLOOR_MODELS" ]; then
+  die_usage "review model(s) not in review.allowed_models $ALLOWED_MODELS_JSON: $BELOW_FLOOR_MODELS. Every lens must run on a named frontier model (invariant 6) -- set review.model / review.lens_models to an allowed one."
+fi
 
 # review.test_path_pattern -- which paths are test scaffolding rather than code a
 # customer executes. Empty means lib/attribute-findings.sh's built-in default;
@@ -324,6 +343,9 @@ if [ -z "$VERIFY_OVERRIDE" ]; then
   VERIFY_OVERRIDE=$(jq -r '.verify.command // ""' "$BB")
   VERIFY_SRC="config verify.command"
 fi
+# The success marker travels with the command: exit 0 alone is not a pass.
+VERIFY_EXPECT=$(jq -r --arg t "$TARGET" \
+  '.targets[$t].verify.expect // .verify.expect // ""' "$BB")
 if [ -n "$VERIFY_OVERRIDE" ]; then
   # kind:suite on the override path is a CLAIM BY THE OPERATOR, not a detection.
   # Someone who points verify.command at a lint-only invocation gets a round that
@@ -339,6 +361,51 @@ else
   jq -e . >/dev/null 2>&1 <<<"${VERIFY_JSON:-}" || \
     VERIFY_JSON='{"state":"none-found","kind":"none","command":"","source":"detector failed to run","build_command":"","build_source":""}'
 fi
+
+# How long the fix step may let that command run. Detection proves a test entry
+# point EXISTS; it never proves the command terminates, and an unbounded run is
+# the one failure mode with no floor — a `scripts.test` that resolves to a
+# watcher blocks the round forever with nothing to kill it.
+# ONE guard, deliberately: the `case` catches every bad shape at once — absent
+# (jq prints `null`), empty, and non-numeric junk. Do NOT also add a `// 900`
+# inside the jq: two independent fallbacks mean either can be deleted without
+# changing behaviour or failing a test, so neither ends up covered.
+#
+# Note what this guard is NOT for. The layers are merged with jq's `*` (line
+# ~122), which merges objects RECURSIVELY, so a project that sets only
+# `verify.command` still inherits defaults.json's sibling `timeout_seconds`.
+# This catches a malformed value or a config predating the key — where the
+# alternative is an unbounded run, the one failure mode with no floor.
+VERIFY_TIMEOUT=$(jq -r --arg t "$TARGET" \
+  '.targets[$t].verify.timeout_seconds // .verify.timeout_seconds' "$BB")
+case "$VERIFY_TIMEOUT" in
+  ''|null|*[!0-9]*) VERIFY_TIMEOUT=900 ;;
+esac
+
+# Where this target's past run durations live, so the bound can be learned
+# rather than fixed. USER-level, never in the repo: it is observed local data,
+# not configuration, and a per-machine timing file committed to a shared project
+# would be both noise and wrong for everyone else's hardware.
+# Keyed on the target's absolute path, path-encoded. Deliberately NOT the forge
+# project slug: that is resolved further down this script (FORGE_PROJECT_ENC,
+# ~60 lines below), and reaching for it here would be an unbound variable under
+# `set -u` — a hard failure of the whole preflight, not a missing filename.
+# The target directory is also the more honest key: two checkouts of the same
+# repo on different disks genuinely have different suite timings.
+VERIFY_TIMINGS_KEY=$(printf '%s' "$TARGET_ABS" | sed 's|^/||; s|/|-|g')
+VERIFY_TIMINGS="${XDG_CONFIG_HOME:-$HOME/.config}/claude-qa-manager/verify-timings/${VERIFY_TIMINGS_KEY}"
+
+# Baseline policy, resolved the same way as every other verify key: per-target
+# beats project-wide beats the shipped default. Emitted as one object so the
+# helper takes one argument rather than four, and so adding a knob later does
+# not change the call site.
+VERIFY_BASELINE=$(jq -c --arg t "$TARGET" \
+  '(.verify.baseline // {}) * (.targets[$t].verify.baseline // {})' "$BB" 2>/dev/null)
+case "$VERIFY_BASELINE" in ''|null) VERIFY_BASELINE='{}' ;; esac
+
+VERIFY_JSON=$(jq --argjson s "$VERIFY_TIMEOUT" --arg tp "$VERIFY_TIMINGS" \
+  --argjson bl "$VERIFY_BASELINE" --arg ex "$VERIFY_EXPECT" \
+  '. + {timeout_seconds:$s, timings_path:$tp, baseline:$bl, expect:$ex}' <<<"$VERIFY_JSON")
 
 # ---------------------------------------------------------------------------
 # Step 0 — base-branch resolution (.branchconfig.yaml authoritative, else fallback)
@@ -1812,11 +1879,12 @@ MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
   printf 'target_branch=%s\n'          "$TARGET_BRANCH"
   printf 'diff_range=%s\n'             "$REMOTE/$TARGET_BRANCH..HEAD"
   printf 'lenses=%s\n'                 "$(printf '%s' "$LENSES_JSON" | jq -c .)"
-  # Model override for the lens panel -- see config/defaults.json `review.model`
-  # / `review.lens_models`. Empty review_model and lens_models={} mean "inherit
-  # the session model", exactly today's behaviour.
+  # The lens panel's models and the floor they were validated against -- see
+  # config/defaults.json `review`. run-panel.sh re-checks both, against the
+  # model each lens actually ran as.
   printf 'review_model=%s\n'           "$REVIEW_MODEL"
   printf 'lens_models=%s\n'            "$(printf '%s' "$LENS_MODELS_JSON" | jq -c .)"
+  printf 'allowed_models=%s\n'         "$ALLOWED_MODELS_JSON"
   # Empty means attribute-findings.sh uses its built-in default; see
   # config/defaults.json `review.test_path_pattern`.
   printf 'test_path_pattern=%s\n'      "$TEST_PATH_PATTERN"
@@ -1925,6 +1993,7 @@ PREFLIGHT_JSON=$(jq -n \
   --arg review_mode "$REVIEW_MODE" \
   --argjson lenses "$LENSES_JSON" \
   --arg review_model "$REVIEW_MODEL" --argjson lens_models "$LENS_MODELS_JSON" \
+  --argjson allowed_models "$ALLOWED_MODELS_JSON" \
   --arg test_path_pattern "$TEST_PATH_PATTERN" \
   --argjson schema_detected "$SCHEMA_DETECTED" \
   --arg schema_state "$SCHEMA_STATE" \
@@ -1973,7 +2042,7 @@ PREFLIGHT_JSON=$(jq -n \
     diff_scope: { insertions: $insertions, deletions: $deletions, total_changed: $total_changed, is_tiny: $is_tiny },
     review_mode: $review_mode,
     lenses: $lenses,
-    review_model: $review_model, lens_models: $lens_models,
+    review_model: $review_model, lens_models: $lens_models, allowed_models: $allowed_models,
     test_path_pattern: $test_path_pattern,
     schema: { detected: $schema_detected, state: $schema_state, evidence_path: $schema_evidence },
     sast: { gate_state: $sast_gate_state, running: $sast_running, report_path: $sast_report,

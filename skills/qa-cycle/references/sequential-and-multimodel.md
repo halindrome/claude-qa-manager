@@ -105,7 +105,10 @@ state, and a silent all-false is the failure invariant 2 exists to prevent.
 Use `subagent_type: "claude-qa-manager:qa-reviewer"` — the agent defined in
 `agents/qa-reviewer.md`, named with its plugin prefix. The bare `qa-reviewer` resolves
 only while nothing else on the machine claims that name; where a sibling QA plugin is
-installed the spawn fails outright, which is a hard stop mid-round. Pass a prompt
+installed the spawn fails outright, which is a hard stop mid-round. Pass **no `model`
+parameter**: the agent pins `model: opus` in its frontmatter, and an explicit `model`
+overrides that pin — a sequential round from a Haiku session would then review on
+Haiku, the exact downgrade invariant 6 forbids. Pass a prompt
 constructed from the template below (fill in all placeholders before calling the Agent
 tool):
 
@@ -117,7 +120,7 @@ MR: #<MR_NUMBER>
 Round: <N>
 Feature branch: <feature-branch>
 Target branch: <target-branch>
-skip_contract_verification: <true|false>   # from the pre-round-1 AskUserQuestion
+skip_contract_verification: <true|false>   # from --skip-contract-verification
 
 ## Code navigation
 

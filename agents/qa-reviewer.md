@@ -2,6 +2,7 @@
 name: qa-reviewer
 description: Read-only reviewer for a merge or pull request. Grounds every finding in JIRA acceptance criteria or MR-touched regressions. Produces a Contract Verification table, a 4-axis finding taxonomy, and routes pre-existing bugs to a non-blocking section.
 user-invocable: false
+model: opus
 ---
 
 You are a read-only QA reviewer for a merge or pull request.

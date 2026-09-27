@@ -498,7 +498,21 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
 ### Smaller, independent items
 
 - **Lens reviewers silently inherit a weak session model — invariant 6 has no
-  floor. OPEN, and the default configuration is the failing case.** Invariant 6
+  floor. CLOSED 2026-09-18 by option 3 below.** A Haiku-session `/qa-cycle` ran its
+  panel on Haiku, which is what finally forced it. Now: `review.model` ships as
+  `opus` (there is no inherit state — `run-panel.sh` always passes `--model`);
+  `review.allowed_models` (`["opus","fable"]`) is an enumerated allow-list, not a
+  ranking; preflight exits 2 when any configured model, or an empty one, is off it;
+  `run-panel.sh` refuses to spawn a lens whose brief model is off it
+  (`model_not_allowed`) and discards the findings of one whose `modelUsage` is off it
+  (`model_below_floor`); `panel-models.json` `model_check` is `allowed | below_floor`.
+  The Agent-spawned paths — the manager, the sequential fallback, the fix-diff review —
+  get `model: opus` in `agents/*.md` frontmatter, and the spine forbids passing a
+  `model` parameter, which would override the pin. Two gaps remain: the Agent paths
+  are pinned by frontmatter, not checked against a run record, so a caller that
+  passes `model` anyway is not caught; and the main-loop orchestrator (Step 3B fixes,
+  3E approval) still runs on the session model. The rest of this entry is the history.
+  Invariant 6
   says never manage review cost by downgrading the model. The cycle never
   downgrades it *itself* — the letter of the rule — but `review.model` and
   `review.lens_models` ship **empty**, empty means "pass no override, inherit the
@@ -703,7 +717,9 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
   Locked by `preflight.test.sh`, which asserts the slug the **stubbed CLI actually
   saw** rather than the presence of the export line — an assertion on the source
   text would pass even if the export were placed after the first forge call.
-- **Model override — upward, not downward. DONE.** `config/defaults.json`
+- **Model override — upward, not downward. DONE; its "inherit" default and "not
+  enforced" clauses are SUPERSEDED 2026-09-18** by the `allowed_models` floor (see the
+  invariant-6 entry above). `config/defaults.json`
   `review.model` (global) and `review.lens_models` (per lens name, wins over
   `review.model`) let an operator spend a stronger model than the session's on
   the panel or on individual lenses; empty/absent means every lens inherits the
@@ -1026,3 +1042,82 @@ wrong pull request and said nothing.** Written up as `CASE-STUDIES.md` §wrong-r
 - **Second-opinion reviewers are unverified here.** `do-reviewer.sh` and `qwen-reviewer.sh`
   were migrated but never invoked in this repo; they need `DO_LLM_API_KEY` / a local LM
   Studio respectively.
+
+---
+
+## Decided 2026-09-09 — the cycle stops waiting on things it should not wait on
+
+**Both pre-panel prompts are gone on their unambiguous path.** The round-1
+*"Skip Contract Verification?"* AskUserQuestion is deleted and replaced by
+`--skip-contract-verification`; Step 0.5 now auto-selects a mentioned ticket when exactly
+one resolves, and asks only when two or more do. The operator reported never once answering
+"yes, skip" — a question whose answer is always the same, or is derivable from the data, is
+not a gate, it is a stall, and it cost five minutes of walked-away time per cycle. A
+timeout-and-proceed was considered and is not available: `AskUserQuestion` has no timeout
+and blocks the turn, so the only real choice is ask or don't ask. Every gate whose answer a
+human actually supplies is untouched (schema, deletions, approval, fixes on someone else's
+branch, diminishing returns). Auto-selection is recorded as
+`contract_source=jira:X (auto: sole mentioned candidate)` so it is visible, not silent.
+
+**The verify run is bounded, by a wrapper rather than a smarter detector.** `detect-verify.sh`
+proves a test entry point *exists*; nothing proved it *terminates*, and Step 3B handed the
+raw command to the model to run by hand — so a `scripts.test` resolving to a watcher hung
+the round with nothing to kill it. `lib/run-verify.sh` now closes stdin, exports `CI=1`, and
+kills the **process group** on timeout. Sniffing the recipe was rejected again per
+`design-notes.md:36`; the bound is uniform and catches hangs a pattern list would miss.
+`timeout` is a distinct non-pass state, like `none-found`.
+
+**The bound is learned per target.** After three completed runs the limit drops to 5× the
+median (floored at 60s, capped by `timeout_seconds`), so a 20-second suite that wedges is
+caught in about a minute rather than burning the ceiling. Timeouts are deliberately **not**
+recorded: a gate that widened itself every time it fired would eventually bound nothing.
+Under three samples the JSON says `limit_source: configured` and never invents a baseline.
+
+Four things this work found that are worth not relearning:
+
+1. **A watchdog must not sleep in a child.** `sh -c 'sleep N; kill …'` leaks the `sleep`
+   when the shell is killed — ~1 in 8 runs, adopted by init, still holding the caller's
+   stdout, so a later `$(run-verify …)` blocks for the remainder of the limit. Under
+   mutation the suite did not fail, it *hung for 32 minutes*. Perl sleeps and signals in one
+   process now.
+2. **Never infer "timed out" from an exit-code range.** `rc >= 128` reports a segfaulting
+   suite (139) as a timeout, turning a crash the round must see into "ran out of time". The
+   state comes from a watchdog sentinel file.
+3. **Two guards for one thing means neither is tested.** Mutation runs showed a redundant
+   `// 900` and a redundant kill could each be deleted with no test failing. Collapsed to
+   one covered line each — defence in depth that nothing exercises is a blind spot wearing a
+   safety vest.
+4. **A baseline may only aggregate comparable runs.** Found on the first live round to use
+   the helper, not by any test. A round runs a narrow red-first check on one test file and
+   then the full suite, seconds apart, against the same target: 22s and (say) 400s. Pooled,
+   the narrow run sets the bound for the suite, which is then killed and reported
+   unverified — and it is a one-way ratchet, because timeouts are deliberately not recorded,
+   so the suite never contributes a counter-sample and the bound only drifts down. Every
+   fixture had used a single command shape per timings file, which is why the suite stayed
+   green through the defect.
+
+   **Settled: only the declared `verify.command` is measured.** Checksum-keying the timings
+   file per command was tried first and rejected — it is a heuristic that buckets every
+   ad-hoc invocation, and each bucket then learns independently, so a command run twice ever
+   never reaches the sample minimum. The config already declares which command is the gate,
+   so `run-verify.sh` takes `--canonical-command` and records nothing else. One file per
+   target, no heuristic.
+
+   **Settled: the derivation constants are config, not literals.** `multiplier`, `window`,
+   `floor_seconds` and `min_samples` live in `verify.baseline`, resolved per-target like
+   every other verify key, with `min_samples: 0` opting out. They were first chosen against
+   one project's suite, and a generic driver must not ship one project's calibration as
+   though it were a law — which is what hardcoding them did. `/qa-init` reports the
+   effective policy and does not write it: the values are defaults a project rarely needs
+   to change, and prompting for them would rebuild the walk-away-and-wait stall this same
+   change set removed from `/qa-cycle`.
+
+   A side benefit worth keeping: `run-verify.sh --from-preflight <preflight.json>` reads
+   the command, bound, timings path and policy itself, so `verify.command` never passes
+   through a shell line the model has to re-quote. That removed four arguments from the
+   spine as well as an error class.
+5. **The config merge is recursive, not shallow.** `preflight.sh:122` is
+   `jq -s '.[0] * .[1] * .[2]'` and jq's `*` merges objects deeply, so a project overriding
+   `verify.command` still inherits the shipped `verify.timeout_seconds`. `CLAUDE.md` claimed
+   the opposite until today, and a guard was written for a failure that could not happen.
+   Check with `jq -n '{a:{x:1,y:2}} * {a:{x:9}}'` before relying on either belief.

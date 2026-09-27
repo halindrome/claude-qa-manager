@@ -89,11 +89,11 @@ QA-Fix-Commit: <full SHA of any further fix commit this round>
 **Do not narrate a model downgrade from this file into the note body.** A round note
 once told an MR that one lens "ran on `<a smaller model>`" — it had not; the driver
 picked the wrong `modelUsage` key. Only `failed-<lens>.json` with
-`state == model_mismatch` means a requested model was not honoured, and
-`panel-models.json`'s `model_check` says whether one was ever requested:
-`not-requested` means the session model was inherited, which is the default and is
-not a finding. Absent a `model_mismatch` file, there is nothing to report beyond
-the footer line above.
+`state == model_mismatch` means a requested model was not honoured (still on the
+allow-list, so the review counts); `model_below_floor` / `model_not_allowed` mean that
+lens did not review at all and is reported as a failed lens. `panel-models.json`'s
+`model_check` is `allowed` or `below_floor` per lens. Absent one of those failure
+files, there is nothing to report beyond the footer line above.
 <else (QA_TOKEN_OK=false): omit the "<username> via " prefix:>
 *QA performed by Claude Code (<the model you are actually running as — see the note above>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` as above>
 

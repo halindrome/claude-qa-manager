@@ -152,3 +152,80 @@ human to defer each remaining finding explicitly, enumerated in a posted note. S
 which keeps the panel a single wave. To narrow a review, narrow a target's `lens_tags` —
 **never** manage cost by downgrading the model. A cheaper reviewer is a weaker reviewer,
 which defeats the point of the cycle.
+
+### Which model reviews
+
+```json
+{ "review": { "model": "opus", "lens_models": {}, "allowed_models": ["opus", "fable"] } }
+```
+
+These are the shipped defaults. Every lens runs on a **named** model — `lens_models[<lens
+name>]`, else `model` — and never on your session's model, so starting `/qa-cycle` from a
+Haiku session still gets a frontier panel. `allowed_models` is the floor: an enumerated
+list, matched as a case-insensitive substring (`opus` admits `claude-opus-5` and
+`opus[1m]`). Preflight exits 2 if any configured model, or an empty `model`, is not on it,
+and `run-panel.sh` checks the model each lens *actually ran as*: a lens below the floor is
+recorded as `model_below_floor` and its findings are discarded. The `qa-manager` and
+`qa-reviewer` agents pin `model: opus` for the Agent-spawned paths (the manager itself,
+the sequential fallback, the fix-diff review).
+
+`allowed_models` replaces rather than extends the default (jq `*` does not merge arrays).
+Widening it is a deliberate statement about which models may review — not a way to make
+a round start.
+
+## `verify` — how a fix is checked before it is committed
+
+Normally **empty**. The target's own test entry point is *discovered* (Makefile `test`,
+`scripts.test`, `tox.ini`, `go.mod`, …), because your project already declares how it is
+tested and a copy kept here would drift.
+
+```json
+{ "verify": { "command": "", "timeout_seconds": 900 } }
+```
+
+`command` — set only when detection is wrong, and prefer the per-target form
+`targets.<name>.verify.command`, which wins. An override must name **another entry point
+the project already provides** — never a piece lifted out of a detected recipe. A `test`
+target is an interface; its recipe may bring up a container, seed fixtures, or wait on a
+database, and a partial invocation still exits zero, so what you lose is lost silently.
+
+`timeout_seconds` — how long the run may take before it is killed (TERM, then KILL, on the
+whole process group). Detection proves an entry point *exists*; it never proves the command
+*terminates*, and nothing checks that it is autonomous. A `scripts.test` that resolves to a
+watcher, or a suite that reads stdin, would otherwise block the round forever. The runner
+closes stdin and exports `CI=1`, which handles most of it; this is the backstop.
+
+### The learned bound
+
+The flat ceiling is safe but blunt: a 20-second suite that wedges still burns the whole
+allowance. So the bound is also learned from how long this target's gate has actually taken.
+
+```json
+{ "verify": { "baseline": {
+    "min_samples": 3, "window": 10, "multiplier": 5, "floor_seconds": 60
+} } }
+```
+
+`multiplier` × the median of the last `window` durations, never below `floor_seconds` and
+never above `timeout_seconds`. Below `min_samples` there is no baseline and the run reports
+`limit_source: configured` — it does not invent one. **`min_samples: 0` turns the learned
+bound off** and leaves the flat ceiling. Per-target `targets.<name>.verify.baseline` wins,
+and merges over these rather than replacing them.
+
+These are defaults, not laws — they were first chosen against one project's suite, so tune
+them to yours. Two rules govern what gets measured:
+
+- **Only the declared `verify.command` is recorded.** A round runs other commands through
+  the same helper — a red-first check on one test file is seconds where the suite is
+  minutes — and pooling them would let the narrow run set the bound for the suite.
+- **Only runs that terminated are recorded.** Recording a timeout would ratchet the bound
+  upward using the number that means "this did not finish".
+
+Durations live outside the repo, in `~/.config/claude-qa-manager/verify-timings/`: they are
+observed local data, not configuration, and one machine's timings are wrong for another's
+hardware. Delete a file there to reset that target's baseline.
+
+A killed run reports `timeout`, which is **not** a pass: like `none-found` it means the
+round has no execution evidence, and the round note says the fixes went unverified. Raise
+`timeout_seconds` for a genuinely slow suite; for a watcher, name the non-watch entry point
+in `command` instead.

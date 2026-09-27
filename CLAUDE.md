@@ -10,7 +10,7 @@ already made (with reasons) so they are not relitigated.
 ## Run everything before you claim anything
 
 ```bash
-bash test/preflight.test.sh          # 346 passed / 0 failed
+bash test/preflight.test.sh          # 708 passed / 0 failed  (~4 min: 48 sections, real git fixtures)
 bash test/init.test.sh               #  32 passed / 0 failed
 bash test/no-private-identifiers.sh  # must print ok
 claude plugin validate .
@@ -80,6 +80,15 @@ a planted token.
 schema gate reports `schema.state=skipped:not-configured`, not clean. Only `sast.gate_state
 == clean` means a scan ran. A failed notes probe emits `round_probe_failed` rather than
 silently returning round 1. If you add a gate, give it a "did not run" state.
+
+**3a. State the rule, not the changelog.** A comment, `SKILL.md`, or a test says what the
+code does now and why. It does NOT narrate how the code used to work, what an earlier
+version did, or how a bug was found — that is what `docs/ROADMAP.md` and
+`docs/CASE-STUDIES.md` are for, and in an instruction file it is distraction that costs
+tokens on every invoke. The one licensed use of the past tense is an actionable
+prohibition: *"Do NOT reintroduce DDL content scanning"* (`lib/preflight.sh:838`) earns its
+place because it stops a specific regression. *"An earlier version wrapped this in a
+poll"* does not. If you cannot phrase it as "do not do X", it belongs in the docs.
 
 **3. A rule keeps its rationale.** The spine states each rule *and* a one-line why, then
 cites `references/` or `docs/CASE-STUDIES.md` for depth. A rule whose justification lives
@@ -155,9 +164,14 @@ reviewer, which defeats the cycle. Narrow `lens_tags` or the panel width instead
     test/              two suites + the scrub guard
     docs/              CASE-STUDIES, CONFIGURING, ROADMAP
 
-Config resolves in three layers, later winning, shallow-merged per top-level key:
+Config resolves in three layers, later winning, **recursively** merged —
+`lib/preflight.sh:122` is `jq -s '.[0] * .[1] * .[2]'`, and jq's `*` merges objects deeply:
 shipped `config/defaults.json` → user `~/.config/claude-qa-manager/config.json` →
 project `<repo>/.claude/skills/qa-cycle/config.json`.
+
+The distinction matters: under a shallow merge a project setting `verify.command` would
+drop the shipped `verify.timeout_seconds` and run the suite unbounded. Check with
+`jq -n '{a:{x:1,y:2}} * {a:{x:9}}'` before writing a guard that depends on either belief.
 
 ## Watch the token cost
 

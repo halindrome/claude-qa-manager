@@ -989,7 +989,255 @@ jq '.targets.mono.verify = {"command":"perl autotest.pl -S"}' "$cfg" > "$cfg.t" 
 out=$(run_preflight "$r" 73 mono); note_scratch "$out"
 eq "  per-target beats project-wide"   "$(jq -r '.verify.command' <<<"$out")" "perl autotest.pl -S"
 eq "  and names which key won"         "$(jq -r '.verify.source' <<<"$out")" "config targets.mono.verify.command"
+
+# The bound travels with the command. The config above sets `verify.command`
+# and nothing else, and still gets 900: the layers are merged with jq's `*`,
+# which merges objects RECURSIVELY, so the sibling `timeout_seconds` survives a
+# partial override. This asserts that inheritance -- NOT the in-script fallback,
+# which this case never reaches.
+eq "  shipped default is inherited"    "$(jq -r '.verify.timeout_seconds' <<<"$out")" "900"
+jq '.verify.timeout_seconds = 120' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  project-wide timeout is read"    "$(jq -r '.verify.timeout_seconds' <<<"$out")" "120"
+jq '.targets.mono.verify.timeout_seconds = 45' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  per-target timeout wins"         "$(jq -r '.verify.timeout_seconds' <<<"$out")" "45"
+# Junk must not read as "no limit". An unbounded run is the failure with no floor.
+jq '.targets.mono.verify.timeout_seconds = "soon"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  junk timeout falls back to 900"  "$(jq -r '.verify.timeout_seconds' <<<"$out")" "900"
+# The baseline knobs are policy in config, resolved like every other verify key.
+# Hardcoding them in the helper over-fits a generic driver to whichever suite
+# they were first measured against.
+eq "  expect travels with the command" "$(jq -r '.verify | has("expect")' <<<"$out")" "true"
+eq "  shipped baseline reaches JSON"   "$(jq -r '.verify.baseline.min_samples' <<<"$out")" "3"
+eq "  ...with the whole policy"        "$(jq -r '[.verify.baseline|keys[]]|sort|join(",")' <<<"$out")" "floor_seconds,min_samples,multiplier,window"
+jq '.verify.baseline = {"multiplier":9}' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  project override merges in"      "$(jq -r '.verify.baseline.multiplier' <<<"$out")" "9"
+eq "  ...keeping the shipped siblings"  "$(jq -r '.verify.baseline.min_samples' <<<"$out")" "3"
+jq '.targets.mono.verify.baseline = {"multiplier":2}' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+eq "  per-target baseline wins"        "$(jq -r '.verify.baseline.multiplier' <<<"$out")" "2"
 rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+echo "[run-verify bounds the suite it was handed]"
+# detect-verify proves a test entry point EXISTS; nothing proves it TERMINATES.
+# These drive lib/run-verify.sh itself -- the thing the fix step actually runs.
+RV="$REPO_SRC/lib/run-verify.sh"
+bounded() { [ "$1" -lt 20 ] && echo yes || echo no; }
+# A pass must be POSITIVELY confirmed, so a fixture that means "this suite
+# succeeded" has to print a marker and declare it. `exit 0` alone is deliberately
+# NOT a pass -- see run-verify.sh's note on the observed 13-second false pass.
+MARK='SUITE-OK-MARK'
+pass_cmd() { printf 'echo %s; exit 0' "$MARK"; }
+# Sleep durations are derived from this run's PID, never hardcoded. A fixed
+# duration is matched by ANY other copy of this suite on the machine — an
+# isolated red-first tree, a concurrent run — and a deliberately-broken copy
+# leaks exactly the processes these assertions grep for, so the marker must be
+# unique per run or a neighbour's leak is reported as this run's.
+GC=$(( 8000 + ($$ % 900) ))       # grandchild marker
+WD=$(( 7000 + ($$ % 900) ))       # watchdog marker
+survivors() { ps -Ao args | grep -c "[s]leep $1"; }
+# The watchdog is a perl process carrying the limit in its argv, NOT a `sleep`.
+# Grepping for `sleep $WD` here would match nothing and pass vacuously — an
+# assertion that cannot fail is the thing this suite exists not to ship.
+wd_survivors() { ps -Ao args | grep -c "[s]etpgrp.* $1 "; }
+d=$(mktemp -d); lg="$d/v.log"
+rv() { bash "$RV" "$d" "$1" --log "$lg" --expect "$MARK" ${2:+--timeout-seconds "$2"}; }
+
+eq "confirmed pass -> passed"   "$(rv "$(pass_cmd)"     | jq -r .state)" "passed"
+eq "nonzero -> failed"          "$(rv 'exit 3'          | jq -r .state)" "failed"
+eq "  and carries its status"   "$(rv 'exit 3'          | jq -r .exit)"  "3"
+eq "empty command -> not-run"   "$(rv ''               | jq -r .state)" "not-run"
+
+# THE false pass, reproduced. A recipe that starts containers, runs a harness and
+# tears them down exits 0 because the TEARDOWN succeeded -- the harness aborted
+# and emitted no test output. Exit 0 must therefore never be a pass on its own.
+#
+# The abort text is deliberately generic. Nothing in run-verify.sh matches on it
+# -- the only string the tool ever looks for is the project's own configured
+# `expect` -- so naming a particular harness's error here would imply detection
+# logic that does not exist, and must not be added.
+abort='echo "harness aborted before running anything"; echo teardown-ok; exit 0'
+eq "exit 0 with no marker"      "$(rv "$abort"          | jq -r .state)"  "unconfirmed"
+eq "  and says why"             "$(rv "$abort"          | jq -r .reason)" "expect_not_met"
+eq "  no --expect at all"       "$(bash "$RV" "$d" 'exit 0' --log "$lg" | jq -r .state)"  "unconfirmed"
+eq "  ...and says that too"     "$(bash "$RV" "$d" 'exit 0' --log "$lg" | jq -r .reason)" "no_expect_configured"
+# A crash must not be laundered into "we ran out of time": the round has to see
+# a segfaulting suite as a failure it can act on. This is why the timeout state
+# comes from a watchdog sentinel and not from an exit-code range -- SIGSEGV is
+# 139, which any `rc >= 128` test would misreport.
+eq "crash -> failed, not timeout" "$(rv 'kill -SEGV $$' | jq -r .state)" "failed"
+
+# stdin is closed: a suite that prompts gets EOF instead of waiting for a human.
+t0=$(date +%s); st=$(rv "IFS= read -r x; echo $MARK; exit 0" | jq -r .state); el=$(( $(date +%s) - t0 ))
+eq "stdin reader does not block"  "$st" "passed"
+eq "  and returns promptly"       "$(bounded "$el")" "yes"
+
+t0=$(date +%s); st=$(rv 'sleep 600' 2 | jq -r .state); el=$(( $(date +%s) - t0 ))
+eq "unbounded run -> timeout"     "$st" "timeout"
+eq "  and is actually bounded"    "$(bounded "$el")" "yes"
+
+# THE discriminating case. A watchdog that TERMs only its direct child passes
+# the row above and still hangs in production: a real suite is a tree
+# (`make test` -> `npm test` -> a watcher), and the process that will not die is
+# the grandchild. Kill the process GROUP or this helper buys nothing.
+t0=$(date +%s); st=$(rv "sh -c \"sleep $GC\"" 2 | jq -r .state); el=$(( $(date +%s) - t0 ))
+eq "grandchild -> timeout"        "$st" "timeout"
+eq "  bounded too"                "$(bounded "$el")" "yes"
+sleep 1
+eq "  and no grandchild survives" "$(survivors "$GC")" "0"
+
+# The watchdog must not outlive the run either: its `sleep` is a separate
+# process, and an orphan holding this script's stdout blocks any caller reading
+# the JSON from a pipe for the rest of the limit -- on a command that finished.
+# Repeated deliberately. The watchdog's group is created by perl's setpgrp, so
+# an INSTANT command can finish before that group exists and a single kill then
+# hits nothing — measured at roughly one leak in seven, which a single-shot
+# assertion passes straight over.
+n=0
+for _ in 1 2 3 4 5 6 7 8; do
+  [ "$(rv "$(pass_cmd)" "$WD" | jq -r .state)" = "passed" ] || n=$((n+1))
+done
+eq "fast run under a long limit"  "$n" "0"
+sleep 1
+eq "  leaves no watchdog orphan"  "$(wd_survivors "$WD")" "0"
+# Guard the guard: the matcher must actually match a LIVE watchdog, or the line
+# above proves nothing. Start one, see it, then confirm it is reaped.
+rv 'sleep 4' "$WD" >/dev/null &
+sleep 1
+eq "  the orphan matcher works"   "$([ "$(wd_survivors "$WD")" -ge 1 ] && echo yes || echo no)" "yes"
+wait
+sleep 1
+eq "  and the watchdog is reaped" "$(wd_survivors "$WD")" "0"
+
+# The suite's own output goes to the log, not into the caller's stdout.
+rv 'echo to-stdout; echo to-stderr >&2' >/dev/null
+eq "log captures stdout"          "$(grep -c 'to-stdout' "$lg")" "1"
+eq "log captures stderr"          "$(grep -c 'to-stderr' "$lg")" "1"
+eq "stderr is clean"              "$(rv 'echo hi' 2>&1 >/dev/null | wc -c | tr -d ' ')" "0"
+
+# --- the learned bound -----------------------------------------------------
+# A fixed ceiling is safe but blunt: a 20s suite that wedges burns the whole
+# quarter hour. These drive the derivation, not a copy of it.
+tf="$d/timings"
+# $3 = baseline policy JSON (the knobs are config, not literals in the script).
+rvt() { bash "$RV" "$d" "$1" --log "$lg" --timeout-seconds "$2" --timings "$tf" \
+             --canonical-command "$1" --expect "$MARK" ${3:+--baseline "$3"}; }
+# Same, but the run is NOT the declared gate: canonical stays 'make test'.
+rvnc() { bash "$RV" "$d" "$1" --log "$lg" --timeout-seconds "$2" --timings "$tf" \
+              --canonical-command 'make test' --expect "$MARK" ${3:+--baseline "$3"}; }
+seed() { printf '%s\n' "$@" > "$tf"; }
+
+# ONE invocation, both fields read from it. Calling rvt twice would not repeat
+# the experiment: the first run appends its own duration, so the second sees
+# three samples and legitimately reports a baseline.
+seed 20 20
+out=$(rvt 'exit 0' 900)
+eq "under min_samples -> configured" "$(jq -r .limit_source <<<"$out")" "configured"
+eq "  and claims no baseline"        "$(jq -r .baseline_seconds <<<"$out")" "null"
+
+# multiplier(5) x median(20) = 100, below the 900 ceiling, so the baseline governs.
+seed 20 20 20
+out=$(rvt 'exit 0' 900)
+eq "3 samples -> baseline governs"  "$(jq -r .limit_source <<<"$out")" "baseline"
+eq "  median is reported"           "$(jq -r .baseline_seconds <<<"$out")" "20"
+eq "  limit is multiplier x median" "$(jq -r .limit_used <<<"$out")" "100"
+
+# Floor: a 1-second suite must not get a 5-second bound that normal variance trips.
+seed 1 1 1
+eq "fast suite hits the floor"      "$(rvt 'exit 0' 900 | jq -r .limit_used)" "60"
+
+# Ceiling: the baseline may LOWER the configured limit, never raise it.
+seed 500 500 500
+out=$(rvt 'exit 0' 120)
+eq "baseline cannot exceed config"  "$(jq -r .limit_used <<<"$out")" "120"
+eq "  and says so"                  "$(jq -r .limit_source <<<"$out")" "configured"
+
+# ONLY THE DECLARED GATE IS MEASURED. A round runs a narrow red-first check on
+# one test file AND the full suite against the same target, seconds apart: 22s
+# against minutes. Pool them and the narrow run sets the bound for the suite,
+# which is then killed and reported unverified -- permanently, because timeouts
+# are not recorded so the suite never contributes a counter-sample. Found on a
+# real round, not by a fixture: every fixture had used one command shape.
+seed 400 400 400
+before=$(wc -l < "$tf" | tr -d ' ')
+# These are CONFIRMED passes, so non-canonicality is the only thing stopping the
+# record. A bare `exit 0` would now be `unconfirmed` and go unrecorded anyway,
+# which would make the assertion below pass for the wrong reason.
+rvnc "$(pass_cmd)" 900 >/dev/null      # a real pass, but not the declared gate
+rvnc "$(pass_cmd)" 900 >/dev/null
+rvnc "$(pass_cmd)" 900 >/dev/null
+eq "non-canonical pass not recorded" "$(wc -l < "$tf" | tr -d ' ')" "$before"
+out=$(bash "$RV" "$d" "$(pass_cmd)" --log "$lg" --timeout-seconds 900 --timings "$tf" \
+        --canonical-command "$(pass_cmd)" --expect "$MARK")
+eq "  so the gate's bound is intact" "$(jq -r .baseline_seconds <<<"$out")" "400"
+eq "  ...and the gate DID record"    "$(( $(wc -l < "$tf" | tr -d ' ') - before ))" "1"
+eq "  and one file serves the target" "$(ls "$tf"* | wc -l | tr -d ' ')" "1"
+
+# THE self-poisoning case. If a timeout were recorded, every firing would ratchet
+# the baseline up using the number that means "this did not finish" -- a gate
+# that widens itself each time it fires until it bounds nothing.
+seed 2 2 2
+rvt 'sleep 600' 3 >/dev/null
+eq "a timeout is not recorded"      "$(wc -l < "$tf" | tr -d ' ')" "3"
+# ...while terminated runs ARE recorded, or nothing would ever be learned.
+seed 5 5; before=$(wc -l < "$tf" | tr -d ' ')
+rvt 'exit 1' 900 >/dev/null
+eq "a failed run IS recorded"       "$(( $(wc -l < "$tf" | tr -d ' ') - before ))" "1"
+
+# The knobs are CONFIG. Same samples, different policy, different bound -- and
+# min_samples 0 opts out of the learned bound entirely.
+seed 20 20 20
+eq "multiplier is honoured"         "$(rvt 'exit 0' 900 '{"multiplier":2,"floor_seconds":1}' | jq -r .limit_used)" "40"
+eq "floor is honoured"              "$(rvt 'exit 0' 900 '{"multiplier":1,"floor_seconds":300}' | jq -r .limit_used)" "300"
+eq "min_samples is honoured"        "$(rvt 'exit 0' 900 '{"min_samples":9}' | jq -r .limit_source)" "configured"
+eq "min_samples 0 disables it"      "$(rvt 'exit 0' 900 '{"min_samples":0}' | jq -r .limit_source)" "configured"
+seed 9 9 9 9 9 1 1 1
+eq "window trims to the recent runs" "$(rvt 'exit 0' 900 '{"window":3,"floor_seconds":1,"multiplier":1}' | jq -r .baseline_seconds)" "1"
+
+# --from-preflight is the form the orchestrator uses: the command never passes
+# through a shell line, so its spaces and quotes cannot be mis-quoted.
+pf="$d/pf.json"
+jq -n --arg tp "$tf" --arg c "$(pass_cmd)" --arg m "$MARK" \
+  '{verify:{command:$c, expect:$m, timeout_seconds:900,
+            timings_path:$tp, baseline:{min_samples:3,multiplier:5,floor_seconds:60,window:10}}}' > "$pf"
+seed 20 20 20
+out=$(bash "$RV" "$d" --from-preflight "$pf" --log "$lg")
+eq "--from-preflight supplies all"  "$(jq -r .limit_used <<<"$out")" "100"
+eq "  including the expect marker"  "$(jq -r .state <<<"$out")" "passed"
+eq "  and the command it ran"       "$(jq -r .command <<<"$out")" "$(pass_cmd)"
+eq "  explicit flag still wins"     "$(bash "$RV" "$d" --from-preflight "$pf" --log "$lg" --timeout-seconds 30 | jq -r .limit_used)" "30"
+
+# An unwritable timings path must cost the round nothing AND say nothing. A
+# redirection is processed before the command's own 2>/dev/null applies, so
+# `>> "$f" 2>/dev/null` on a read-only path still prints -- the suppression has
+# to wrap the whole group. The `stderr is clean` check above only ever exercises
+# the writable path, so it cannot catch this.
+ro="$d/ro"; mkdir -p "$ro"; chmod a-w "$ro"
+rvro() { bash "$RV" "$d" "$(pass_cmd)" --log "$lg" --timeout-seconds 900 \
+              --timings "$ro/k" --canonical-command "$(pass_cmd)" --expect "$MARK"; }
+err=$(rvro 2>&1 >/dev/null)
+eq "unwritable timings: silent"     "$(printf '%s' "$err" | wc -c | tr -d ' ')" "0"
+st=$(rvro 2>/dev/null)
+# A confirmed pass, so the ONLY thing being tested is that an unwritable timings
+# path costs the round nothing. A bare `exit 0` would now be `unconfirmed` and
+# the assertion would be measuring pass semantics instead.
+eq "  and still reports the run"    "$(jq -r .state <<<"$st")" "passed"
+eq "  falling back to configured"   "$(jq -r .limit_source <<<"$st")" "configured"
+chmod u+w "$ro"
+
+# Which bound was hit has to reach the round: a wedge and a slow suite are
+# different findings.
+seed 1 1 1
+out=$(rvt 'sleep 600' 900 '{"multiplier":2,"floor_seconds":2}')
+eq "baseline timeout names itself"   "$(jq -r .reason <<<"$out")" "exceeded_baseline"
+eq "  and the bound was the baseline" "$(jq -r .limit_source <<<"$out")" "baseline"
+rm -f "$tf"
+eq "configured timeout names itself" "$(rvt 'sleep 600' 2 | jq -r .reason)" "exceeded_configured"
+rm -rf "$d"
 
 # ---------------------------------------------------------------------------
 echo "[subproject concepts appear only when there are subprojects]"
@@ -1702,16 +1950,19 @@ r=$(mkfixture "feature/x" "main" '.targets.mono.lens_tags = ["api", 42]')
 run_preflight "$r" 73 mono >/dev/null; eq "non-string tag element -> exit 2" "$?" "2"
 rm -rf "$r"
 
-echo "[review.model / review.lens_models — the upgrade path, never downgrade]"
-# Default: neither key set -> empty/absent, brief and JSON carry the "inherit
-# the session model" signal, unchanged from before these keys existed.
+echo "[review.model / review.lens_models / review.allowed_models — a named frontier model, never the session's]"
+# Default: the shipped config names a frontier model. There is no "inherit the
+# session" default — a lens that inherited would review on Haiku under a Haiku
+# session.
 r=$(mkfixture "feature/x" "main" '.'); commit_lines "$r/repo" 5 f.js
 out=$(run_preflight "$r" 73 mono)
-eq "default review_model is empty"    "$(jq -r '.review_model' <<<"$out")" ""
+eq "default review_model is opus"     "$(jq -r '.review_model' <<<"$out")" "opus"
 eq "default lens_models is {}"        "$(jq -r '.lens_models' <<<"$out")" "{}"
+eq "default allowed_models"           "$(jq -c '.allowed_models' <<<"$out")" '["opus","fable"]'
 brief=$(jq -r '.manager_brief_path' <<<"$out")
-eq "  brief carries review_model="    "$(grep -c '^review_model=$' "$brief")" "1"
+eq "  brief carries review_model=opus" "$(grep -c '^review_model=opus$' "$brief")" "1"
 eq "  brief carries lens_models={}"   "$(grep -c '^lens_models={}$' "$brief")" "1"
+eq "  brief carries allowed_models"   "$(grep -c '^allowed_models=\["opus","fable"\]$' "$brief")" "1"
 # set-phase.sh rebuilds the status line's identity fields from the brief rather
 # than copying them through from a file a model can overwrite. Field 2 is the
 # target SHORT name, so without this key the repair falls back to the very value
@@ -1749,6 +2000,19 @@ rm -rf "$r"
 r=$(mkfixture "feature/x" "main" '.review.lens_models = {"contract-security": 42}')
 run_preflight "$r" 73 mono >/dev/null; eq "non-string lens_models value -> exit 2" "$?" "2"
 rm -rf "$r"
+# The floor. Each of these is a round that would review below it, so each is a
+# refusal (exit 2), never a warning a hands-free round would sail past.
+floor_case() {  # $1 label, $2 jq config edit, $3 expected rc
+  local r; r=$(mkfixture "feature/x" "main" "$2"); commit_lines "$r/repo" 5 f.js
+  run_preflight "$r" 73 mono >/dev/null; eq "$1 -> exit $3" "$?" "$3"
+  rm -rf "$r"
+}
+floor_case "empty review.model (the inherit case)"      '.review.model = ""'                                 2
+floor_case "review.model below the floor"               '.review.model = "haiku"'                            2
+floor_case "a lens_models value below the floor"        '.review.lens_models = {"contract-security":"sonnet"}' 2
+floor_case "empty allowed_models"                       '.review.allowed_models = []'                        2
+floor_case "an allowed full id, any case"               '.review.model = "Claude-Fable-5-1"'                 0
+floor_case "the operator's own allow-list is honoured"  '.review.model = "sonnet" | .review.allowed_models = ["sonnet"]' 0
 
 echo "[review.test_path_pattern — reaches the manager, or the override is inert]"
 # The manager passes this to attribute-findings.sh as argv[3]. If it never reaches
@@ -1807,8 +2071,19 @@ done
 # conditional lens for that target (preflight validates this and dies; a shipped
 # example that trips it would be a broken template).
 for f in "$BB_REAL" "$REPO_SRC/examples/"*.json; do
-  nonarray=$(jq -r '[.targets // {} | to_entries[] | select(.value.lens_tags != null and (.value.lens_tags|type) != "array") | .key] | join(",")' "$f")
-  eq "  lens_tags all arrays: $(basename "$f")" "${nonarray:-none}" "none"
+  # select(type=="object") is load-bearing: `targets` carries a `_comment`
+  # STRING beside the target objects. Index it and jq raises a type error, the
+  # substitution comes back empty, and `${nonarray:-none}` turns that into a
+  # pass -- a check that errored out reporting clean. Keep the type filter and
+  # the `jq -e` status check together; either alone restores the silent pass.
+  if ! nonarray=$(jq -er '[.targets // {} | to_entries[]
+                           | select((.value|type) == "object")
+                           | select(.value.lens_tags != null and (.value.lens_tags|type) != "array")
+                           | .key] | join(",")' "$f" 2>&1); then
+    bad "  lens_tags all arrays: $(basename "$f")" "jq failed: $nonarray"
+  else
+    eq "  lens_tags all arrays: $(basename "$f")" "${nonarray:-none}" "none"
+  fi
 done
 # Every tag in the shipped file must be one preflight actually understands.
 # EXTRACT the vocabulary from preflight.sh — do not restate it here. A hardcoded
@@ -1827,8 +2102,16 @@ else
   # operator copied it and got a silently inert lens. Invariant 4: the two loops
   # directly above already iterated the examples; this one did not.
   for f in "$BB_REAL" "$REPO_SRC/examples/"*.json; do
-    bad_tags=$(jq -r --arg re "$TAGS_RE" '[.targets[].lens_tags[]?] | unique | map(select(test($re) | not)) | join(",")' "$f")
-    if [ -z "$bad_tags" ]; then ok "  no unknown tags: $(basename "$f")"
+    # Same two hazards as the loop above: `.targets[]` hits the `_comment`
+    # string in defaults.json, and single-repo.json has no `targets` at all
+    # ("Cannot iterate over null"). Both error to empty, and empty reads as
+    # "no unknown tags" -- a clean report from a check that never ran.
+    if ! bad_tags=$(jq -er --arg re "$TAGS_RE" '[.targets // {} | to_entries[]
+                       | select((.value|type) == "object")
+                       | .value.lens_tags[]?]
+                     | unique | map(select(test($re) | not)) | join(",")' "$f" 2>&1); then
+      bad "  no unknown tags: $(basename "$f")" "jq failed: $bad_tags"
+    elif [ -z "$bad_tags" ]; then ok "  no unknown tags: $(basename "$f")"
     else bad "  no unknown tags: $(basename "$f")" "found: $bad_tags"; fi
   done
   # Same for the JSON snippets in the docs — users copy those verbatim, and the
@@ -2152,8 +2435,9 @@ mkpanel() {   # -> echoes a root dir with plugin/, repo/, scratch/, bin/
     printf 'feature_branch=feature/x\ntarget_branch=main\n'
     printf 'diff_range=origin/main..HEAD\n'
     printf 'lenses=["contract-security","regression-edges","test-quality"]\n'
-    printf 'review_model=\n'
+    printf 'review_model=opus\n'
     printf 'lens_models={}\n'
+    printf 'allowed_models=["opus","fable"]\n'
     printf 'qa_scratch=%s\n' "$S"
     printf 'contract_path=%s/contract.md\n' "$S"
     printf 'sast_path=%s/sast.md\n' "$S"
@@ -2256,6 +2540,23 @@ eq "  three lens files landed" "$(ls "$p/scratch"/lens-*.json 2>/dev/null | wc -
 eq "  no failed-*.json"        "$(ls "$p/scratch"/failed-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
 eq "  counter reached 3/3"     "$(awk -F'|' '{print $5"/"$6}' "$p/scratch/status")" "3/3"
 eq "  phase is lenses during the panel" "$(awk -F'|' '{print $4}' "$p/scratch/status")" "lenses"
+# The lens watchdog must not outlive its lens. Written as
+# `( sleep N; kill ... ) &` the sleep is a CHILD of the subshell, so killing the
+# watchdog orphans it for the rest of the fuse -- one per lens, six per round,
+# still holding this script's descriptors. The stall value is per-run so a
+# concurrent suite's orphans cannot be miscounted as this run's.
+WSTALL=$(( 6000 + ($$ % 900) ))
+q=$(mkpanel)
+awk -F'|' -v n="$WSTALL" 'BEGIN{OFS="|"} {$9=n; print}' "$q/scratch/status" > "$q/s.t"
+mv "$q/s.t" "$q/scratch/status"
+run_panel "$q" >/dev/null 2>&1
+eq "  watchdog fuse was read"      "$(awk -F'|' '{print $9}' "$q/scratch/status")" "$WSTALL"
+sleep 1
+# Both shapes: the `sleep` a subshell watchdog would orphan, and the perl
+# watchdog itself. Either surviving the panel is the leak.
+eq "  no orphaned watchdog sleep"  "$(ps -Ao args | grep -c "[s]leep $WSTALL")" "0"
+eq "  no orphaned perl watchdog"   "$(ps -Ao args | grep -c "[p]erl.*$WSTALL")" "0"
+rm -rf "$q"
 eq "  lens payload is the structured_output, not the envelope" \
    "$(jq -r '.navigation' "$p/scratch/lens-contract-security.json")" "cmm"
 # fanout + tree snapshots: absent, these two degrade to "no history row" and
@@ -2276,10 +2577,10 @@ eq "  passes --json-schema (the format is forced, not requested)" \
    "$(case "$argv" in *--json-schema*) echo yes ;; *) echo no ;; esac)" "yes"
 eq "  passes --agent claude-qa-manager:qa-reviewer" \
    "$(case "$argv" in *"--agent claude-qa-manager:qa-reviewer"*) echo yes ;; *) echo no ;; esac)" "yes"
-# Empty review_model/lens_models means INHERIT. Naming a model here would be a
-# downgrade the moment the session runs on something stronger (invariant 6).
-eq "  omits --model when neither override is configured" \
-   "$(case "$argv" in *--model*) echo present ;; *) echo absent ;; esac)" "absent"
+# Always an explicit --model: omitting it would inherit the operator's session
+# model, which is how a Haiku session gets a Haiku panel (invariant 6).
+eq "  passes --model review_model explicitly" \
+   "$(case "$argv" in *"--model opus"*) echo yes ;; *) echo no ;; esac)" "yes"
 # Up to six lenses run concurrently in ONE checkout; without this they all persist
 # sessions into the same per-directory project slug, and nothing ever resumes one.
 eq "  passes --no-session-persistence (six lenses, one checkout)" \
@@ -2367,22 +2668,61 @@ eq "whole panel dead -> exit 3" "$rc" "3"
 eq "  nothing landed" "$(ls "$p/scratch"/lens-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
 rm -rf "$p"
 
-# --- a weaker model running unnoticed is the failure invariant 6 exists for ---
+# --- a lens that RAN below the floor is not a review --------------------------
+# The request said opus; the run record says haiku. Config describes intent, the
+# envelope describes reality, and only reality is checked against the floor.
 p=$(mkpanel)
-sed -i.bak 's/^review_model=$/review_model=opus/' "$p/scratch/manager-brief.txt"
-FAKE_MODES="contract-security:mismatch" run_panel "$p" >/dev/null
-eq "requested model is passed through" \
-   "$(case "$(cat "$p/scratch/argv-test-quality.txt")" in *"--model opus"*) echo yes ;; *) echo no ;; esac)" "yes"
-eq "  a model swap is RECORDED, not silently accepted" \
-   "$(jq -r '.state' "$p/scratch/failed-contract-security.json")" "model_mismatch"
-# ...and the findings still land: the review happened, and discarding real
-# findings would be a second defect on top of the first.
-eq "  ...and its findings still land" \
-   "$([ -f "$p/scratch/lens-contract-security.json" ] && echo present || echo absent)" "present"
+FAKE_MODES="contract-security:mismatch" run_panel "$p" >/dev/null; rc=$?
+eq "a lens that ran below the floor -> partial panel (exit 1)" "$rc" "1"
+eq "  recorded as model_below_floor" \
+   "$(jq -r '.state' "$p/scratch/failed-contract-security.json")" "model_below_floor"
+# Landing it would count the lens as done — a sub-floor review reporting clean.
+eq "  ...and its findings do NOT land" \
+   "$([ -f "$p/scratch/lens-contract-security.json" ] && echo present || echo absent)" "absent"
 eq "  the actual model is on the record" \
    "$(jq -r '."contract-security".model' "$p/scratch/panel-models.json")" "claude-haiku-4-5"
-eq "  ...and model_check records that a model WAS requested" \
-   "$(jq -r '."contract-security".model_check' "$p/scratch/panel-models.json")" "requested"
+eq "  ...with model_check below_floor" \
+   "$(jq -r '."contract-security".model_check' "$p/scratch/panel-models.json")" "below_floor"
+rm -rf "$p"
+
+# A swap WITHIN the allow-list is recorded, and the review still counts.
+p=$(mkpanel)
+sed -i.bak 's/^review_model=opus$/review_model=fable/' "$p/scratch/manager-brief.txt"
+run_panel "$p" >/dev/null
+eq "requested model is passed through" \
+   "$(case "$(cat "$p/scratch/argv-test-quality.txt")" in *"--model fable"*) echo yes ;; *) echo no ;; esac)" "yes"
+eq "  an allowed swap is RECORDED as model_mismatch" \
+   "$(jq -r '.state' "$p/scratch/failed-contract-security.json")" "model_mismatch"
+eq "  ...and its findings still land" \
+   "$([ -f "$p/scratch/lens-contract-security.json" ] && echo present || echo absent)" "present"
+rm -rf "$p"
+
+# No model in the brief is the inherit case: the lens is never spawned. A brief
+# preflight did not write (or an older one) must not reopen what preflight closed.
+for _bad in 'review_model=' 'review_model=haiku'; do
+  p=$(mkpanel)
+  sed -i.bak "s/^review_model=opus\$/$_bad/" "$p/scratch/manager-brief.txt"
+  run_panel "$p" >/dev/null; rc=$?
+  eq "brief '$_bad' -> nothing landed (exit 3)" "$rc" "3"
+  eq "  recorded as model_not_allowed" \
+     "$(jq -r '.state' "$p/scratch/failed-contract-security.json")" "model_not_allowed"
+  eq "  ...and claude was never invoked" \
+     "$(ls "$p/scratch"/argv-*.txt 2>/dev/null | wc -l | tr -d ' ')" "0"
+  rm -rf "$p"
+done
+p=$(mkpanel)
+sed -i.bak '/^allowed_models=/d' "$p/scratch/manager-brief.txt"
+run_panel "$p" >/dev/null
+eq "brief with no allowed_models -> fails closed" \
+   "$(jq -r '.state' "$p/scratch/failed-contract-security.json")" "model_not_allowed"
+rm -rf "$p"
+# jq's contains("") is always true, so an empty entry would admit every model.
+p=$(mkpanel)
+sed -i.bak -e 's/^allowed_models=.*/allowed_models=[""]/' -e 's/^review_model=opus$/review_model=haiku/' \
+  "$p/scratch/manager-brief.txt"
+run_panel "$p" >/dev/null
+eq "brief allowed_models [\"\"] admits nothing" \
+   "$(jq -r '.state' "$p/scratch/failed-contract-security.json")" "model_not_allowed"
 rm -rf "$p"
 
 # A real envelope carries helper traffic in modelUsage alongside the reviewer's
@@ -2403,11 +2743,8 @@ eq "  ...even though the helper emitted MORE output tokens" \
    "$(jq -r 'if (.modelUsage["claude-fable-5-1"].outputTokens
                  > .modelUsage["claude-opus-5"].outputTokens) then "yes" else "no" end' \
         "$p/scratch/raw-contract-security.json")" "yes"
-# Invariant 2: with no --model requested the mismatch check has nothing to
-# compare and can never fire. Silence there read as clean for the whole life of
-# the driver, in the DEFAULT configuration. It has to say so.
-eq "  no model requested -> model_check says so, rather than nothing" \
-   "$(jq -r '."contract-security".model_check' "$p/scratch/panel-models.json")" "not-requested"
+eq "  model_check is allowed for a frontier reviewer" \
+   "$(jq -r '."contract-security".model_check' "$p/scratch/panel-models.json")" "allowed"
 rm -rf "$p"
 
 # --- stale files from the PREVIOUS round must not count as this round's work --
@@ -2695,8 +3032,11 @@ gate_case() {  # $1 label, $2 preflight jq mutation, $3 env prefix, $4 expected 
   local out; out=$( cd "$g/repo" && env PATH="$g/bin:$PATH" QA_FORGE=gitlab GATE_TEST_TOKEN=tok $3 \
       bash "$g/plugin/gate-approve.sh" "$g/scratch" --round-blocking false 2>/dev/null )
   eq "$1 -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+  # `fail`, not merely "not pass": every case here is a value the gate READ, and
+  # reporting a read `false` as `unevaluable` tells the operator the input is
+  # missing when it is present.
   eq "  ...blamed on $4" \
-     "$(jq -r --arg c "$4" '[.reasons[]|select(.check==$c and .state!="pass")]|length' <<<"$out")" "1"
+     "$(jq -r --arg c "$4" '[.reasons[]|select(.check==$c and .state=="fail")]|length' <<<"$out")" "1"
   rm -rf "$g"
 }
 gate_case "no QA token"              '.qa_token_ok = false'       ''  qa-token
@@ -2982,6 +3322,16 @@ eq "  ...and no longer carries a raw nine-field printf" \
 # Both files must exist, or every grep above scores 0 and reads as a real failure.
 eq "  ...and both files exist to be checked" \
    "$( [ -f "$QA_MANAGER_MD" ] && [ -f "$SEQ_MD" ] && echo yes || echo no )" "yes"
+
+# --- Agent spawns (the manager; sequential and fix-review lenses) --------------
+# An Agent subagent with no `model:` inherits the caller's, so a Haiku session
+# would run the manager and every sequential lens on Haiku. The pin must be on
+# the allow-list the driver enforces, or the two paths disagree about the floor.
+for _agent in qa-manager qa-reviewer; do
+  _pin=$(sed -n '/^---$/,/^---$/s/^model: *//p' "$REPO_SRC/agents/$_agent.md")
+  eq "agents/$_agent.md pins an allowed model" \
+     "$(jq -r --arg m "$_pin" '.review.allowed_models | any(. as $p | $m | ascii_downcase | contains($p))' "$REPO_SRC/config/defaults.json")" "true"
+done
 
 # --- the note is where a wrong model actually reached a human ------------------
 # panel-models.json is only half the defect: round-note.md is the consumer that

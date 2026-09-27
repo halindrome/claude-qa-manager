@@ -8,3 +8,6 @@
 # Scratch
 *.tmp
 .DS_Store
+
+# Local Claude Code tooling (hooks, rules, settings) -- machine-specific, never shipped
+.claude/

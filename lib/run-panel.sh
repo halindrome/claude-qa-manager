@@ -75,6 +75,7 @@ MR=$(brief mr)
 LENSES_JSON=$(brief lenses)
 REVIEW_MODEL=$(brief review_model)
 LENS_MODELS=$(brief lens_models)
+ALLOWED_MODELS=$(brief allowed_models)
 DIFF_RANGE=$(brief diff_range)
 FEATURE_BRANCH=$(brief feature_branch)
 TARGET_BRANCH=$(brief target_branch)
@@ -258,19 +259,31 @@ compose() {   # $1 = lens name -> writes $S/prompt-<lens>.txt
 }
 
 # ---------------------------------------------------------------------------
-# Model resolution: lens_models[<name>] -> review_model -> inherit.
-#
-# Inherit means OMIT --model, not "pass a default". Naming a model here would be a
-# downgrade the moment the session runs on something stronger, and invariant 6 has
-# no floor: a cheaper reviewer is a weaker reviewer, which defeats the cycle.
+# Model resolution: lens_models[<name>] -> review_model. There is NO inherit:
+# `claude -p` without --model runs whatever the operator's session defaults to,
+# so a Haiku session would review on Haiku. A lens whose model is empty or not in
+# allowed_models is not spawned at all (invariant 6: a cheaper reviewer is a
+# weaker reviewer). Preflight refuses such a config; this is the same check
+# failing closed on a brief it did not write.
 # ---------------------------------------------------------------------------
 resolve_model() {
   local lens="$1" m
   m=$(printf '%s' "$LENS_MODELS" | jq -r --arg l "$lens" '.[$l] // empty' 2>/dev/null)
   [ -n "$m" ] && { printf '%s' "$m"; return; }
-  [ -n "$REVIEW_MODEL" ] && { printf '%s' "$REVIEW_MODEL"; return; }
-  printf ''
+  printf '%s' "$REVIEW_MODEL"
 }
+
+allowed() {  # $1 model id -> 0 iff it contains an allowed_models entry
+  [ -n "$1" ] && [ "$1" != "null" ] && printf '%s' "$ALLOWED_MODELS" | jq -e --arg m "$1" \
+    'type == "array" and length > 0
+     and any(.[]; type == "string" and length > 0
+                  and (. as $p | ($m | ascii_downcase) | contains($p | ascii_downcase)))' \
+    >/dev/null 2>&1
+}
+
+# Which modelUsage key is the reviewer -- see the comment at the use site below.
+_rank='(.value.inputTokens // 0) + (.value.cacheReadInputTokens // 0)
+       + (.value.cacheCreationInputTokens // 0)'
 
 fail_lens() {  # $1 lens, $2 state, $3 rc, $4 detail
   jq -n --arg l "$1" --arg s "$2" --arg rc "$3" --arg d "$4" \
@@ -289,11 +302,14 @@ for lens in $LENSES; do
     fail_lens "$lens" "unknown_lens" 0 "no entry in config/lens-catalog.json"
     continue
   fi
+  model=$(resolve_model "$lens")
+  if ! allowed "$model"; then
+    fail_lens "$lens" "model_not_allowed" 0 "resolved '${model:-<none>}', allowed_models ${ALLOWED_MODELS:-<none>}"
+    continue
+  fi
 
   (
-    model=$(resolve_model "$lens")
-    set -- -p
-    [ -n "$model" ] && set -- "$@" --model "$model"
+    set -- -p --model "$model"
     set -- "$@" --plugin-dir "$PLUGIN" --agent claude-qa-manager:qa-reviewer \
                 --strict-mcp-config --mcp-config "$LENS_MCP" \
                 --no-session-persistence \
@@ -311,10 +327,21 @@ for lens in $LENSES; do
     # macOS has no timeout(1). TERM first, then KILL: a bare KILL orphans the
     # lens's MCP server children (the code-graph server, the context-mode node
     # process), which then outlive the round and accumulate.
-    ( sleep "$LIMIT"; kill -TERM "$cpid" 2>/dev/null; sleep 10; kill -9 "$cpid" 2>/dev/null ) &
+    #
+    # The watchdog sleeps and signals in ONE process. Do NOT write it as
+    # `( sleep N; kill ... ) &`: there the `sleep` is a CHILD of the subshell, so
+    # killing the watchdog orphans the sleep for the rest of $LIMIT — one leak per
+    # lens, six per round, adopted by init and still holding this script's
+    # descriptors. Measured live at 6 orphaned `sleep 1200` per round before this.
+    perl -e 'my ($lim,$pid) = @ARGV;
+             sleep $lim;
+             kill(15, $pid);
+             sleep 10;
+             kill(9, $pid);' "$LIMIT" "$cpid" </dev/null >/dev/null 2>&1 &
     wpid=$!
+    disown "$wpid" 2>/dev/null || true
     wait "$cpid"; rc=$?
-    kill "$wpid" 2>/dev/null
+    kill -9 "$wpid" 2>/dev/null
 
     if [ "$rc" -ge 128 ]; then
       fail_lens "$lens" "watchdog_killed" "$rc" "exceeded ${LIMIT}s"
@@ -353,17 +380,22 @@ for lens in $LENSES; do
     # cached round context (cacheRead 333k-2.6M across all 14 envelopes measured)
     # while the helper never reads cache at all (0, every time). Ranking by total
     # input picks the reviewer in 14 of 14, by better than 10x rather than 4%.
-    _rank='(.value.inputTokens // 0) + (.value.cacheReadInputTokens // 0)
-           + (.value.cacheCreationInputTokens // 0)'
     actual=$(jq -r ".modelUsage | to_entries | max_by($_rank) | .key" \
                  "$S/raw-$lens.json" 2>/dev/null)
-    if [ -n "$model" ] && [ -n "$actual" ] && [ "$actual" != "null" ]; then
+    # Below the floor is terminal and its findings do NOT land: a review the
+    # rules do not accept is not a review, and landing it would count the lens
+    # as done. An unreadable model fails the same way -- unknown is not allowed.
+    if ! allowed "$actual"; then
+      fail_lens "$lens" "model_below_floor" 0 "asked $model, ran ${actual:-<unknown>}; allowed_models $ALLOWED_MODELS"
+      exit 0
+    fi
+    if [ "$actual" != "null" ]; then
       case "$actual" in
         *"$model"*) : ;;
         *) fail_lens "$lens" "model_mismatch" 0 "asked $model, ran $actual"
-           # Recorded, NOT dropped: the review happened and its findings are
-           # real. What must never happen is a weaker model running unnoticed,
-           # so the discrepancy is written down and the findings still land.
+           # Recorded, NOT dropped: the model that ran is still on the
+           # allow-list, so the review counts -- but a different model than
+           # configured is written down rather than accepted silently.
            ;;
       esac
     fi
@@ -402,16 +434,12 @@ snap > "$S/tree-after.txt"
     # an empty file prints nothing and exits 0 -- so the fallback never fires and
     # the object comes out as `"contract-security": ,` which is not JSON. The
     # guard has to be on the output, not on the exit code.
-    # `model_check` is the "did not run" state this pair was missing. With the
-    # default config -- review_model="" and lens_models={} -- no --model is
-    # passed, so the mismatch branch above has nothing to compare and can never
-    # fire. That is invariant 2 exactly: the downgrade check was silent in the
-    # one configuration everybody runs, and silence read as clean. It now says
-    # `not-requested` out loud, so the round note can report "inherited" instead
-    # of asserting a model nobody asked for.
-    _mc=not-requested
-    [ -n "$(printf '%s' "$LENS_MODELS" | jq -r --arg l "$lens" '.[$l] // empty' 2>/dev/null)$REVIEW_MODEL" ] \
-      && _mc=requested
+    # `model_check` is the floor verdict on the model that RAN: `allowed` or
+    # `below_floor`. Stated per lens so the record never needs cross-reading
+    # against failed-*.json to know whether a review counts.
+    _mc=below_floor
+    allowed "$(jq -r ".modelUsage | to_entries | max_by($_rank) | .key" "$f" 2>/dev/null)" \
+      && _mc=allowed
     _pm=$(jq -c --arg mc "$_mc" \
             '{ model: (.modelUsage | to_entries
                  | max_by((.value.inputTokens // 0) + (.value.cacheReadInputTokens // 0)

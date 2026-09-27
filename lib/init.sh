@@ -131,7 +131,24 @@ cmd_check() {
 # `verify` comment for why duplicating the project's own rules is the wrong fix.
 check_verify() {
   local det="$PLUGIN_ROOT/lib/detect-verify.sh" t path abs out state cmd src
+  local vto vmin vwin vmul vfloor
   [ -f "$det" ] || { warn "verify detector missing at $det (broken install)"; return; }
+
+  # Report the EFFECTIVE policy, which means merging the layers the way preflight
+  # does — shipped, then user, then project, recursively. Reading the project
+  # file alone would print a default the round will not actually use.
+  vpolicy() { # jq-path default
+    local v
+    v=$(jq -s --arg t "$t" \
+        '(.[0] * .[1] * .[2]) as $c
+         | ($c.targets[$t].verify // {}) as $tv
+         | (($c.verify // {}) * $tv) as $v
+         | '"$1"' // empty' \
+        "$PLUGIN_ROOT/config/defaults.json" \
+        <(cat "$CONFIG_DIR/config.json" 2>/dev/null || echo '{}') \
+        <(cat "$PROJECT_CONFIG" 2>/dev/null || echo '{}') 2>/dev/null)
+    case "$v" in ''|null) printf '%s' "$2" ;; *) printf '%s' "$v" ;; esac
+  }
 
   # Every configured target, or just the repo root when there is no config.
   local targets=""
@@ -164,11 +181,36 @@ check_verify() {
     state=$(jq -r '.state' <<<"$out" 2>/dev/null || echo "none-found")
     cmd=$(jq -r '.command' <<<"$out" 2>/dev/null)
     src=$(jq -r '.source'  <<<"$out" 2>/dev/null)
+    vto=$(vpolicy '$v.timeout_seconds' 900)
+    vmin=$(vpolicy '$v.baseline.min_samples' 3)
+    vwin=$(vpolicy '$v.baseline.window' 10)
+    vmul=$(vpolicy '$v.baseline.multiplier' 5)
+    vfloor=$(vpolicy '$v.baseline.floor_seconds' 60)
     local label="tests"; [ "$t" = "." ] || label="tests for '$t'"
-    if [ "$state" = "configured" ]; then
+    if [ "$state" = "configured" ] || [ "$state" = "detected" ]; then
       ok "$label: $cmd  (from $src)"
-    elif [ "$state" = "detected" ]; then
-      ok "$label: $cmd  (from $src)"
+      # Say what was and was not established. This check greps manifests; it
+      # never runs the command, so it cannot know the command TERMINATES. A
+      # watcher or a suite that reads stdin looks identical here to a clean
+      # one — the round bounds it at run time instead (verify.timeout_seconds).
+      # Reporting "found" as if it were "working" is the same shape of lie as a
+      # gate that never ran reporting clean.
+      info "  found, not run — autonomy is not checked here; a run that does not"
+      info "  terminate is killed at verify.timeout_seconds (${vto}s) and reported as"
+      info "  unverified, never as a pass. Raise it for a slow suite; for a watcher,"
+      info "  name the project's non-watch entry point instead."
+      # Report the effective learned-bound policy rather than writing it. The
+      # values are shipped defaults a project rarely needs to change, and
+      # prompting for them would grow setup with questions whose right answer is
+      # almost always "accept the default" — the stall this project just removed
+      # from qa-cycle. docs/CONFIGURING.md §verify says how to override.
+      if [ "$vmin" = "0" ]; then
+        info "  learned bound: OFF (verify.baseline.min_samples = 0); flat ceiling only"
+      else
+        info "  learned bound: after ${vmin} completed runs of THIS command, the limit"
+        info "  becomes ${vmul}x the median of the last ${vwin} (min ${vfloor}s, never above"
+        info "  ${vto}s). Only the declared command, and only runs that finished, count."
+      fi
     else
       warn "$label: NONE FOUND — QA fixes in this target cannot be verified before they are committed"
       info "add a test entry point the project itself uses (a Makefile 'test' target, an"
