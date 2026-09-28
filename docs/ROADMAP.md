@@ -61,6 +61,7 @@ complete *before* the first push rather than fixed in a later commit.
 | Spine + `references/` split | The 42k on-invoke cost was indefensible; ~15k of it described work preflight already performs. |
 | Skill named **`qa-cycle`**, not `qa-round` | One invocation drives the whole cycle: Step 3D loops into round N+1, Step 3E approves, Step 4 prints "QA Cycle Complete". `round` is the unit *inside* the skill, not the skill. Renamed together with the project config path (`.claude/skills/qa-cycle/config.json`), the scratch prefix (`/tmp/qa-cycle-*`) and the test seam (`QA_CYCLE_SCRATCH_ROOT`). |
 | **No aliases** — `/qa-cycle` only | The forge is detected from the git remote, so `/mr-qa` vs `/pr-qa` encodes nothing the plugin does not already know. `/pr-qa` would also collide with the older sibling skill still installed at `~/.config/claude-code/skills/pr-qa/`. Two extra always-on skill descriptions bought nothing. |
+| **Schema MRs need a human approval, and the MR author counts** (decided 2026-09-28) | Owner's policy: a human must sign off, not a second person. The gate excludes only the QA agent. Counting the author is safe only because `forge_approve` refuses an empty token, so the tool cannot approve under the author's identity (§self-approval-fallback). No config switch for a two-person rule; add one when an adopter needs it. |
 
 ---
 

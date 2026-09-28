@@ -3070,21 +3070,28 @@ eq "CI green on the WRONG sha -> refuse" "$(jq -r '.decision' <<<"$out")" "refus
 eq "  ...matches_head is false"          "$(jq -r '.ci.matches_head' <<<"$out")" "false"
 rm -rf "$g"
 
-# --- schema MRs need a human who is NEITHER the author NOR the QA agent -------
-# Without that exclusion, "a human approved" is satisfied by the two identities
-# the gate exists to rule out.
+# --- schema MRs need a HUMAN approval: anyone but the QA agent ----------------
+# The QA agent's own approval must never satisfy "a human approved". The MR
+# author does satisfy it: the policy is a human sign-off, not a second person.
 g=$(mkgate '.schema.detected = true')
 out=$(run_gate "$g" --round-blocking false --schema-ack true)
-eq "schema MR, no third-party approver -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+eq "schema MR, no approver at all -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
 rm -rf "$g"
 
 g=$(mkgate '.schema.detected = true')
 out=$( cd "$g/repo" && env PATH="$g/bin:$PATH" QA_FORGE=gitlab GATE_TEST_TOKEN=tok \
-   GATE_APPROVALS='{"approved_by":[{"user":{"username":"devuser"}},{"user":{"username":"qa-bot"}}]}' \
+   GATE_APPROVALS='{"approved_by":[{"user":{"username":"qa-bot"}}]}' \
    bash "$g/plugin/gate-approve.sh" "$g/scratch" --round-blocking false --schema-ack true 2>/dev/null )
-eq "schema MR approved only by author+QA agent -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
+eq "schema MR approved only by the QA agent -> refuse" "$(jq -r '.decision' <<<"$out")" "refuse"
 eq "  ...blamed on the human-approval check" \
    "$(jq -r '[.reasons[]|select(.check=="schema-human-approval" and .state=="fail")]|length' <<<"$out")" "1"
+rm -rf "$g"
+
+g=$(mkgate '.schema.detected = true')
+out=$( cd "$g/repo" && env PATH="$g/bin:$PATH" QA_FORGE=gitlab GATE_TEST_TOKEN=tok \
+   GATE_APPROVALS='{"approved_by":[{"user":{"username":"devuser"}}]}' \
+   bash "$g/plugin/gate-approve.sh" "$g/scratch" --round-blocking false --schema-ack true 2>/dev/null )
+eq "schema MR approved by its own author -> approve" "$(jq -r '.decision' <<<"$out")" "approve"
 rm -rf "$g"
 
 g=$(mkgate '.schema.detected = true')

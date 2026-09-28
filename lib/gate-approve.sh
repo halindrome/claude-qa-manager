@@ -129,8 +129,8 @@ esac
 
 # --- schema gate ------------------------------------------------------------
 # Non-schema MRs need NO human approval: QA-agent-alone after a clean round is the
-# sanctioned path. Schema MRs need both the checklist ack and a human approval
-# that is neither the author nor the QA agent.
+# sanctioned path. Schema MRs need both the checklist ack and an approval from a
+# human, i.e. anyone but the QA agent.
 if [ "$SCHEMA_DETECTED" != "true" ]; then
   _pass schema-gate "no schema change detected; QA-agent-alone approval is the sanctioned path"
 elif [ "$SCHEMA_ACK" != "true" ]; then
@@ -190,18 +190,19 @@ EOF
     *)            _unev ci "CI probe returned '${CI_STATE:-<empty>}'" ;;
   esac
 
-  # Human approval, required ONLY for a schema change, and it must be a human who
-  # is neither the MR author nor the QA agent -- otherwise "a human approved" is
-  # satisfied by the two identities the gate exists to exclude.
+  # Human approval, required ONLY for a schema change: any approver except the QA
+  # agent. The MR author counts -- the policy is "a human signed off", not "a
+  # second person did". This is safe only because forge_approve refuses an empty
+  # token, so the tool cannot approve under the author's identity. Do NOT relax
+  # that refusal; see docs/CASE-STUDIES.md §self-approval-fallback.
   if [ "$SCHEMA_DETECTED" = "true" ]; then
     if _appr=$(forge_approvers "$PROJECT" "$MR" "$QA_TOKEN" 2>/dev/null); then
       HUMAN_APPROVERS=$(printf '%s\n' "$_appr" | awk 'NF' \
-        | grep -v -x -F "${MR_AUTHOR:-__none__}" \
         | grep -v -x -F "${EXPECTED_QA_USER:-__none__}" || true)
       if [ -n "$HUMAN_APPROVERS" ]; then
         _pass schema-human-approval "approved by $(printf '%s' "$HUMAN_APPROVERS" | tr '\n' ' ')"
       else
-        _fail schema-human-approval "no approver other than the MR author and the QA agent"
+        _fail schema-human-approval "no approver other than the QA agent"
       fi
     else
       _unev schema-human-approval "could not read approvers from the forge"

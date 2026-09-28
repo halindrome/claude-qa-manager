@@ -35,9 +35,10 @@ conditions must BOTH hold before the QA agent may add its (additive, second)
 approval:
 
 1. **A human GitLab approval already exists.** Confirm at least one approver
-   that is neither the MR author nor the QA agent (`expected_username`) has
-   approved **on GitLab**. A chat acknowledgement is NOT a GitLab approval and
-   does NOT satisfy this requirement.
+   other than the QA agent (`expected_username`) has approved **on GitLab**. The
+   MR author counts: the requirement is a human sign-off, not a second person. A
+   chat acknowledgement is NOT a GitLab approval and does NOT satisfy this
+   requirement.
 
    ```bash
    # Go through the forge seam — it works on both forges and already prefers
@@ -57,14 +58,16 @@ approval:
    }
    if [ "${SCHEMA_HUMAN_APPROVED:-}" != "unknown" ]; then
      HUMAN_APPROVERS=$(printf '%s\n' "$APPROVERS" | awk 'NF' \
-       | grep -vxF -- "$MR_AUTHOR" | grep -vxF -- "$expected_username" | wc -l | tr -d ' ')
+       | grep -vxF -- "$expected_username" | wc -l | tr -d ' ')
      if [ "${HUMAN_APPROVERS:-0}" -ge 1 ]; then SCHEMA_HUMAN_APPROVED=true; else SCHEMA_HUMAN_APPROVED=false; fi
    fi
    ```
 
-   (`MR_AUTHOR` is the MR author captured in Step 0; `expected_username` and
-   `QA_TOKEN` come from Step 0.25; `PROJECT` and `REMOTE` from `preflight.json`.
-   `-x`/`-F` on both greps: the username is a whole literal, not a substring or a
+   (`expected_username` and `QA_TOKEN` come from Step 0.25; `PROJECT` and `REMOTE`
+   from `preflight.json`. Counting the author is safe only because `forge_approve`
+   refuses an empty token, so the tool can never approve under the author's identity —
+   see `docs/CASE-STUDIES.md` §self-approval-fallback.
+   `-x`/`-F` on the grep: the username is a whole literal, not a substring or a
    regex — without them a bot name containing a `.` matches usernames it should
    not, and a name that is a substring of another gets miscounted.)
 
@@ -105,7 +108,7 @@ path for non-schema MRs.
 the script rather than this list. Consider approving only when ALL of these hold:
 
 - `QA_TOKEN_OK=true` (the QA agent token resolved and verified in Step 0.25).
-- If `SCHEMA_CHANGE_DETECTED=true`, then BOTH `SCHEMA_CHANGE_ACK=true` AND `SCHEMA_HUMAN_APPROVED=true` (a human — neither the MR author nor the QA agent — has already approved on GitLab; see the schema-change gate above). For non-schema MRs (`SCHEMA_CHANGE_DETECTED=false`), **no** human GitLab approval is required — QA-agent-alone approval after a clean round is the sanctioned path.
+- If `SCHEMA_CHANGE_DETECTED=true`, then BOTH `SCHEMA_CHANGE_ACK=true` AND `SCHEMA_HUMAN_APPROVED=true` (a human — anyone but the QA agent, the MR author included — has already approved on GitLab; see the schema-change gate above). For non-schema MRs (`SCHEMA_CHANGE_DETECTED=false`), **no** human GitLab approval is required — QA-agent-alone approval after a clean round is the sanctioned path.
 - **CI on the exact commit being approved has finished and passed.** See the CI gate below. A round's own fix commit is usually the head, and it is normally minutes old.
 - The current round is **clean** — no confirmed critical or major findings (hypothetical/minor are OK) — **OR** the deferred-findings exit below applies.
 
