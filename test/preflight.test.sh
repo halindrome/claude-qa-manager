@@ -626,7 +626,8 @@ RRF='[{"title":"on qa line","area_file":"prod.ts","line_low":2,"severity":"major
       {"title":"an observation","area_file":"prod.ts","line_low":3,"severity":"minor","relevance":"observation"},
       {"title":"spec nit","area_file":"prod.spec.ts","line_low":1,"severity":"minor","relevance":"regression"}]'
 rrout=$(printf '%s' "$RRF" | bash "$RR" "$rr" --summary "two majors" --contract-all-pass true 2>/dev/null)
-eq "counts are derived"            "$(jq -c '.counts' <<<"$rrout")" '{"critical":0,"major":2,"minor":2}'
+# minor is 1, not 2: the observation is reported under Observations, not counted.
+eq "counts are derived"            "$(jq -c '.counts' <<<"$rrout")" '{"critical":0,"major":2,"minor":1}'
 eq "  round_has_critical_or_major" "$(jq -r '.round_has_critical_or_major' <<<"$rrout")" "true"
 # The field that exceeded its own denominator in 62 of 262 measured rounds. Here
 # TWO findings sit on the fix commit, but only ONE of them is blocking.
@@ -667,6 +668,24 @@ rrout3=$(printf '%s' "$RRF2" | bash "$RR" "$rr" --summary s \
           --decisions '[{"kind":"diminishing_returns","reason":"mine"}]' 2>/dev/null)
 eq "  a supplied dim-returns is not doubled" \
    "$(jq -r '[.decisions_needed[]|select(.kind=="diminishing_returns")]|length' <<<"$rrout3")" "1"
+# The counts are the note's counts: an observation is reported in its own section and
+# a hypothetical finding is not confirmed, so neither is counted nor blocks. The first
+# item is the live shape: a round-2 re-raise of an item the operator decided in round
+# 1, filed as an observation, still rated major, and sitting on the round-1 fix line.
+RRF4='[{"title":"decided in r1","area_file":"prod.ts","line_low":2,"severity":"major","relevance":"observation","status":"confirmed"},
+       {"title":"a guess","area_file":"prod.ts","line_low":1,"severity":"critical","relevance":"regression","status":"hypothetical"}]'
+rrout4=$(printf '%s' "$RRF4" | bash "$RR" "$rr" --summary s 2>/dev/null)
+eq "an observation rated major, and a hypothetical critical, are not counted" \
+   "$(jq -c '.counts' <<<"$rrout4")" '{"critical":0,"major":0,"minor":0}'
+eq "  and do not block the round" "$(jq -r '.round_has_critical_or_major' <<<"$rrout4")" "false"
+eq "  nor count as QA-introduced" "$(jq -r '.qa_introduced_blocking' <<<"$rrout4")" "0"
+eq "  the observation is still reported" "$(jq -r '.observations_count' <<<"$rrout4")" "1"
+# Excluded only by an explicit value. A finding missing both fields is counted:
+# dropping it would let an unlabelled major through as a clean round.
+RRF5='[{"title":"unlabelled","area_file":"prod.ts","line_low":1,"severity":"major"}]'
+rrout5=$(printf '%s' "$RRF5" | bash "$RR" "$rr" --summary s 2>/dev/null)
+eq "a finding with no relevance or status still blocks" \
+   "$(jq -r '.round_has_critical_or_major' <<<"$rrout5")" "true"
 # Refusals: a bad decisions payload must not produce a half-valid verdict.
 printf '%s' "$RRF" | bash "$RR" "$rr" --decisions 'not-json' >/dev/null 2>&1
 eq "non-array --decisions -> exit 2" "$?" "2"

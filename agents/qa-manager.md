@@ -287,6 +287,10 @@ hand back; do not recompute or second-guess it.
 
 `round-return.sh` computes both — do not count them yourself. What they mean:
 
+Like `counts` and `round_has_critical_or_major`, both count only the note's findings:
+`relevance: observation` and `status: hypothetical` are excluded, so the verdict never
+reports a blocking finding the posted note does not show.
+
 | field | counts findings where |
 |---|---|
 | `qa_introduced_blocking` | `qa_introduced == true` **AND** `critical`/`major` |

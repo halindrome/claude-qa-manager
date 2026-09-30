@@ -82,15 +82,22 @@ printf '%s' "$ATTRIBUTED" | jq -e 'type == "array"' >/dev/null 2>&1 || ATTRIBUTE
 # THE canonical name. Everything after this reads one file.
 printf '%s\n' "$ATTRIBUTED" | jq '.' > "$S/merged-findings.json"
 
-blocking_of() { printf '%s' "$ATTRIBUTED" | jq "[.[] | select(.severity==\"critical\" or .severity==\"major\") $1] | length"; }
-CRIT=$(printf '%s' "$ATTRIBUTED" | jq '[.[]|select(.severity=="critical")]|length')
-MAJ=$(printf  '%s' "$ATTRIBUTED" | jq '[.[]|select(.severity=="major")]|length')
-MIN=$(printf  '%s' "$ATTRIBUTED" | jq '[.[]|select(.severity=="minor")]|length')
+# Count what the note counts. An observation is reported in its own section and a
+# hypothetical is not confirmed, so neither is counted, blocks the round, or counts as
+# QA-introduced -- otherwise the gate sees a blocking major the posted note says is not
+# there. Excluded only on an EXPLICIT value: a finding missing either field still
+# counts, because dropping it would pass an unlabelled major as a clean round.
+COUNTED=$(printf '%s' "$ATTRIBUTED" \
+  | jq -c '[.[] | select(.relevance != "observation" and .status != "hypothetical")]')
+blocking_of() { printf '%s' "$COUNTED" | jq "[.[] | select(.severity==\"critical\" or .severity==\"major\") $1] | length"; }
+CRIT=$(printf '%s' "$COUNTED" | jq '[.[]|select(.severity=="critical")]|length')
+MAJ=$(printf  '%s' "$COUNTED" | jq '[.[]|select(.severity=="major")]|length')
+MIN=$(printf  '%s' "$COUNTED" | jq '[.[]|select(.severity=="minor")]|length')
 BLOCKING=$(( CRIT + MAJ ))
 # Blocking-only, per agents/qa-manager.md. A value that can exceed critical+major is
 # what made this field ungateable for so long.
 QI_BLOCKING=$(blocking_of '| select(.qa_introduced==true)')
-QI_TOTAL=$(printf '%s' "$ATTRIBUTED" | jq '[.[]|select(.qa_introduced==true)]|length')
+QI_TOTAL=$(printf '%s' "$COUNTED" | jq '[.[]|select(.qa_introduced==true)]|length')
 
 OBS=$(printf '%s' "$ATTRIBUTED" | jq -c '[.[] | select(.relevance=="observation")
         | {title, severity, area_file, line_low}]')
