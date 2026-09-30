@@ -398,6 +398,26 @@ eq "  and gives the resolver instead"   "$(grep -q 'require.resolve' "$tm" && ec
 # it does. The list has to follow the regime that was actually detected.
 eq "  ctx-only bootstrap loads ctx"     "$(grep -c 'select:[^\"]*ctx_execute' "$tm")" "1"
 eq "  and does not name graph tools"    "$(grep -c 'select:[^\"]*search_graph' "$tm")" "0"
+# With no graph, ctx IS the right way to read a big file, so the routing rule below
+# must not appear here and send a ctx-only lens looking for a tool it lacks.
+eq "  ctx-only: ctx still reads large files" "$(grep -c 'read large' "$tm")" "1"
+eq "  ...and source is not routed to the graph" "$(grep -c 'Not for reading source code' "$tm")" "0"
+rm -rf "$r"
+
+# BOTH registered: ctx is for command output and the graph is for reading source.
+# Offered "read large files" alongside CMM, lenses ran `sed -n` line ranges inside
+# ctx_execute and graph use fell as ctx use rose -- so the mandate names the exact
+# commands that are a file dump whichever tool runs them.
+r=$(mkfixture "feature/x" "main")
+echo '{"mcpServers":{"context-mode":{"command":"x"},"codebase-memory-mcp":{"command":"y"}}}' > "$r/repo/.mcp.json"
+out=$(run_preflight "$r" 73 mono); note_scratch "$out"
+tm=$(jq -r '.tooling.mandate_path' <<<"$out")
+eq "both regimes: ctx is not offered for reading files" "$(grep -c 'read large' "$tm")" "0"
+eq "  source reading is routed away from ctx" "$(grep -c 'Not for reading source code' "$tm")" "1"
+eq "  and names sed -n as the dump it is"   "$(grep -c 'sed -n' "$tm")" "1"
+eq "  and names the graph tool to use instead" \
+   "$(grep -A3 'Not for reading source code' "$tm" | grep -c 'get_code_snippet')" "1"
+eq "  the no-scan rule survives the split"  "$(grep -c 'Never scan outside the repository' "$tm")" "1"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------

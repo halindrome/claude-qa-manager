@@ -1684,11 +1684,26 @@ if [ "$CMM_AVAILABLE" = "true" ] || [ "$CTX_AVAILABLE" = "true" ]; then
       echo "  If you end up without the graph, that rule does not lapse: open the"
       echo "  definition site with Read and cite it, rather than citing the grep hit."
     fi
-    if [ "$CTX_AVAILABLE" = "true" ]; then
+    if [ "$CTX_AVAILABLE" = "true" ] && [ "$CMM_AVAILABLE" = "true" ]; then
+      # Two jobs, two tools. Offered "read large files" here, lenses ran `sed -n`
+      # line ranges INSIDE ctx_execute -- a file dump in a different wrapper -- and
+      # graph use fell as ctx use rose. So ctx gets command output, and reading
+      # source is routed to the graph by naming the exact commands that are not.
+      echo "- \`ctx_execute\` / \`ctx_batch_execute\` — for COMMAND output: \`git diff\`/\`git log\`,"
+      echo "  test and build runs, and non-code files (the contract, the SAST report). Only"
+      echo "  your derived findings return. Use \`ctx_search\` first to reuse anything already"
+      echo "  captured this session."
+      echo "  **Not for reading source code.** \`sed -n\`, \`cat\`, \`awk 'NR…'\` or \`grep -n\` on"
+      echo "  a source file is the same file dump in Bash or inside ctx_execute. To see code,"
+      echo "  use \`get_code_snippet\` for a symbol and \`search_code\` (with \`path_filter\`) for"
+      echo "  a string; \`Read\` a whole file only for its imports or top-level wiring."
+    elif [ "$CTX_AVAILABLE" = "true" ]; then
       echo "- \`ctx_execute\` / \`ctx_batch_execute\` — run \`git diff\`/\`git log\`, read large"
       echo "  files, and capture command/test output through these so the raw bytes stay out"
       echo "  of your context; only your derived findings return. Use \`ctx_search\` first to"
       echo "  reuse anything already captured this session."
+    fi
+    if [ "$CTX_AVAILABLE" = "true" ]; then
       # A lens once issued `find / -name 'MQTT.pm' -path '*AnyEvent*'` inside a
       # batch. It never returned; the MCP client aborted it after 1807s, taking
       # the batch's four other commands with it (there is no per-command

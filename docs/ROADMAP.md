@@ -498,7 +498,7 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
 
 ### Smaller, independent items
 
-- **Live lenses never got context-mode. FIXED 2026-09-30, awaiting a measured round.**
+- **Live lenses never got context-mode. FIXED 2026-09-30.**
   Every brief for a month read `lens_mcp_state=partial:context-mode`. Cause: context-mode
   was installed from a `directory`-source marketplace, which Claude Code runs from its
   `installLocation` and never from the plugin cache, and `_resolve_server` searched only
@@ -507,7 +507,16 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
   resolves from there BEFORE the cache, since a cache copy of a directory plugin is a
   stale snapshot. The first measured round without it (webapp !2229 R1): 11 CMM calls,
   0 ctx, 31 Bash (19 of them `sed -n`/`awk NR` range reads), while every lens
-  self-reported `navigation: cmm`.
+  self-reported `navigation: cmm`. R2 with it: `lens_mcp_state=ok`, 16 ctx calls, but
+  CMM fell to 3 — lenses ran `sed -n` ranges INSIDE `ctx_execute` and `Read` whole
+  files, because the mandate offered ctx to "read large files". R2 is not a clean
+  comparison: a round-1 fix commit landed in between.
+- **Lens mandate routes source reading to the graph. AWAITING A MEASURED ROUND.** When
+  both servers are present, `tool-mandate.md` now gives ctx command output only (diffs,
+  logs, test runs, non-code files) and names `sed -n` / `cat` / `awk 'NR…'` / `grep -n`
+  on a source file as a dump whichever tool runs it, pointing to `get_code_snippet` /
+  `search_code`. A ctx-only lens keeps "read large files". Measure with
+  `lib/lens-tools-summary.sh`: CMM share and range reads inside `ctx_execute` input.
 - **Lens tool use is measured by a per-lens hook log, not by transcripts.** Lenses
   run with `--no-session-persistence`, so neither `make measure` script in the
   enforcement stack can see them; the 330 `qa-reviewer` transcripts they do count
