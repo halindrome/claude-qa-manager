@@ -1346,13 +1346,59 @@ _server_from_file() {  # $1 = json file, $2 = server name -> the entry, or nothi
     | map(select(type == "object")) | .[0] // empty
   ' "$1" 2>/dev/null
 }
-_server_from_plugin_cache() {  # $1 = plugin name -> the entry, or nothing
+_server_from_plugin_dir() {  # $1 = plugin name, $2 = plugin dir -> the entry, or nothing
   # A PLUGIN-provided MCP server (context-mode is one) has no entry in any
-  # mcpServers map at all: its launch command lives in the plugin's own .mcp.json,
+  # mcpServers map at all: its launch command lives in the plugin's own declaration,
   # written against ${CLAUDE_PLUGIN_ROOT}. Resolve that placeholder here, because
   # the lens subprocess is a different plugin and would expand it to the wrong
   # directory -- or, under --strict-mcp-config, to nothing at all.
-  local name="$1" root cache_roots="" p prev="" pj pdir entry
+  local name="$1" pdir="$2" src entry
+  [ -n "$pdir" ] && [ -d "$pdir" ] || return 1
+  # TWO declaration sites, and both are real: a sibling `.mcp.json`, or `mcpServers`
+  # inline in `.claude-plugin/plugin.json` (context-mode uses the latter). Check both.
+  for src in "$pdir/.claude-plugin/plugin.json" "$pdir/.mcp.json"; do
+    [ -f "$src" ] || continue
+    # The server key inside a plugin's declaration need not equal the plugin
+    # name; fall back to the sole entry when there is exactly one, and to
+    # nothing when there are several (guessing which of three servers was
+    # meant is worse than reporting that it could not be resolved).
+    entry=$(jq -e -c --arg n "$name" --arg d "$pdir" '
+      ((.mcpServers[$n]? // (if ((.mcpServers // {}) | length) == 1
+                             then (.mcpServers | to_entries[0].value) else empty end))
+       // empty)
+      | walk(if type == "string"
+             then gsub("\\$\\{CLAUDE_PLUGIN_ROOT\\}"; $d) | gsub("\\$CLAUDE_PLUGIN_ROOT"; $d)
+             else . end)
+    ' "$src" 2>/dev/null) || continue
+    [ -n "$entry" ] && { printf '%s' "$entry"; return 0; }
+  done
+  return 1
+}
+_server_from_directory_marketplace() {  # $1 = plugin name -> the entry, or nothing
+  # A `directory`-source marketplace runs its plugins from installLocation, never
+  # from the plugin cache; a cache copy of such a plugin is a stale install snapshot
+  # whose path is not what Claude Code launches. So these are checked BEFORE the
+  # cache, and the plugin's dir comes from the marketplace's own manifest.
+  local name="$1" root km loc rel pdir
+  for root in $(_claude_roots | sort -u); do
+    km="$root/plugins/known_marketplaces.json"
+    [ -f "$km" ] || continue
+    for loc in $(jq -r '.[] | select(.source.source? == "directory")
+                        | .installLocation // .source.path // empty' "$km" 2>/dev/null); do
+      [ -f "$loc/.claude-plugin/marketplace.json" ] || continue
+      # Only a relative-path source lives inside this directory; an object source
+      # (github, git, ...) is fetched elsewhere and is the cache search's job.
+      for rel in $(jq -r --arg n "$name" '.plugins[]? | select(.name == $n) | .source | strings' \
+                     "$loc/.claude-plugin/marketplace.json" 2>/dev/null); do
+        pdir=$(cd "$loc" 2>/dev/null && cd "$rel" 2>/dev/null && pwd) || continue
+        _server_from_plugin_dir "$name" "$pdir" && return 0
+      done
+    done
+  done
+  return 1
+}
+_server_from_plugin_cache() {  # $1 = plugin name -> the entry, or nothing
+  local name="$1" root cache_roots="" p prev="" pj
   for root in $(_claude_roots | sort -u); do
     [ -d "$root/plugins/cache" ] && cache_roots="$cache_roots $root/plugins/cache"
   done
@@ -1364,28 +1410,7 @@ _server_from_plugin_cache() {  # $1 = plugin name -> the entry, or nothing
   for root in $(printf '%s\n' $cache_roots | sort -u); do
     for pj in $(find "$root" -maxdepth 7 -name plugin.json -path '*/.claude-plugin/*' \
                   -exec grep -l "\"name\"[[:space:]]*:[[:space:]]*\"$name\"" {} \; 2>/dev/null); do
-      pdir=$(dirname "$(dirname "$pj")")
-      # TWO declaration sites, and both are real. A plugin may ship a sibling
-      # `.mcp.json`, OR declare `mcpServers` inline in `.claude-plugin/plugin.json`
-      # -- context-mode does the latter, so checking only the first missed the
-      # common case on the machine this was written on and reported
-      # `partial:context-mode` while the server was perfectly launchable.
-      for src in "$pj" "$pdir/.mcp.json"; do
-        [ -f "$src" ] || continue
-        # The server key inside a plugin's declaration need not equal the plugin
-        # name; fall back to the sole entry when there is exactly one, and to
-        # nothing when there are several (guessing which of three servers was
-        # meant is worse than reporting that it could not be resolved).
-        entry=$(jq -e -c --arg n "$name" --arg d "$pdir" '
-          ((.mcpServers[$n]? // (if ((.mcpServers // {}) | length) == 1
-                                 then (.mcpServers | to_entries[0].value) else empty end))
-           // empty)
-          | walk(if type == "string"
-                 then gsub("\\$\\{CLAUDE_PLUGIN_ROOT\\}"; $d) | gsub("\\$CLAUDE_PLUGIN_ROOT"; $d)
-                 else . end)
-        ' "$src" 2>/dev/null) || continue
-        [ -n "$entry" ] && { printf '%s' "$entry"; return 0; }
-      done
+      _server_from_plugin_dir "$name" "$(dirname "$(dirname "$pj")")" && return 0
     done
   done
   return 1
@@ -1404,7 +1429,7 @@ _resolve_server() {  # $1 = server name -> the launch entry, or nothing
   done
   [ -f "$HOME/.claude.json" ] && e=$(_server_from_file "$HOME/.claude.json" "$name") \
     && [ -n "$e" ] && { printf '%s' "$e"; return 0; }
-  _server_from_plugin_cache "$name"
+  _server_from_directory_marketplace "$name" || _server_from_plugin_cache "$name"
 }
 
 # NOT `lens-mcp.json`. `lens-*.json` is a load-bearing namespace: lens-landed.sh

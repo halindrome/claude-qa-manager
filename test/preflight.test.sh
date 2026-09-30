@@ -3043,6 +3043,43 @@ eq "  ...and the state is ok, not partial" \
    "$(jq -r '.tooling.lens_mcp_state' <<<"$out")" "ok"
 rm -rf "$r"
 
+# (f) a DIRECTORY-source marketplace. Claude Code runs such a plugin from the
+# marketplace's installLocation and never from the cache, and a stale cache copy
+# may still sit there from an earlier install -- the shape of a real machine,
+# where only the cache was searched and every round reported partial:context-mode.
+# The directory must win, because it is what actually launches.
+r=$(mkfixture "feature/x" "main")
+cfg="$r/home/.config/claude-code"
+src="$r/ctx-src"
+mkdir -p "$src/.claude-plugin" "$cfg/plugins"
+printf '{"enabledPlugins": {"context-mode@ctxmkt": true}}\n' > "$cfg/settings.json"
+jq -n --arg l "$src" '{ctxmkt: {source: {source: "directory", path: $l}, installLocation: $l}}' \
+  > "$cfg/plugins/known_marketplaces.json"
+printf '{"name":"ctxmkt","plugins":[{"name":"context-mode","source":"./"}]}\n' \
+  > "$src/.claude-plugin/marketplace.json"
+cat > "$src/.claude-plugin/plugin.json" <<'JSON'
+{ "name": "context-mode", "mcpServers": { "context-mode": { "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/start.mjs"] } } }
+JSON
+stale="$cfg/plugins/cache/ctxmkt/context-mode/0.9.0.backup"
+mkdir -p "$stale/.claude-plugin"
+cp "$src/.claude-plugin/plugin.json" "$stale/.claude-plugin/plugin.json"
+out=$(run_preflight "$r" 73 mono)
+lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
+eq "directory-source plugin: state is ok, not partial" \
+   "$(jq -r '.tooling.lens_mcp_state' <<<"$out")" "ok"
+eq "  ...launched from the marketplace dir, not the stale cache copy" \
+   "$(jq -r '.mcpServers["context-mode"].args[0]' "$lm")" "$src/start.mjs"
+# An object source (github, git) is fetched elsewhere, so the directory search must
+# pass it by and leave the cache to answer.
+printf '{"name":"ctxmkt","plugins":[{"name":"context-mode","source":{"source":"github","repo":"x/y"}}]}\n' \
+  > "$src/.claude-plugin/marketplace.json"
+out=$(run_preflight "$r" 73 mono)
+lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
+eq "  an object source defers to the cache" \
+   "$(jq -r '.mcpServers["context-mode"].args[0]' "$lm")" "$stale/start.mjs"
+rm -rf "$r"
+
 # --- the schema is a wire payload as well as documentation -------------------
 eq "lens-schema.json survives comment-stripping" \
    "$(jq -c 'del(.. | objects | ."$comment")' "$REPO_SRC/config/lens-schema.json" >/dev/null 2>&1 && echo ok || echo broken)" "ok"

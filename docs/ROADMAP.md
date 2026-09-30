@@ -498,15 +498,16 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
 
 ### Smaller, independent items
 
-- **Live lenses never get context-mode. OPEN (found 2026-09-30).** Every brief in
-  `/private/tmp/qa-cycle-*` from the last month reads `lens_mcp_state=partial:context-mode`,
-  and every generated `panel-mcp.json` lists `codebase-memory-mcp` alone:
-  `_resolve_server` (`lib/preflight.sh`) finds no launch entry for context-mode, which
-  is installed as a plugin. Preflight announces it, so it is not an absent check
-  reporting as a pass, but the effect is that every `claude -p` lens reviews without
-  `ctx_*` while the mandate and `agents/qa-manager.md` ("pins each lens to the two
-  servers") say otherwise. Fix the resolution, or stop the mandate naming a tool the
-  lens cannot have. The telemetry entry below measures the result either way.
+- **Live lenses never got context-mode. FIXED 2026-09-30, awaiting a measured round.**
+  Every brief for a month read `lens_mcp_state=partial:context-mode`. Cause: context-mode
+  was installed from a `directory`-source marketplace, which Claude Code runs from its
+  `installLocation` and never from the plugin cache, and `_resolve_server` searched only
+  the cache. `_server_from_directory_marketplace` now reads `known_marketplaces.json`,
+  finds the plugin's relative `source` in that marketplace's `marketplace.json`, and
+  resolves from there BEFORE the cache, since a cache copy of a directory plugin is a
+  stale snapshot. The first measured round without it (webapp !2229 R1): 11 CMM calls,
+  0 ctx, 31 Bash (19 of them `sed -n`/`awk NR` range reads), while every lens
+  self-reported `navigation: cmm`.
 - **Lens tool use is measured by a per-lens hook log, not by transcripts.** Lenses
   run with `--no-session-persistence`, so neither `make measure` script in the
   enforcement stack can see them; the 330 `qa-reviewer` transcripts they do count
