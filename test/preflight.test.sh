@@ -418,6 +418,64 @@ eq "  and names sed -n as the dump it is"   "$(grep -c 'sed -n' "$tm")" "1"
 eq "  and names the graph tool to use instead" \
    "$(grep -A3 'Not for reading source code' "$tm" | grep -c 'get_code_snippet')" "1"
 eq "  the no-scan rule survives the split"  "$(grep -c 'Never scan outside the repository' "$tm")" "1"
+# `(?i)` is rejected by search_code as an invalid regex; a lens that tries it falls
+# back to git grep, so the mandate says so where it introduces the tool.
+eq "  search_code note: no inline (?i) flag" "$(grep -c '(?i)' "$tm")" "1"
+rm -rf "$r"
+
+# CMM index freshness. Preflight refreshes the graph at the synced HEAD before the
+# panel, so lenses can trust get_code_snippet instead of `git show HEAD: | awk`.
+# The stub mimics the real CLI on the two points the parser depends on: the payload
+# is in `.structuredContent`, and the exit code is 0 EVEN WHEN THE PIPELINE FAILED --
+# so a parser reading the exit code would report every failure as fresh.
+mkcmmstub() {  # $1 = fixture root; FAKE_CMM=indexed|error|wrong at run time
+  cat > "$1/bin/fakecmm" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$FAKE_CMM_LOG"
+repo=$(printf '%s' "${@: -1}" | jq -r '.repo_path')
+proj="${repo#/}"; proj="${proj//\//-}"
+case "${FAKE_CMM:-indexed}" in
+  indexed) jq -nc --arg p "$proj" '{structuredContent: {project: $p, status: "indexed"}}' ;;
+  error)   jq -nc --arg p "$proj" '{structuredContent: {project: $p, status: "error"}}' ;;
+  wrong)   jq -nc '{structuredContent: {project: "some-other-project", status: "indexed"}}' ;;
+esac
+exit 0
+STUB
+  chmod +x "$1/bin/fakecmm"
+  jq -n --arg c "$1/bin/fakecmm" \
+    '{mcpServers: {"codebase-memory-mcp": {command: $c}, "context-mode": {command: "x"}}}' \
+    > "$1/repo/.mcp.json"
+}
+r=$(mkfixture "feature/x" "main"); mkcmmstub "$r"
+out=$(FAKE_CMM=indexed FAKE_CMM_LOG="$r/cmm.log" run_preflight "$r" 73 mono); note_scratch "$out"
+tm=$(jq -r '.tooling.mandate_path' <<<"$out")
+eq "refreshed index -> cmm_index_state fresh" "$(jq -r '.tooling.cmm_index_state' <<<"$out")" "fresh"
+eq "  preflight ran the CLI's index_repository" \
+   "$(grep -c 'cli --quiet --json index_repository' "$r/cmm.log")" "1"
+eq "  on the repo root preflight resolved" \
+   "$(sed 's/.*index_repository //' "$r/cmm.log" | jq -r '.repo_path')" "$(git -C "$r/repo" rev-parse --show-toplevel)"
+eq "  the brief carries the state" \
+   "$(sed -n 's/^cmm_index_state=//p' "$(jq -r '.manager_brief_path' <<<"$out")")" "fresh"
+eq "  lenses are told the graph is current" "$(grep -c 'The graph is current' "$tm")" "1"
+eq "  and that git show HEAD: | awk is a dump" "$(grep -c 'git show HEAD:<file>' "$tm")" "1"
+eq "  no staleness warning" \
+   "$(jq -r '[.warnings[]? | select(startswith("cmm_index_not_fresh"))] | length' <<<"$out")" "0"
+rm -rf "$r"
+
+r=$(mkfixture "feature/x" "main"); mkcmmstub "$r"
+out=$(FAKE_CMM=error FAKE_CMM_LOG="$r/cmm.log" run_preflight "$r" 73 mono); note_scratch "$out"
+tm=$(jq -r '.tooling.mandate_path' <<<"$out")
+eq "failed pipeline with exit 0 -> NOT fresh" "$(jq -r '.tooling.cmm_index_state' <<<"$out")" "refresh-failed:error"
+eq "  warned" \
+   "$(jq -r '[.warnings[]? | select(startswith("cmm_index_not_fresh"))] | length' <<<"$out")" "1"
+eq "  lenses are told the graph may be stale" "$(grep -c 'may predate this MR' "$tm")" "1"
+eq "  and are NOT told it is current" "$(grep -c 'The graph is current' "$tm")" "0"
+rm -rf "$r"
+
+r=$(mkfixture "feature/x" "main"); mkcmmstub "$r"
+out=$(FAKE_CMM=wrong FAKE_CMM_LOG="$r/cmm.log" run_preflight "$r" 73 mono)
+eq "an index of a different project is not fresh" \
+   "$(jq -r '.tooling.cmm_index_state' <<<"$out")" "refresh-failed:wrong-project:some-other-project"
 rm -rf "$r"
 
 # ---------------------------------------------------------------------------

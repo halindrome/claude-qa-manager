@@ -10,7 +10,7 @@ already made (with reasons) so they are not relitigated.
 ## Run everything before you claim anything
 
 ```bash
-bash test/preflight.test.sh          # 789 passed / 0 failed  (~4 min: 48 sections, real git fixtures)
+bash test/preflight.test.sh          # 802 passed / 0 failed  (~4 min: 48 sections, real git fixtures)
 bash test/init.test.sh               #  32 passed / 0 failed
 bash test/no-private-identifiers.sh  # must print ok
 claude plugin validate .

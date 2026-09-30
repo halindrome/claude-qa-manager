@@ -618,9 +618,8 @@ UNEXPECTED_DELETIONS=false
 declare -a WARNINGS=()
 
 # Unknown lens_tags were detected at parse time (long before this array exists).
-# Record them HERE — the array is declared above and WARNINGS_JSON is serialized
-# further down, so an append after that point silently never reaches the emitted
-# JSON. (It did exactly that on the first attempt; the new test caught it.)
+# Record them here, once the array exists. WARNINGS is serialized just before
+# preflight.json is built, so an append anywhere after this point is kept.
 # A typo'd tag is otherwise silently inert: the target just never gains the lens.
 if [ -n "${UNKNOWN_LENS_TAGS:-}" ]; then
   # Name the vocabulary in the warning. The tags are `ui`/`api`/`perf` while the
@@ -1598,11 +1597,8 @@ FIX_MANDATE_FILE="$QA_SCRATCH/fix-mandate.md"
 # ---------------------------------------------------------------------------
 # Emit preflight.json
 # ---------------------------------------------------------------------------
-if [ "${#WARNINGS[@]}" -gt 0 ]; then
-  WARNINGS_JSON=$(printf '%s\n' "${WARNINGS[@]}" | jq -R . | jq -s .)
-else
-  WARNINGS_JSON='[]'
-fi
+# WARNINGS is serialized immediately before PREFLIGHT_JSON is built, below, so no
+# append anywhere in this script can be dropped. Do NOT move it back up here.
 # Guard the other computed-JSON inputs too (empty => valid empty array).
 [ -n "$CANDIDATES_JSON" ] || CANDIDATES_JSON='[]'
 
@@ -1663,6 +1659,39 @@ if [ "$CMM_AVAILABLE" = "true" ] && [ -n "$REPO_ROOT" ]; then
   # to index the root, and a subtree index produces a name that will not match.
   CMM_PROJECT="${REPO_ROOT#/}"; CMM_PROJECT="${CMM_PROJECT//\//-}"
 fi
+# CMM index freshness. A lens can only trust get_code_snippet and trace_path if the
+# graph shows the code under review; one built before this MR's latest commits
+# returns old bodies and old callers, and lenses that suspect it fall back to
+# `git show HEAD:<file> | awk` line dumps. So preflight refreshes the index HERE,
+# after the sync, at the exact HEAD the panel reviews -- incremental, seconds even
+# on a 100k-node monorepo -- and tells the lenses which it is.
+# The CLI's exit code is NOT the verdict: it exits 0 on a failed pipeline and puts
+# `"status":"error"` in the payload. Only `status == "indexed"` for THIS project is
+# fresh; everything else is named, warned, and passed to the lenses as such.
+CMM_INDEX_STATE="unchecked:cmm-unavailable"
+if [ "$CMM_AVAILABLE" = "true" ] && [ -n "$CMM_PROJECT" ]; then
+  _cmm_argv=$(printf '%s' "$LENS_MCP_JSON" \
+    | jq -c '.mcpServers["codebase-memory-mcp"] // empty | [.command] + (.args // [])' 2>/dev/null)
+  if [ -z "$_cmm_argv" ]; then
+    CMM_INDEX_STATE="unchecked:no-launch-command"
+  else
+    _cmm_args=()
+    while IFS= read -r _a; do _cmm_args+=("$_a"); done < <(printf '%s' "$_cmm_argv" | jq -r '.[]')
+    # macOS has no timeout(1); perl's alarm survives the exec and kills a hung index.
+    _cmm_out=$(perl -e 'alarm shift; exec @ARGV' 180 "${_cmm_args[@]}" \
+                 cli --quiet --json index_repository "$(jq -nc --arg r "$REPO_ROOT" '{repo_path: $r}')" \
+                 2>/dev/null)
+    _cmm_st=$(printf '%s' "$_cmm_out" | jq -r --arg p "$CMM_PROJECT" \
+      '.structuredContent | if .project == $p then .status else "wrong-project:\(.project)" end' 2>/dev/null)
+    case "$_cmm_st" in
+      indexed) CMM_INDEX_STATE="fresh" ;;
+      "")      CMM_INDEX_STATE="refresh-failed:no-output" ;;
+      *)       CMM_INDEX_STATE="refresh-failed:$_cmm_st" ;;
+    esac
+  fi
+  [ "$CMM_INDEX_STATE" = "fresh" ] || \
+    WARNINGS+=("cmm_index_not_fresh:${CMM_INDEX_STATE} (lenses are told the graph may predate this MR's HEAD)")
+fi
 if [ "$CMM_AVAILABLE" = "true" ] || [ "$CTX_AVAILABLE" = "true" ]; then
   {
     echo "**Code navigation — MANDATORY. The tools below ARE available in your"
@@ -1676,13 +1705,24 @@ if [ "$CMM_AVAILABLE" = "true" ] || [ "$CTX_AVAILABLE" = "true" ]; then
       echo "- \`trace_path\` (function_name=…) — who-calls-X / what-X-calls; use it for the"
       echo "  downstream-consumer and caller checks. Do NOT grep for callers."
       echo "- \`search_code\` (pattern=…) — text search over source (string literals, error"
-      echo "  messages, TODOs) instead of a Bash \`grep\`."
+      echo "  messages, TODOs) instead of a Bash \`grep\`. With \`regex=true\` there are no inline"
+      echo "  flags: \`(?i)\` is rejected as invalid, so spell case out as \`[Ii]nsert\`."
       echo "- \`get_architecture\` — orient in an unfamiliar package first."
       echo "  Orient in order: get_architecture → search_graph → get_code_snippet."
       echo "  Every symbol-existence / definition-site claim MUST be confirmed via"
       echo "  get_code_snippet or search_graph — a grep match is not proof a symbol exists."
       echo "  If you end up without the graph, that rule does not lapse: open the"
       echo "  definition site with Read and cite it, rather than citing the grep hit."
+      if [ "$CMM_INDEX_STATE" = "fresh" ]; then
+        echo "  **The graph is current.** Preflight re-indexed it at this MR's HEAD just before"
+        echo "  the panel, and the working tree IS that HEAD (lenses may not modify it), so"
+        echo "  \`get_code_snippet\` returns the code under review. Do NOT read source through"
+        echo "  \`git show HEAD:<file>\` piped to \`awk\`/\`sed\`: that is a line-range dump too."
+      else
+        echo "  **The graph may predate this MR's HEAD** (index: \`$CMM_INDEX_STATE\`). Before"
+        echo "  relying on a graph answer about changed code, check the symbol's body against"
+        echo "  the diff; if they differ, read that file directly and say so in your Navigation line."
+      fi
     fi
     if [ "$CTX_AVAILABLE" = "true" ] && [ "$CMM_AVAILABLE" = "true" ]; then
       # Two jobs, two tools. Offered "read large files" here, lenses ran `sed -n`
@@ -1941,6 +1981,7 @@ MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
   # so what is NOT in here is what a lens cannot reach.
   printf 'lens_mcp_path=%s\n'          "$LENS_MCP_FILE"
   printf 'lens_mcp_state=%s\n'         "$LENS_MCP_STATE"
+  printf 'cmm_index_state=%s\n'        "$CMM_INDEX_STATE"
   printf 'proportionality_path=%s\n'   "$PROPORTIONALITY_FILE"
   printf 'schema_change_detected=%s\n' "$SCHEMA_DETECTED"
   printf 'qa_token_ok=%s\n'            "$QA_TOKEN_OK"
@@ -2005,6 +2046,13 @@ MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
 #     references/approval.md prescribes for approvals: the API returns the created
 #     note's `author.username`, so it is free. A footer asserting the identity is
 #     written by the same session that got it wrong, and proves nothing.
+# Serialized HERE, after every section that can append, and nowhere earlier: an
+# append after the serialization point is silently absent from the JSON.
+if [ "${#WARNINGS[@]}" -gt 0 ]; then
+  WARNINGS_JSON=$(printf '%s\n' "${WARNINGS[@]}" | jq -R . | jq -s .)
+else
+  WARNINGS_JSON='[]'
+fi
 PREFLIGHT_JSON=$(jq -n \
   --argjson mr "$MR_NUMBER" \
   --arg target "$TARGET" --arg target_path "$TARGET_PATH" --arg target_abs "$TARGET_ABS" \
@@ -2045,6 +2093,7 @@ PREFLIGHT_JSON=$(jq -n \
   --arg tool_mandate_path "$MANDATE_FILE" \
   --arg lens_mcp_path "$LENS_MCP_FILE" \
   --arg lens_mcp_state "$LENS_MCP_STATE" \
+  --arg cmm_index_state "$CMM_INDEX_STATE" \
   --arg fix_mandate_path "$FIX_MANDATE_FILE" \
   --arg commit_subject "$COMMIT_SUBJECT" \
   --argjson approval_eligible "$APPROVAL_ELIGIBLE" \
@@ -2098,7 +2147,8 @@ PREFLIGHT_JSON=$(jq -n \
                # names a tool the lens will not have. Two fields because they are
                # two questions, and collapsing them is how a promise outlives what
                # keeps it.
-               lens_mcp_path: $lens_mcp_path, lens_mcp_state: $lens_mcp_state },
+               lens_mcp_path: $lens_mcp_path, lens_mcp_state: $lens_mcp_state,
+               cmm_index_state: $cmm_index_state },
     commit_subject: $commit_subject,
     approval_eligible: $approval_eligible,
     manager_brief_path: $manager_brief_path,

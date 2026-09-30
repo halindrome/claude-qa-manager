@@ -511,7 +511,18 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
   CMM fell to 3 — lenses ran `sed -n` ranges INSIDE `ctx_execute` and `Read` whole
   files, because the mandate offered ctx to "read large files". R2 is not a clean
   comparison: a round-1 fix commit landed in between.
-- **Lens mandate routes source reading to the graph. AWAITING A MEASURED ROUND.** When
+- **Preflight refreshes the CMM index before the panel. AWAITING A MEASURED ROUND.**
+  rest-api !809 (routing below in place): CMM did real work (10 `trace_path`, 17
+  `search_code`, 7 `get_code_snippet`), but lenses still made 23 `git show HEAD:<file>`
+  reads and 19 `awk NR`/`sed -n` slices. `agents/qa-reviewer.md` warns that the tree is
+  shared, and nothing said whether the graph reflected this MR's HEAD; the freshness
+  rule lived only in the fix mandate. Preflight now runs the CMM CLI's incremental
+  `index_repository` after the sync (4s on a 100k-node monorepo; the CLI exits 0 on
+  failure, so only `status == "indexed"` for this project counts) and records
+  `tooling.cmm_index_state`. The mandate then says the graph is current and names
+  `git show HEAD: | awk` as a dump, or says it may be stale. Measure: `git show HEAD:`
+  count and line-range reads per lens.
+- **Lens mandate routes source reading to the graph. MEASURED: partial.** When
   both servers are present, `tool-mandate.md` now gives ctx command output only (diffs,
   logs, test runs, non-code files) and names `sed -n` / `cat` / `awk 'NR…'` / `grep -n`
   on a source file as a dump whichever tool runs it, pointing to `get_code_snippet` /
