@@ -124,6 +124,17 @@ SCHEMA_FILE="$PLUGIN/config/lens-schema.json"
 SCHEMA=$(jq -c 'del(.. | objects | ."$comment")' "$SCHEMA_FILE") \
   || die_internal "config/lens-schema.json is not valid JSON"
 
+# Tool-call telemetry. Lenses leave no transcript (--no-session-persistence below), so
+# this per-lens log is the only record of which tools a lens actually called. The hook
+# is registered through --settings on each lens invocation and nowhere else: a
+# plugin-level hooks.json would fire in every session of every operator who installs
+# the plugin. Named panel-* because it is driver-owned, not one lens's findings.
+HOOKS="$S/panel-hooks.json"
+jq -n --arg cmd "bash \"$PLUGIN/lib/lens-tool-log.sh\"" \
+  '[{matcher: "*", hooks: [{type: "command", command: $cmd}]}] as $h
+   | {hooks: {PreToolUse: $h, PostToolUse: $h, PostToolUseFailure: $h}}' \
+  > "$HOOKS" || die_internal "could not write $HOOKS"
+
 # Field 9 of the status line is the project's own resolved stall tolerance. Reading
 # it here rather than re-deriving from config is the same division of labour as
 # everything else in this script -- and it is what the stall detector is tuned to,
@@ -151,7 +162,8 @@ fi
 # one lens's findings. Enumerating the catalog is not more code than a glob, and
 # it cannot reach a filename nobody thought about.
 for _l in $(jq -r 'to_entries[] | select(.key | startswith("$") | not) | .key' "$CATALOG"); do
-  rm -f "$S/lens-$_l.json" "$S/failed-$_l.json" "$S/raw-$_l.json" "$S/err-$_l.txt"
+  rm -f "$S/lens-$_l.json" "$S/failed-$_l.json" "$S/raw-$_l.json" "$S/err-$_l.txt" \
+        "$S/tools-$_l.jsonl"
 done
 
 # fanout + tree snapshots. These were the MANAGER's bookkeeping
@@ -312,14 +324,16 @@ for lens in $LENSES; do
     set -- -p --model "$model"
     set -- "$@" --plugin-dir "$PLUGIN" --agent claude-qa-manager:qa-reviewer \
                 --strict-mcp-config --mcp-config "$LENS_MCP" \
-                --no-session-persistence \
+                --no-session-persistence --settings "$HOOKS" \
                 --output-format json --json-schema "$SCHEMA"
+    # The hook appends here; it exits 0 without writing when this is unset.
+    export QA_LENS_LOG="$S/tools-$lens.jsonl"
     # --no-session-persistence: up to six lenses run concurrently in ONE checkout,
     # so all six would persist sessions into the same per-directory project slug.
-    # Nothing resumes a lens -- it is one non-interactive shot whose entire result
-    # is the envelope we capture -- so the session file is write contention for a
-    # thing no one reads. Phase 1 did not pass this flag, but Phase 1 ran a single
-    # lens; concurrency is what makes it matter.
+    # Nothing resumes a lens -- it is one non-interactive shot whose result is the
+    # envelope we capture -- and the one thing a transcript would add, which tools
+    # the lens called, is recorded in tools-<lens>.jsonl by the --settings hook. Do
+    # NOT drop this flag to measure tool use; read that log instead.
 
     cd "$TARGET_ABS" || exit 9
     claude "$@" < "$S/prompt-$lens.txt" > "$S/raw-$lens.json" 2> "$S/err-$lens.txt" &

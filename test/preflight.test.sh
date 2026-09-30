@@ -2408,7 +2408,8 @@ mkpanel() {   # -> echoes a root dir with plugin/, repo/, scratch/, bin/
   # progress counter ground-truth, so a stub here would assert against a copy of
   # the property under test.
   cp "$RUNPANEL_SRC" "$plugin/lib/run-panel.sh"
-  cp "$REPO_SRC/lib/lens-landed.sh" "$REPO_SRC/lib/set-phase.sh" "$plugin/lib/"
+  cp "$REPO_SRC/lib/lens-landed.sh" "$REPO_SRC/lib/set-phase.sh" \
+     "$REPO_SRC/lib/lens-tool-log.sh" "$REPO_SRC/lib/lens-tools-summary.sh" "$plugin/lib/"
   cp "$REPO_SRC/config/lens-catalog.json" "$REPO_SRC/config/lens-schema.json" "$plugin/config/"
 
   git init -q -b main "$repo"
@@ -2461,6 +2462,25 @@ printf '%s' "$prompt" > "$FAKE_LOG/stdin-$lens.txt"
 
 mode=$(printf '%s\n' ${FAKE_MODES:-} | sed -n "s/^$lens://p")
 [ -n "$mode" ] || mode=success
+
+# Drive the telemetry hook the way Claude Code does: read the --settings file the
+# driver passed and run every command registered for an event, payload on stdin.
+# Payload keys are those a live `claude -p` 2.1.284 delivered on 2026-09-30. The
+# three calls are the three shapes the log must distinguish: ran and succeeded, ran
+# and failed, never ran (a gate blocked it -- Pre with no Post).
+settings=""; prev=""
+for a in "$@"; do [ "$prev" = "--settings" ] && settings="$a"; prev="$a"; done
+if [ -n "$settings" ] && [ -f "$settings" ]; then
+  fire() {  # $1 event, $2 payload
+    jq -r --arg e "$1" '.hooks[$e][]?.hooks[]?.command' "$settings" \
+      | while IFS= read -r c; do printf '%s' "$2" | bash -c "$c"; done
+  }
+  fire PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"mcp__codebase-memory-mcp__search_graph","tool_use_id":"t1","tool_input":{"name_pattern":"foo"}}'
+  fire PostToolUse '{"hook_event_name":"PostToolUse","tool_name":"mcp__codebase-memory-mcp__search_graph","tool_use_id":"t1","tool_input":{"name_pattern":"foo"},"duration_ms":12}'
+  fire PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_use_id":"t2","tool_input":{"file_path":"/nope"}}'
+  fire PostToolUseFailure '{"hook_event_name":"PostToolUseFailure","tool_name":"Read","tool_use_id":"t2","tool_input":{"file_path":"/nope"},"duration_ms":3,"error":"File does not exist."}'
+  fire PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"t3","tool_input":{"command":"cat a.sh"}}'
+fi
 
 envelope() {  # $1 = model id in modelUsage, $2 = structured_output or empty
   local so="$2"
@@ -2583,6 +2603,7 @@ eq "  passes --model review_model explicitly" \
    "$(case "$argv" in *"--model opus"*) echo yes ;; *) echo no ;; esac)" "yes"
 # Up to six lenses run concurrently in ONE checkout; without this they all persist
 # sessions into the same per-directory project slug, and nothing ever resumes one.
+# Tool use is measured from tools-<lens>.jsonl, not from a transcript.
 eq "  passes --no-session-persistence (six lenses, one checkout)" \
    "$(case "$argv" in *--no-session-persistence*) echo yes ;; *) echo no ;; esac)" "yes"
 
@@ -2606,6 +2627,71 @@ eq "  ...and each lens gets its OWN focus" \
    "$(grep -c 'OWNS the Contract Verification table' "$p/scratch/prompt-test-quality.txt")" "0"
 eq "  contract path is offered by default" \
    "$(grep -c 'Contract / acceptance criteria' "$p/scratch/prompt-contract-security.txt")" "1"
+
+# --- tool-call telemetry --------------------------------------------------------
+# Lenses leave no transcript, so this log is the only record of what tools a lens
+# called. The hook must reach the lens through --settings and nothing wider.
+eq "  passes --settings panel-hooks.json" \
+   "$(case "$argv" in *"--settings $p/scratch/panel-hooks.json"*) echo yes ;; *) echo no ;; esac)" "yes"
+eq "  panel-hooks.json registers the log hook on Pre, Post and PostFailure" \
+   "$(jq -r '[.hooks.PreToolUse, .hooks.PostToolUse, .hooks.PostToolUseFailure]
+             | map(.[0].hooks[0].command | test("lib/lens-tool-log\\.sh")) | all' \
+         "$p/scratch/panel-hooks.json")" "true"
+eq "  every lens wrote its own log" \
+   "$(ls "$p/scratch"/tools-*.jsonl 2>/dev/null | wc -l | tr -d ' ')" "3"
+eq "  one line per hook event (2 + 2 + 1)" \
+   "$(wc -l < "$p/scratch/tools-regression-edges.jsonl" | tr -d ' ')" "5"
+eq "  the failure reason is kept" \
+   "$(jq -r 'select(.ev == "PostToolUseFailure") | .err' "$p/scratch/tools-regression-edges.jsonl")" \
+   "File does not exist."
+
+rm -f "$p/scratch/tools-test-quality.jsonl"
+summ=$(bash "$p/plugin/lib/lens-tools-summary.sh" "$p/scratch"); rc=$?
+eq "  summary exits 0" "$rc" "0"
+eq "  summary counts calls from PreToolUse" \
+   "$(jq -r '.lenses."regression-edges".calls' <<<"$summ")" "3"
+eq "  summary classes the calls (cmm/raw)" \
+   "$(jq -r '.lenses."regression-edges".by_class | "\(.cmm)/\(.ctx)/\(.raw)/\(.other)"' <<<"$summ")" "1/0/2/0"
+eq "  summary: a failed call is failed" \
+   "$(jq -r '.lenses."regression-edges".failed' <<<"$summ")" "1"
+eq "  summary: Pre with no Post is no_result (the blocked shape)" \
+   "$(jq -r '.lenses."regression-edges".no_result' <<<"$summ")" "1"
+eq "  summary: denied comes from the run record, not the log" \
+   "$(jq -r '.lenses."regression-edges".denied' <<<"$summ")" "0"
+eq "  summary sums Claude Code's own call durations" \
+   "$(jq -r '.lenses."regression-edges".tool_ms' <<<"$summ")" "15"
+# A zero is only readable next to the tool surface the lens actually had.
+eq "  summary carries lens_mcp_state from the brief" \
+   "$(jq -r '.lens_mcp_state' <<<"$summ")" "ok"
+# Invariant 2: a lens with no log did not report zero tools -- it reported nothing.
+eq "  summary: a lens with no log is not-recorded, not zero calls" \
+   "$(jq -c '.lenses."test-quality"' <<<"$summ")" '{"state":"not-recorded"}'
+rm -rf "$p"
+
+# The hook exits 0 and writes no stdout in every case: stdout from a PreToolUse
+# hook can be read as a decision, and a telemetry failure must never fail a lens.
+hk="$REPO_SRC/lib/lens-tool-log.sh"
+ht=$(mktemp -d)
+pl='{"hook_event_name":"PreToolUse","tool_name":"Read","tool_use_id":"x","tool_input":{"file_path":"/a"}}'
+o=$(printf '%s' "$pl" | env -u QA_LENS_LOG bash "$hk"); rc=$?
+eq "lens-tool-log.sh without QA_LENS_LOG: exit 0" "$rc" "0"
+eq "  ...no stdout" "$o" ""
+o=$(printf '%s' "$pl" | QA_LENS_LOG="$ht/l.jsonl" bash "$hk"); rc=$?
+eq "lens-tool-log.sh with QA_LENS_LOG: exit 0, no stdout" "$rc:$o" "0:"
+eq "  ...one line appended" "$(wc -l < "$ht/l.jsonl" | tr -d ' ')" "1"
+o=$(printf 'not json' | QA_LENS_LOG="$ht/l.jsonl" bash "$hk"); rc=$?
+eq "lens-tool-log.sh on malformed input: still exit 0, no stdout" "$rc:$o" "0:"
+o=$(printf '%s' "$pl" | QA_LENS_LOG="$ht/missing-dir/l.jsonl" bash "$hk" 2>&1); rc=$?
+eq "lens-tool-log.sh with an unwritable log: still exit 0, silent" "$rc:$o" "0:"
+rm -rf "$ht"
+
+# A retried round must not append to last round's log: the scratch dir is keyed to
+# the MR, not the round, so a stale log would double-count every call.
+p=$(mkpanel)
+printf '{"ev":"STALE"}\n' > "$p/scratch/tools-contract-security.jsonl"
+run_panel "$p" >/dev/null
+eq "round hygiene removes last round's tool log" \
+   "$(grep -c STALE "$p/scratch/tools-contract-security.jsonl")" "0"
 rm -rf "$p"
 
 # --skip-contract-verification is a per-invocation flag preflight never sees.

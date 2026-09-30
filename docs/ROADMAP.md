@@ -498,6 +498,28 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
 
 ### Smaller, independent items
 
+- **Live lenses never get context-mode. OPEN (found 2026-09-30).** Every brief in
+  `/private/tmp/qa-cycle-*` from the last month reads `lens_mcp_state=partial:context-mode`,
+  and every generated `panel-mcp.json` lists `codebase-memory-mcp` alone:
+  `_resolve_server` (`lib/preflight.sh`) finds no launch entry for context-mode, which
+  is installed as a plugin. Preflight announces it, so it is not an absent check
+  reporting as a pass, but the effect is that every `claude -p` lens reviews without
+  `ctx_*` while the mandate and `agents/qa-manager.md` ("pins each lens to the two
+  servers") say otherwise. Fix the resolution, or stop the mandate naming a tool the
+  lens cannot have. The telemetry entry below measures the result either way.
+- **Lens tool use is measured by a per-lens hook log, not by transcripts.** Lenses
+  run with `--no-session-persistence`, so neither `make measure` script in the
+  enforcement stack can see them; the 330 `qa-reviewer` transcripts they do count
+  are overwhelmingly the retired Agent-lens path. `run-panel.sh` passes each lens
+  `--settings panel-hooks.json`, registering `lib/lens-tool-log.sh` on
+  Pre/PostToolUse/PostToolUseFailure for that lens only, and it appends to
+  `tools-<lens>.jsonl`. `lib/lens-tools-summary.sh <scratch>` reads the round: calls
+  by class, failures, `no_result` (Pre with no Post: blocked or killed), the
+  envelope's `permission_denials`, `ToolSearch` count, and tool time against span.
+  Verified against a real `claude -p` (2.1.284): a success delivers Pre+Post, a
+  failure Pre+PostToolUseFailure, a hook-blocked call Pre only; the hook fires under
+  `--agent` + `--strict-mcp-config` alongside the target repo's own hooks.
+
 - **Lens reviewers silently inherit a weak session model — invariant 6 has no
   floor. CLOSED 2026-09-18 by option 3 below.** A Haiku-session `/qa-cycle` ran its
   panel on Haiku, which is what finally forced it. Now: `review.model` ships as
