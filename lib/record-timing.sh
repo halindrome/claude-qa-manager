@@ -32,7 +32,7 @@ if [ -z "${TARGET_ABS:-}" ] && [ -f "$S/preflight.json" ]; then
 fi
 [ -n "${TARGET_ABS:-}" ] || exit 0
 
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
 # Fan-out stamp, written by the manager when it launches the panel. Without it the
 # first (and largest) gap is unmeasurable, so refuse to guess: a history row that

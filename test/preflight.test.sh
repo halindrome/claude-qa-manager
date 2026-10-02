@@ -398,7 +398,7 @@ eq "  keeps the authoring rules"        "$(grep -q 'whole precedent' "$fm" && ec
 # the fix: the retry used `find / -maxdepth 8` and still cost 3 minutes.
 tm=$(jq -r '.tooling.mandate_path' <<<"$out")
 eq "  lens mandate bans scanning /"     "$(grep -q 'Never scan outside the repository' "$tm" && echo yes || echo no)" "yes"
-eq "  and rejects -maxdepth as the fix" "$(grep -q 'or without \`-maxdepth\`' "$tm" && echo yes || echo no)" "yes"
+eq "  and rejects -maxdepth as the fix" "$(grep -qF 'or without `-maxdepth`' "$tm" && echo yes || echo no)" "yes"
 eq "  and gives the resolver instead"   "$(grep -q 'require.resolve' "$tm" && echo yes || echo no)" "yes"
 # The ToolSearch bootstrap line listed the five CMM tool names unconditionally, so a
 # ctx-only session was told to load five tools it does not have and none of the ones
@@ -2861,20 +2861,20 @@ eq "  ...and its cost, from the run record not a self-report" \
 # --- the invocation itself, asserted from what the CLI saw --------------------
 argv=$(cat "$p/scratch/argv-contract-security.txt")
 eq "  passes --strict-mcp-config" \
-   "$(case "$argv" in *--strict-mcp-config*) echo yes ;; *) echo no ;; esac)" "yes"
+   "$(case "$argv" in (*--strict-mcp-config*) echo yes ;; (*) echo no ;; esac)" "yes"
 eq "  passes --json-schema (the format is forced, not requested)" \
-   "$(case "$argv" in *--json-schema*) echo yes ;; *) echo no ;; esac)" "yes"
+   "$(case "$argv" in (*--json-schema*) echo yes ;; (*) echo no ;; esac)" "yes"
 eq "  passes --agent claude-qa-manager:qa-reviewer" \
-   "$(case "$argv" in *"--agent claude-qa-manager:qa-reviewer"*) echo yes ;; *) echo no ;; esac)" "yes"
+   "$(case "$argv" in (*"--agent claude-qa-manager:qa-reviewer"*) echo yes ;; (*) echo no ;; esac)" "yes"
 # Always an explicit --model: omitting it would inherit the operator's session
 # model, which is how a Haiku session gets a Haiku panel (invariant 6).
 eq "  passes --model review_model explicitly" \
-   "$(case "$argv" in *"--model opus"*) echo yes ;; *) echo no ;; esac)" "yes"
+   "$(case "$argv" in (*"--model opus"*) echo yes ;; (*) echo no ;; esac)" "yes"
 # Up to six lenses run concurrently in ONE checkout; without this they all persist
 # sessions into the same per-directory project slug, and nothing ever resumes one.
 # Tool use is measured from tools-<lens>.jsonl, not from a transcript.
 eq "  passes --no-session-persistence (six lenses, one checkout)" \
-   "$(case "$argv" in *--no-session-persistence*) echo yes ;; *) echo no ;; esac)" "yes"
+   "$(case "$argv" in (*--no-session-persistence*) echo yes ;; (*) echo no ;; esac)" "yes"
 
 # The tree snapshot must carry HEAD and the branch name, not just porcelain: a
 # concurrent round doing a CLEAN branch switch in the same working tree leaves
@@ -2901,7 +2901,7 @@ eq "  contract path is offered by default" \
 # Lenses leave no transcript, so this log is the only record of what tools a lens
 # called. The hook must reach the lens through --settings and nothing wider.
 eq "  passes --settings panel-hooks.json" \
-   "$(case "$argv" in *"--settings $p/scratch/panel-hooks.json"*) echo yes ;; *) echo no ;; esac)" "yes"
+   "$(case "$argv" in (*"--settings $p/scratch/panel-hooks.json"*) echo yes ;; (*) echo no ;; esac)" "yes"
 eq "  panel-hooks.json registers the log hook on Pre, Post and PostFailure" \
    "$(jq -r '[.hooks.PreToolUse, .hooks.PostToolUse, .hooks.PostToolUseFailure]
              | map(.[0].hooks[0].command | test("lib/lens-tool-log\\.sh")) | all' \
@@ -2945,11 +2945,11 @@ rm -rf "$p"
 # use the shapes real transcripts have: ISO timestamps with milliseconds, tool_use in
 # assistant content, tool_result (with is_error) in user content.
 sq=$(mktemp -d); now=$(date +%s)
-iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%S.000Z; }
 S="$sq/tmp/qa-cycle-abc123-77"; mkdir -p "$S"
 printf 'lenses=["contract-security","regression-edges"]\nlens_mcp_state=ok\n' > "$S/manager-brief.txt"
 printf '%s\n' "$((now - 600))" > "$S/fanout"
-touch -t "$(date -r $((now - 600)) +%Y%m%d%H%M.%S)" "$S/fanout"
+touch -t "$(date -r $((now - 600)) +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$((now - 600))" +%Y%m%d%H%M.%S)" "$S/fanout"
 printf 'snap\n' > "$S/tree-after.txt"
 proj="$sq/home/.config/claude-code/projects/-repo"; mkdir -p "$proj/sid1/subagents"
 {
@@ -3102,7 +3102,7 @@ p=$(mkpanel)
 sed -i.bak 's/^review_model=opus$/review_model=fable/' "$p/scratch/manager-brief.txt"
 run_panel "$p" >/dev/null
 eq "requested model is passed through" \
-   "$(case "$(cat "$p/scratch/argv-test-quality.txt")" in *"--model fable"*) echo yes ;; *) echo no ;; esac)" "yes"
+   "$(case "$(cat "$p/scratch/argv-test-quality.txt")" in (*"--model fable"*) echo yes ;; (*) echo no ;; esac)" "yes"
 eq "  an allowed swap is RECORDED as model_mismatch" \
    "$(jq -r '.state' "$p/scratch/failed-contract-security.json")" "model_mismatch"
 eq "  ...and its findings still land" \
@@ -3260,7 +3260,7 @@ lm=$(jq -r '.tooling.lens_mcp_path' <<<"$out")
 eq "unregistered -> the mcp config is still written" "$([ -f "$lm" ] && echo yes || echo no)" "yes"
 # It must NOT be named lens-*.json: that namespace is swept and counted elsewhere.
 eq "  ...and it is outside the lens-* namespace" \
-   "$(case "$(basename "$lm")" in lens-*) echo INSIDE ;; *) echo outside ;; esac)" "outside"
+   "$(case "$(basename "$lm")" in (lens-*) echo INSIDE ;; (*) echo outside ;; esac)" "outside"
 eq "  ...with no servers"   "$(jq -r '.mcpServers | length' "$lm")" "0"
 eq "  ...and state says so" "$(jq -r '.tooling.lens_mcp_state' <<<"$out")" "none:not-registered"
 rm -rf "$r"
@@ -3613,7 +3613,7 @@ out=$( cd "$r/repo/apps/thing" && env -u CLAUDE_PLUGIN_ROOT -u CLAUDE_PROJECT_DI
 eq "invoked from a subdirectory, the helper's path resolves" \
    "$(sed -n 2p "$tplog" 2>/dev/null)" "resolvable"
 eq "  ...because it is absolute" \
-   "$(case "$(sed -n 1p "$tplog" 2>/dev/null)" in /*) echo absolute ;; *) echo RELATIVE ;; esac)" "absolute"
+   "$(case "$(sed -n 1p "$tplog" 2>/dev/null)" in (/*) echo absolute ;; (*) echo RELATIVE ;; esac)" "absolute"
 # basename alone was too weak to fail: `apps/thing` and the correct absolute path
 # share it. Assert the whole path against the real directory.
 eq "  ...and it is exactly the target dir, not a doubled path" \

@@ -31,7 +31,7 @@ S="${1:-}"
 [ -n "$S" ] && [ -d "$S" ] || { echo "usage: sequential-tools-log.sh <scratch-dir>" >&2; exit 2; }
 S=$(cd "$S" && pwd -P)
 
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 # Derived data, regenerated on every call: the scratch dir is keyed to the MR, not the
 # round, so a log left from an earlier round would otherwise be read as this one's.
 rm -f "$S"/tools-sequential.jsonl "$S"/tools-sequential-*.jsonl

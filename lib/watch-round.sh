@@ -30,7 +30,7 @@ while :; do
     [ -f "$d/status" ] || continue
     found=1
     IFS='|' read -r mr target round phase done total start target_abs lens_stall < "$d/status"
-    age=$(( now - $(stat -f %m "$d/status" 2>/dev/null || stat -c %Y "$d/status" 2>/dev/null) ))
+    age=$(( now - $(stat -c %Y "$d/status" 2>/dev/null || stat -f %m "$d/status" 2>/dev/null) ))
     printf '  !%s  %s  round %s  [%s]  %s/%s lenses  elapsed %s  quiet %s\n' \
       "$mr" "${target:-?}" "${round:-?}" "${phase:-?}" "${done:-0}" "${total:-?}" \
       "$(hms $(( now - ${start:-$now} )))" "$(hms "$age")"
@@ -42,7 +42,7 @@ while :; do
     fo=0; [ -f "$d/fanout" ] && fo=$(tr -cd '0-9' < "$d/fanout")
     for f in "$d"/lens-*.json; do
       [ -f "$f" ] || continue
-      m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) || continue
+      m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null) || continue
       [ "${fo:-0}" -gt 0 ] && [ "$m" -lt "$fo" ] && continue
       n=$(basename "$f"); n=${n#lens-}; n=${n%.json}
       printf '        ✓ %s\n' "$n"

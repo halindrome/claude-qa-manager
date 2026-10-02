@@ -117,7 +117,7 @@ for _f in "$CONFIG_USER" "$CONFIG_PROJECT"; do
     die_usage "config file is not valid JSON: $_f"
 done
 
-BB="$(mktemp -t qa-config)" || die_internal "could not create temp config"
+BB="$(mktemp "${TMPDIR:-/tmp}/qa-config.XXXXXX")" || die_internal "could not create temp config"
 trap 'rm -f "$BB"' EXIT
 jq -s '.[0] * .[1] * .[2]' \
   <(_layer "$CONFIG_DEFAULTS") <(_layer "$CONFIG_USER") <(_layer "$CONFIG_PROJECT") \
@@ -570,7 +570,7 @@ if [ "${QA_ALLOW_CONCURRENT:-}" != "1" ]; then
     IFS='|' read -r _omr _otg _ord _oph _odn _ott _ost _ota _ols < "$_sf" || continue
     [ "${_ota:-}" = "$TARGET_ABS" ] || continue                 # different target: fine
     [ "${_oph:-}" = "done" ] && continue                        # finished
-    _omt=$(stat -f %m "$_sf" 2>/dev/null || stat -c %Y "$_sf" 2>/dev/null) || continue
+    _omt=$(stat -c %Y "$_sf" 2>/dev/null || stat -f %m "$_sf" 2>/dev/null) || continue
     case "${_ols:-}" in ''|*[!0-9]*) _ols=1200 ;; esac
     if [ $(( $(date +%s) - _omt )) -lt $(( _ols * 2 )) ]; then
       die_usage "another QA round is live on this target: MR $_omr, round ${_ord:-?}, phase ${_oph:-?} ($(dirname "$_sf")). Both would check out and push branches in the SAME working tree ($TARGET_ABS), so each would end up reviewing the other's code and committing to the other's branch. To review several MRs at once, give each session its own worktree (worktree isolation) — that is the supported way and this gate does not block it, since each worktree is a different path. Otherwise wait for the other round, or pick a different target. QA_ALLOW_CONCURRENT=1 bypasses this only if you are certain the rounds cannot touch the same tree."

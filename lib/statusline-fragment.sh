@@ -101,7 +101,7 @@ for f in "$SCRATCH_ROOT"/qa-cycle-*/status; do
     _ta=$(jq -r '.target_abs // empty' "$(dirname "$f")/preflight.json" 2>/dev/null)
   fi
   belongs_here "${_ta:-}" || continue
-  m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) || continue
+  m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null) || continue
   [ "$m" -gt "$newest_mtime" ] && { newest_mtime=$m; newest="$f"; }
 done
 [ -n "$newest" ] || exit 0

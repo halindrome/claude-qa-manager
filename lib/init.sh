@@ -112,7 +112,7 @@ cmd_check() {
 
   local tf="$CONFIG_DIR/qa-agent-token"
   if [ -s "$tf" ]; then
-    local mode; mode=$(stat -f '%Lp' "$tf" 2>/dev/null || stat -c '%a' "$tf" 2>/dev/null || echo "?")
+    local mode; mode=$(stat -c '%a' "$tf" 2>/dev/null || stat -f '%Lp' "$tf" 2>/dev/null || echo "?")
     if [ "$mode" = "600" ]; then ok "QA agent token present (mode $mode)"
     else warn "QA agent token present but mode is $mode — should be 600. Fix: chmod 600 $tf"; fi
   else

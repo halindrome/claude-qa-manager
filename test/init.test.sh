@@ -109,7 +109,7 @@ cfgdir="$d/home/.config/claude-qa-manager"
     bash "$INIT" token </dev/null >/dev/null 2>&1 )
 eq "valid token stored"        "$( [ -s "$cfgdir/qa-agent-token" ] && echo yes || echo no )" "yes"
 eq "  stored content matches"  "$(cat "$cfgdir/qa-agent-token" 2>/dev/null)" "good-token"
-mode=$(stat -f '%Lp' "$cfgdir/qa-agent-token" 2>/dev/null || stat -c '%a' "$cfgdir/qa-agent-token" 2>/dev/null)
+mode=$(stat -c '%a' "$cfgdir/qa-agent-token" 2>/dev/null || stat -f '%Lp' "$cfgdir/qa-agent-token" 2>/dev/null)
 eq "  mode is 600"             "$mode" "600"
 eq "  expected_username recorded" "$(jq -r '.qa_agent.expected_username' "$cfgdir/config.json" 2>/dev/null)" "qa-bot"
 # The whole point: nothing lands inside the repository.
