@@ -176,6 +176,10 @@ case "\$*" in
                       echo "stub notes failure" >&2; exit "\${GLAB_STUB_NOTES_EXIT}"
                     fi
                     printf '%s' "\${GLAB_STUB_NOTES:-[]}" ;;
+  # GLAB_STUB_ISSUES: a JSON object keyed by issue number, in glab's NATIVE shape
+  # (iid, web_url); a number absent from it fails like a real missing issue.
+  *"issue view"*)   jq -e --arg n "\$3" '.[\$n] // empty' <<<"\${GLAB_STUB_ISSUES:-{\}}" 2>/dev/null \
+                      || { echo "404 issue not found" >&2; exit 1; } ;;
   *)                echo '{}' ;;
 esac
 exit 0
@@ -210,6 +214,9 @@ case "\$*" in
                       echo "stub notes failure" >&2; exit "\${GH_STUB_NOTES_EXIT}"
                     fi
                     printf '%s' "\${GH_STUB_NOTES:-[]}" ;;
+  # GH_STUB_ISSUES: keyed by number, in gh's NATIVE shape (body, url, OPEN).
+  *"issue view"*)   jq -e --arg n "\$3" '.[\$n] // empty' <<<"\${GH_STUB_ISSUES:-{\}}" 2>/dev/null \
+                      || { echo "GraphQL: Could not resolve to an issue" >&2; exit 1; } ;;
   *)                echo '{}' ;;
 esac
 exit 0
@@ -1892,13 +1899,15 @@ eq "regex-metachar username: devXuser != dev.user (grep -F)" "$(jq -r '.mr_appro
 rm -rf "$r"
 
 echo "[contract ticket extraction]"
-r=$(mkfixture "feature/x" "main")
+JIRA='.contract.tracker = "jira"'
+r=$(mkfixture "feature/x" "main" "$JIRA")
 out=$(GLAB_STUB_TITLE='PROJ-1234 fix the thing' run_preflight "$r" 73 mono)
 eq "ticket in title -> title_ticket"        "$(jq -r '.contract.title_ticket' <<<"$out")" "PROJ-1234"
 eq "  candidate_tickets includes it"        "$(jq -r '.contract.candidate_tickets|index("PROJ-1234")!=null' <<<"$out")" "true"
+eq "  explicit tracker reported as config"  "$(jq -r '.contract.tracker_source' <<<"$out")" "config"
 rm -rf "$r"
 # Blocklist: HTTP-400 / SHA-256 / CVE-2024 look like tickets but must be dropped.
-r=$(mkfixture "feature/x" "main")
+r=$(mkfixture "feature/x" "main" "$JIRA")
 out=$(GLAB_STUB_TITLE='handle HTTP-400 and CVE-2024 in SHA-256 path' run_preflight "$r" 73 mono)
 eq "blocklisted non-tickets -> no candidates" "$(jq -r '.contract.candidate_tickets|length' <<<"$out")" "0"
 eq "  title_ticket empty"                     "$(jq -r '.contract.title_ticket' <<<"$out")" ""
@@ -1906,10 +1915,83 @@ rm -rf "$r"
 r=$(mkfixture "feature/x" "main")
 DESC_FIXTURE='a longer description here'
 out=$(GLAB_STUB_DESC="$DESC_FIXTURE" run_preflight "$r" 73 mono)
-# Assert against the computed length, not a hand-counted literal (I miscounted it
-# as 24 the first time — a hardcoded expectation is its own small trap).
+# Assert against the computed length, not a hand-counted literal.
 eq "description_length is the real byte length" "$(jq -r '.contract.description_length' <<<"$out")" "${#DESC_FIXTURE}"
+eq "min_description_length defaults to 200"      "$(jq -r '.contract.min_description_length' <<<"$out")" "200"
 rm -rf "$r"
+# Both contract keys were shipped and never read; a project setting them was ignored.
+r=$(mkfixture "feature/x" "main" "$JIRA | .contract.ticket_pattern = \"TCK[0-9]+\" | .contract.min_description_length = 40")
+out=$(GLAB_STUB_TITLE='TCK42 and PROJ-7' run_preflight "$r" 73 mono)
+eq "ticket_pattern from config is used"     "$(jq -c '.contract.candidate_tickets' <<<"$out")" '["TCK42"]'
+eq "min_description_length from config"     "$(jq -r '.contract.min_description_length' <<<"$out")" "40"
+rm -rf "$r"
+r=$(mkfixture "feature/x" "main" "$JIRA | .contract.ticket_pattern = \"([A-Z\"")
+out=$(GLAB_STUB_TITLE='PROJ-9 thing' run_preflight "$r" 73 mono)
+eq "malformed ticket_pattern -> warned"     "$(jq -r '[.warnings[]|select(startswith("invalid_ticket_pattern"))]|length' <<<"$out")" "1"
+eq "  and the default pattern still finds tickets" "$(jq -r '.contract.title_ticket' <<<"$out")" "PROJ-9"
+rm -rf "$r"
+
+echo "[contract tracker: auto / forge / none]"
+# auto with no Jira MCP registered -> forge. The forge fixture is GitLab, so the REAL
+# forge-gitlab.sh normalizes the stub's native glab issue shape.
+ISSUES='{"12":{"iid":12,"title":"Add the knob","state":"opened","description":"AC: knob persists","web_url":"https://gl/x/-/issues/12"},
+         "56":{"iid":56,"title":"Docs","state":"opened","description":"AC: documented","web_url":"https://gl/x/-/issues/56"}}'
+r=$(mkfixture "feature/x" "main")
+out=$(GLAB_STUB_TITLE='Add knob (#12)' \
+      GLAB_STUB_DESC='Closes #34. See https://gl/x/-/issues/56, MR !7, group/proj#9, &#123;' \
+      GLAB_STUB_ISSUES="$ISSUES" run_preflight "$r" 73 mono)
+eq "auto, no Jira MCP -> forge"           "$(jq -r '.contract.tracker' <<<"$out")" "forge"
+eq "  chosen automatically"               "$(jq -r '.contract.tracker_source' <<<"$out")" "auto"
+eq "  #N and /issues/N, not !7 / proj#9 / &#123;" \
+   "$(jq -c '.contract.candidate_tickets | sort' <<<"$out")" '["#12","#34","#56"]'
+eq "  title reference is the title ticket" "$(jq -r '.contract.title_ticket' <<<"$out")" "#12"
+tp=$(jq -r '.contract.tickets_path' <<<"$out")
+eq "  fetched issues land in tickets_path" "$(jq -c '[.[].number]' "$tp")" '["12","56"]'
+eq "  normalized from glab's shape"        "$(jq -r '.[0].url' "$tp")" "https://gl/x/-/issues/12"
+eq "  the missing one is unfetched"        "$(jq -c '.contract.unfetched' <<<"$out")" '["#34"]'
+eq "  one fetched -> no unfetched warning" \
+   "$(jq -r '[.warnings[]|select(startswith("contract_tickets_unfetched"))]|length' <<<"$out")" "0"
+rm -rf "$r"
+# Every reference failing is a failed lookup, NOT "no ticket": warned, no tickets file.
+r=$(mkfixture "feature/x" "main")
+out=$(GLAB_STUB_TITLE='Fix (#77)' run_preflight "$r" 73 mono)
+eq "all references unfetched -> warned" \
+   "$(jq -r '[.warnings[]|select(startswith("contract_tickets_unfetched"))]|length' <<<"$out")" "1"
+eq "  and no tickets_path"                "$(jq -r '.contract.tickets_path' <<<"$out")" ""
+rm -rf "$r"
+# auto WITH a Jira MCP registered -> jira, and #N is not a candidate there.
+r=$(mkfixture "feature/x" "main")
+echo '{"mcpServers":{"jira":{"command":"x"}}}' > "$r/repo/.mcp.json"
+out=$(GLAB_STUB_TITLE='PROJ-5 fix (#12)' run_preflight "$r" 73 mono)
+eq "auto, Jira MCP registered -> jira"    "$(jq -r '.contract.tracker' <<<"$out")" "jira"
+eq "  candidates are ticket-pattern ids"  "$(jq -c '.contract.candidate_tickets' <<<"$out")" '["PROJ-5"]'
+rm -rf "$r"
+r=$(mkfixture "feature/x" "main" '.contract.tracker = "none"')
+out=$(GLAB_STUB_TITLE='PROJ-5 fix (#12)' run_preflight "$r" 73 mono)
+eq "tracker none -> no candidates"        "$(jq -c '.contract.candidate_tickets' <<<"$out")" '[]'
+rm -rf "$r"
+r=$(mkfixture "feature/x" "main" '.contract.tracker = "linear"')
+out=$(run_preflight "$r" 73 mono)
+eq "unknown tracker -> warned, not silent" \
+   "$(jq -r '[.warnings[]|select(startswith("unknown_contract_tracker"))]|length' <<<"$out")" "1"
+eq "  and runs with no lookup"            "$(jq -r '.contract.tracker' <<<"$out")" "none"
+rm -rf "$r"
+# GitHub: the REAL forge-github.sh normalizes gh's native shape; a #N that is a PR
+# (gh issue view refuses it) is unfetched, not an error.
+gi=$(mktemp -d); mkdir -p "$gi/bin"
+cat > "$gi/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"issue view 3 "*) echo '{"number":3,"title":"Knob","state":"OPEN","body":"AC: x","url":"https://gh/x/issues/3"}' ;;
+  *) echo "GraphQL: Could not resolve to an issue" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$gi/bin/gh"
+ghout=$(PATH="$gi/bin:$PATH" bash -c ". '$REPO_SRC/lib/forge-github.sh'; forge_view_issue '$gi' 3")
+eq "github issue normalized"  "$(jq -c '{number,state,description}' <<<"$ghout")" '{"number":"3","state":"open","description":"AC: x"}'
+PATH="$gi/bin:$PATH" bash -c ". '$REPO_SRC/lib/forge-github.sh'; forge_view_issue '$gi' 4" >/dev/null 2>&1
+eq "  a PR number fails, not an empty issue" "$?" "1"
+rm -rf "$gi"
 
 # ---------------------------------------------------------------------------
 echo "[lens selection — deterministic lenses[] array]"

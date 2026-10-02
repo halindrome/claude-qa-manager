@@ -50,7 +50,7 @@
 #      hide behind "usage error".
 #
 # The only things the orchestrator still does as LLM/interactive turns after
-# this are: contract resolution (jira_get + synthesis, and an AskUserQuestion
+# this are: contract resolution (a Jira MCP fetch when the tracker is jira, synthesis, and an AskUserQuestion
 # only when two or more mentioned tickets resolve), any SAST wait-gate prompt,
 # and the review panel.
 set -uo pipefail
@@ -1066,16 +1066,8 @@ else
 fi
 SAST_HELPER_REASON="${SAST_HELPER_REASON:-}"
 
-# ---------------------------------------------------------------------------
-# Contract candidate extraction (mechanical part only; jira_get + synthesis
-# stay in the orchestrator). Scan title + description for [A-Z]+-<digits>.
-# ---------------------------------------------------------------------------
-# Drop common non-JIRA tokens that also match [A-Z]+-<digits> (HTTP-400,
-# UTF-8, SHA-256, CVE-2024, RFC-1918, …) so they don't masquerade as tickets.
-TICKET_BLOCKLIST='^(HTTP|HTTPS|UTF|SHA|MD|RFC|ISO|CVE|CWE|OSV|IPV|IPv|BASE|SSL|TLS|IEEE|ASCII)-'
-TITLE_TICKET=$(printf '%s' "$MR_TITLE" | grep -oE '[A-Z]+-[0-9]+' | grep -viE "$TICKET_BLOCKLIST" | head -1)
-CANDIDATES_JSON=$(printf '%s\n%s' "$MR_TITLE" "$MR_DESC" | grep -oE '[A-Z]+-[0-9]+' \
-  | grep -viE "$TICKET_BLOCKLIST" | sort -u | jq -R . | jq -s .)
+# Contract candidates are extracted in the tooling section below: which references
+# count depends on the tracker, and `auto` needs the MCP registration probe.
 DESC_LEN=${#MR_DESC}
 
 # ---------------------------------------------------------------------------
@@ -1317,6 +1309,69 @@ _probe_registered() {  # $1 = plugin/server name
 }
 CMM_AVAILABLE=false; _probe_registered "codebase-memory-mcp" && CMM_AVAILABLE=true
 CTX_AVAILABLE=false; _probe_registered "context-mode"        && CTX_AVAILABLE=true
+
+# ---------------------------------------------------------------------------
+# Contract candidates. The tracker decides what a ticket reference looks like and who
+# fetches it (SKILL.md Step 0.5; references/contract-trackers.md):
+#   jira   `contract.ticket_pattern` ids; the orchestrator fetches them via the Jira MCP
+#   forge  `#N` and `/issues/N` references; fetched HERE through the forge seam, which
+#          is already authenticated, so no model step stands between ticket and contract
+#   none   no lookup; the contract is synthesized from the MR
+# `auto` is jira when a Jira MCP server is registered, else forge. A server registered
+# under another name needs `contract.tracker: "jira"` set explicitly.
+# ---------------------------------------------------------------------------
+TRACKER_CFG=$(jq -r '.contract.tracker // "auto"' "$BB")
+TRACKER_SOURCE=config
+case "$TRACKER_CFG" in
+  auto)            TRACKER_SOURCE=auto
+                   if _probe_registered "jira"; then TRACKER=jira; else TRACKER=forge; fi ;;
+  jira|forge|none) TRACKER="$TRACKER_CFG" ;;
+  *)               TRACKER=none
+                   WARNINGS+=("unknown_contract_tracker:${TRACKER_CFG} (valid: auto jira forge none — no ticket lookup this round)") ;;
+esac
+MIN_DESC=$(jq -r '.contract.min_description_length // 200' "$BB")
+case "$MIN_DESC" in ''|*[!0-9]*) MIN_DESC=200 ;; esac
+
+TITLE_TICKET=""; CANDIDATES_JSON='[]'; TICKETS_PATH=""; UNFETCHED_JSON='[]'
+rm -f "$QA_SCRATCH/contract-tickets.json"
+case "$TRACKER" in
+  jira)
+    TICKET_PATTERN=$(jq -r '.contract.ticket_pattern // "[A-Z]+-[0-9]+"' "$BB")
+    # grep exits 2 on a malformed pattern; left alone that reads as "no tickets", a
+    # check that never ran reporting clean. Name it and use the default instead.
+    printf '' | grep -qE "$TICKET_PATTERN" 2>/dev/null; [ $? -eq 2 ] && {
+      WARNINGS+=("invalid_ticket_pattern:${TICKET_PATTERN} (using the default [A-Z]+-[0-9]+)")
+      TICKET_PATTERN='[A-Z]+-[0-9]+'; }
+    # Tokens shaped like a key that are never tickets (HTTP-400, SHA-256, CVE-2024, …).
+    TICKET_BLOCKLIST='^(HTTP|HTTPS|UTF|SHA|MD|RFC|ISO|CVE|CWE|OSV|IPV|IPv|BASE|SSL|TLS|IEEE|ASCII)-'
+    TITLE_TICKET=$(printf '%s' "$MR_TITLE" | grep -oE "$TICKET_PATTERN" | grep -viE "$TICKET_BLOCKLIST" | head -1)
+    CANDIDATES_JSON=$(printf '%s\n%s' "$MR_TITLE" "$MR_DESC" | grep -oE "$TICKET_PATTERN" \
+      | grep -viE "$TICKET_BLOCKLIST" | sort -u | jq -R . | jq -s .)
+    ;;
+  forge)
+    # `#N` not preceded by a word char, `/`, `&` or `!` (cross-project refs, HTML
+    # entities and GitLab MR refs are not this project's issues), plus issue URLs.
+    _refs() { { printf '%s\n' "$1" | grep -oE '(^|[^A-Za-z0-9_&/!#])#[0-9]+' | sed 's/.*#//'
+                printf '%s\n' "$1" | grep -oE '/issues/[0-9]+' | sed 's,.*/,,'; } | awk 'NF && !seen[$0]++'; }
+    _t=$(_refs "$MR_TITLE" | head -1); [ -n "$_t" ] && TITLE_TICKET="#$_t"
+    _nums=$(_refs "$(printf '%s\n%s' "$MR_TITLE" "$MR_DESC")" | head -5)   # bounded: one call each
+    CANDIDATES_JSON=$(printf '%s\n' $_nums | sed '/^$/d; s/^/#/' | jq -R . | jq -s .)
+    _fetched='[]'; _unf=""
+    for _n in $_nums; do
+      if _issue=$(forge_view_issue "$TARGET_ABS" "$_n"); then
+        _fetched=$(jq -c --argjson i "$_issue" '. + [$i]' <<<"$_fetched")
+      else _unf="$_unf #$_n"; fi
+    done
+    UNFETCHED_JSON=$(printf '%s\n' $_unf | sed '/^$/d' | jq -R . | jq -s .)
+    if [ "$(jq 'length' <<<"$_fetched")" -gt 0 ]; then
+      TICKETS_PATH="$QA_SCRATCH/contract-tickets.json"
+      jq . <<<"$_fetched" > "$TICKETS_PATH"
+    elif [ -n "$_unf" ]; then
+      # Every reference failed: a lookup that did not happen, not "no ticket".
+      WARNINGS+=("contract_tickets_unfetched:${_unf# } (referenced but not fetched — the contract would be synthesized while a ticket exists)")
+    fi
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Lens MCP config -> $QA_SCRATCH/panel-mcp.json
@@ -2105,7 +2160,9 @@ PREFLIGHT_JSON=$(jq -n \
   --argjson verify "$VERIFY_JSON" \
   --argjson round "$ROUND" --arg proportionality_path "$PROPORTIONALITY_FILE" \
   --arg title_ticket "${TITLE_TICKET:-}" --argjson candidate_tickets "$CANDIDATES_JSON" \
-  --argjson desc_len "$DESC_LEN" \
+  --argjson desc_len "$DESC_LEN" --argjson min_desc "$MIN_DESC" \
+  --arg tracker "$TRACKER" --arg tracker_source "$TRACKER_SOURCE" \
+  --arg tickets_path "$TICKETS_PATH" --argjson unfetched "$UNFETCHED_JSON" \
   --argjson warnings "$WARNINGS_JSON" \
   '{
     mr: $mr, target: $target, target_path: $target_path, target_abs: $target_abs,
@@ -2136,7 +2193,10 @@ PREFLIGHT_JSON=$(jq -n \
     schema: { detected: $schema_detected, state: $schema_state, evidence_path: $schema_evidence },
     sast: { gate_state: $sast_gate_state, running: $sast_running, report_path: $sast_report,
             helper_reason: $sast_helper_reason },
-    contract: { title_ticket: $title_ticket, candidate_tickets: $candidate_tickets, description_length: $desc_len },
+    contract: { tracker: $tracker, tracker_source: $tracker_source,
+                title_ticket: $title_ticket, candidate_tickets: $candidate_tickets,
+                tickets_path: $tickets_path, unfetched: $unfetched,
+                description_length: $desc_len, min_description_length: $min_desc },
     docs_only: $docs_only,
     round: $round,
     proportionality_path: $proportionality_path,

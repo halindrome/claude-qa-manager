@@ -83,7 +83,7 @@ it:
 | `lenses` (array, 3-6 names) | the lens panel the manager spawns (deterministic; Step 3A.1) |
 | `schema.detected`,`schema.state`,`schema.evidence_path` | `SCHEMA_CHANGE_DETECTED` (Steps 3A.0.1/3E). `state` distinguishes a gate that ran from one that was never configured — only `checked` means it ran. |
 | `sast.gate_state`,`sast.running`,`sast.report_path`,`sast.helper_reason` | `SAST_GATE_STATE`,`$SAST_REPORT` (Steps 2.5/3C/3E) |
-| `contract.candidate_tickets`,`contract.title_ticket`,`contract.description_length` | Step 0.5 contract resolution |
+| `contract.tracker`,`contract.candidate_tickets`,`contract.title_ticket`,`contract.tickets_path`,`contract.unfetched`,`contract.description_length`,`contract.min_description_length` | Step 0.5 contract resolution |
 | `docs_only` | Step 0.5 docs-only exemption |
 | `round` | the round number for Step 3, derived from the MR's posted `## QA Round N` notes (max + 1). Never re-derive or shell-track it: each invocation is a fresh process, so a hand-tracked round resets to 1 and re-fires the round-1-only prompts late. |
 | `proportionality_path` | the `## Proportionality` section injected verbatim into every lens prompt (Step 3A / the manager). Never empty; preflight escalates its contents at `round >= 3`. |
@@ -114,7 +114,7 @@ it:
 - `round_probe_failed:exit=<N>` — the notes probe failed, so `round` fell back to `1` and is **not** trustworthy. Not cosmetic: it re-fires round-1-only prompts and renders the *light* proportionality tier on a round that earned the strict one. Confirm the number with the operator before running the panel; the posted `## QA Round N` notes are ground truth.
 
 **What still requires an LLM/interactive turn after preflight** (do these as before):
-- **Step 0.5 — contract resolution.** Use `contract.title_ticket` / `candidate_tickets`: if present, `jira_get` + (synthesis / ambiguity AskUserQuestion); if `docs_only=true`, take the docs exemption; if `description_length < 200` and no ticket, BLOCK. preflight does only the mechanical ID extraction.
+- **Step 0.5 — contract resolution.** Fetch `contract.candidate_tickets` per `contract.tracker` (`forge`: preflight already did), then synthesis / ambiguity AskUserQuestion; if `docs_only=true`, take the docs exemption; if `description_length < min_description_length` and no ticket, BLOCK.
 - The **round-1 skip-contract** AskUserQuestion + `--double` tip.
 - The **SAST wait-gate** prompt (only when `sast.running=true` AND the round is approval-eligible) — the poll loop stays one Bash call.
 - Argument flags (`--double`/`--triple`/`--reviewer=`) — parse from argv as in Step 0 (preflight does not consume them).
@@ -142,47 +142,44 @@ is `references/usage.md`; change one and change both.
 
 ---
 
-## Step 0.5 — Resolve the contract (JIRA lookup → synthesize → block)
+## Step 0.5 — Resolve the contract (ticket → synthesize → block)
 
 Before any QA round runs, resolve a **contract** for this MR — the criteria the
-reviewer will verify against. Four decision branches:
+reviewer will verify against. Preflight resolved the tracker (`contract.tracker`:
+`jira` | `forge` | `none`) and extracted the candidate references
+(`contract.candidate_tickets`, title ticket first); per-tracker detail is in
+`references/contract-trackers.md`.
 
-1. **Formal JIRA link on the MR.** Read the MR/PR through the forge seam
-   (`forge_view_mr <target-path> <MR_NUMBER>`) and inspect `.description` for a JIRA
-   URL or related-issue field. The seam normalizes GitLab and GitHub to one shape,
-   so this branch does not need to know which forge it is on. If one is present, extract the ticket ID (e.g., `PROJ-1234`) and call
-   `mcp__jira__jira_get` on it. Capture `summary`, `description`, and any
-   acceptance-criteria custom fields. Record `contract_source=jira:<TICKET>`.
-
-2. **Mentioned ticket ID in title or description.** If no formal link, regex-scan
-   the MR title + description for `[A-Z]+-\d+`. For each match, call
-   `mcp__jira__jira_get`.
+1. **Fetch the candidates.** `forge`: preflight already fetched them into
+   `contract.tickets_path`. `jira`: call `mcp__jira__jira_get` on each candidate and
+   capture summary, description and any acceptance-criteria fields. `none`: go to 3.
    - **Exactly one resolves** — use it, do NOT ask: one candidate leaves a human nothing
-     to decide, so the question only stalls the round. Record
-     `contract_source=jira:<TICKET> (auto: sole mentioned candidate)`; the marker is
-     required, so a wrong pick is visible rather than silent.
-   - **Two or more** — ask via AskUserQuestion: *"Is `<TICKET>` (`<summary>`) the intended
-     contract?"* yes / next candidate / none (→ synthesis).
-   - **None** — fall through to 3 or 4.
+     to decide. Record `contract_source=<tracker>:<ID> (auto: sole candidate)`; the
+     marker keeps a wrong pick visible.
+   - **Two or more** — AskUserQuestion: *"Is `<ID>` (`<summary>`) the intended
+     contract?"* yes / next candidate / none (→ 3).
 
-3. **Synthesize from MR title + description.** If no ticket is found or the user
-   declined all candidates, synthesize a contract from the MR title and
-   description. Record `contract_source=synthesized`.
+2. **Candidates exist but none resolved** — a failed lookup, not "no ticket". Go on to
+   3, but record `contract_source=ticket-unfetched:<IDs>` and say so in the round note:
+   a review against a synthesized contract while a real one exists is weaker, and
+   must not read as a normal synthesized round.
 
-4. **BLOCK.** If the MR description is under ~200 characters AND no ticket was
-   matched, STOP. Display: *"Cannot form a contract for this MR. Link a JIRA
+3. **Synthesize from MR title + description.** Record `contract_source=synthesized`.
+
+4. **BLOCK.** If `contract.description_length < contract.min_description_length` AND
+   no ticket resolved, STOP. Display: *"Cannot form a contract for this MR. Link a
    ticket or flesh out the MR description with acceptance criteria, then re-run
    `/qa-cycle`."* Do NOT fall back to freeform findings.
 
-Always re-resolve the contract on each `/qa-cycle` invocation (including subsequent rounds) and overwrite `$QA_SCRATCH/contract.md`. A stale `contract.md` from a previous round MUST NOT be reused — the MR description or linked JIRA may have changed between rounds, and silently inheriting an out-of-date contract would let those changes slip past QA. The scratch directory is for cross-round artifacts whose authority does not change (e.g. per-round notes); the contract is not one of those.
+Always re-resolve the contract on each `/qa-cycle` invocation (including subsequent rounds) and overwrite `$QA_SCRATCH/contract.md`. A stale `contract.md` from a previous round MUST NOT be reused — the MR description or linked ticket may have changed between rounds, and silently inheriting an out-of-date contract would let those changes slip past QA. The scratch directory is for cross-round artifacts whose authority does not change (e.g. per-round notes); the contract is not one of those.
 
 Write the resolved contract to `$QA_SCRATCH/contract.md` (see Step 0.4 for the per-invocation scratch directory), formatted as:
 
 ```
-# Contract (source: <jira:TICKET | jira:TICKET (auto: sole mentioned candidate) | synthesized>)
+# Contract (source: <tracker:ID | tracker:ID (auto: sole candidate) | ticket-unfetched:IDs | synthesized>)
 
-Ticket: <TICKET or "n/a">
-Summary: <MR title or JIRA summary>
+Ticket: <ID or "n/a">
+Summary: <MR title or ticket summary>
 
 ## Acceptance criteria
 - <criterion 1>

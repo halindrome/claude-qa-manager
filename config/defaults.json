@@ -21,7 +21,8 @@
   },
 
   "contract": {
-    "_comment": "How a ticket id is recognised in an MR/PR title or body.",
+    "_comment": "Where an MR's contract comes from. tracker: auto (jira when a Jira MCP server named 'jira' is registered, else forge) | jira (ids matching ticket_pattern, fetched via the Jira MCP) | forge (#N issue references, fetched from GitHub/GitLab issues) | none (always synthesize from the MR). An MR with no ticket and a description shorter than min_description_length blocks.",
+    "tracker": "auto",
     "ticket_pattern": "[A-Z]+-[0-9]+",
     "min_description_length": 200
   },

@@ -102,6 +102,31 @@ Writing the lens name (`ui-styling`) instead of the tag (`ui`) is the common mis
 is not fatal, but the tag is inert and preflight warns `unknown_lens_tags`. The
 authoritative list is `KNOWN_LENS_TAGS_RE` in `lib/preflight.sh`.
 
+## `contract` — where acceptance criteria come from
+
+Every round verifies the MR against a contract: the linked ticket's acceptance criteria
+when one can be found, otherwise criteria synthesized from the MR title and description.
+
+```json
+{ "contract": { "tracker": "auto", "ticket_pattern": "[A-Z]+-[0-9]+", "min_description_length": 200 } }
+```
+
+| `tracker` | references looked for | fetched by |
+|---|---|---|
+| `auto` (default) | — | `jira` when an MCP server or plugin named `jira` is registered, else `forge` |
+| `jira` | ids matching `ticket_pattern` | the Jira MCP (`mcp__jira__jira_get`) |
+| `forge` | `#123` and `…/issues/123` | the GitHub or GitLab CLI you already use for the MR |
+| `none` | nothing | — always synthesized |
+
+Set `tracker` explicitly when `auto` guesses wrong — most often a Jira MCP registered
+under another name. `ticket_pattern` applies to `jira` only. An MR with no ticket and a
+description shorter than `min_description_length` characters is blocked rather than
+reviewed against nothing.
+
+None of this degrades silently: an unknown `tracker`, an invalid `ticket_pattern`, and a
+round whose referenced tickets could not be fetched each raise a warning, and the last
+records `contract_source=ticket-unfetched` instead of a plain synthesized contract.
+
 ## `qa_agent` — optional second identity
 
 Used only for round notes and approvals. Fix commits and pushes always use the

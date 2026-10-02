@@ -61,6 +61,17 @@ forge_view_mr() {
   }' 2>/dev/null || return 1
 }
 
+# forge_view_issue <dir> <n> -> {number, title, state, description, url}
+# Fails (non-zero, no stdout) unless the result names the issue: an empty object is
+# a lookup that did not happen, not an issue with no title.
+forge_view_issue() {
+  local dir="$1" n="$2" raw
+  raw=$(cd "$dir" && glab issue view "$n" --output json 2>/dev/null) || return 1
+  printf '%s' "$raw" | jq -e 'select((.iid // null) != null and (.title // "") != "")
+    | { number: (.iid | tostring), title, state: (.state // ""),
+        description: (.description // ""), url: (.web_url // "") }' 2>/dev/null || return 1
+}
+
 # forge_approvers <slug> <n> [token] -> usernames, one per line
 #
 # /approvals FIRST, /approval_state as a fallback. /approval_state has been

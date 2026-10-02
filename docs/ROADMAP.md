@@ -498,6 +498,17 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
 
 ### Smaller, independent items
 
+- **The contract no longer assumes Jira.** `contract.tracker` (`auto` | `jira` | `forge` |
+  `none`; `auto` = jira when a `jira` MCP is registered, else forge) decides which
+  references count and who fetches them. `forge` covers GitHub/GitLab issues (`#N`,
+  `/issues/N`): preflight fetches them through the new `forge_view_issue` seam member
+  into `contract.tickets_path`, so no model step sits between ticket and contract.
+  `contract.ticket_pattern` and `contract.min_description_length` were shipped and
+  never read; both are now honoured. A referenced ticket that cannot be fetched is
+  `contract_source=ticket-unfetched`, not a plain synthesized contract. Not built: a
+  generic MCP fetch tool (`contract.fetch_tool`) for Linear, Azure DevOps and the
+  like — add it when someone needs it.
+
 - **Sequential rounds are measured from the reviewer's transcript.** Rounds of
   `review_mode.sequential_max_lines_changed` (falling back to `tiny_mr_max_lines_changed`,
   50) changed lines or fewer run one Agent reviewer instead of a panel — 16 of the 41

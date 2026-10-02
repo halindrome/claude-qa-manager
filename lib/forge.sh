@@ -32,6 +32,7 @@
 #   forge_auth_user            [token]       -> username of that identity
 #   forge_project_enc          <slug>        -> the slug in API-path form
 #   forge_view_mr              <dir> <n>     -> normalized JSON (see above)
+#   forge_view_issue           <dir> <n>     -> {number,title,state,description,url}
 #   forge_approvers            <slug> <n> [token] -> usernames, one per line
 #   forge_notes                <slug> <n> [token] -> JSON array of {body: "..."}
 #   forge_post_note            <slug> <n> <body-file> [token]

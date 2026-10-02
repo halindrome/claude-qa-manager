@@ -95,6 +95,17 @@ forge_view_mr() {
     }' 2>/dev/null || return 1
 }
 
+# forge_view_issue <dir> <n> -> {number, title, state, description, url}
+# Fails (non-zero, no stdout) unless the result names the issue. On GitHub `#n` may
+# be a pull request; `gh issue view` refuses one, so it reports as not fetched.
+forge_view_issue() {
+  local dir="$1" n="$2" raw
+  raw=$(cd "$dir" && gh issue view "$n" --json number,title,state,body,url 2>/dev/null) || return 1
+  printf '%s' "$raw" | jq -e 'select((.number // null) != null and (.title // "") != "")
+    | { number: (.number | tostring), title, state: ((.state // "") | ascii_downcase),
+        description: (.body // ""), url: (.url // "") }' 2>/dev/null || return 1
+}
+
 # forge_approvers <slug> <n> [token] -> usernames, one per line
 #
 # GitHub keeps the FULL review history, so a reviewer who approved and then
