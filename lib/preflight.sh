@@ -220,7 +220,7 @@ fi
 # operator's session runs, so a Haiku session would get a Haiku panel.
 # lens_models keys are LENS NAMES (contract-security, ui-styling, ...),
 # not lens_tags (schema/api/ui/perf) -- that exact mix-up shipped in this repo's
-# own example once (fe0d99a), so validate against the real lens vocabulary
+# own example once (288c719), so validate against the real lens vocabulary
 # rather than trust it was typed right.
 REVIEW_MODEL_TYPE=$(jq -r '.review.model | type' "$BB" 2>/dev/null || echo "null")
 case "$REVIEW_MODEL_TYPE" in

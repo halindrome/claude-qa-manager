@@ -35,13 +35,13 @@ complete *before* the first push rather than fixed in a later commit.
 
 ### Commits
 
-1. `d6aaeea` scaffold — Apache-2.0, manifests, case studies, config model, CI, scrub guard
-2. `3fb0dac` preflight + its suite, decoupled from the host repo layout
-3. `19e4272` skill + both agents; suite goes fully green
-4. `50c2b8b` `init` — environment check, project config, verified token setup
-5. `1f1e636` spine split — 41.9k → 15.1k on-invoke
-6. `21210e6` CLAUDE.md + this file, as a session handoff
-7. `3994af0` rename `qa-round` → `qa-cycle`; aliases dropped
+1. `dcd8810` scaffold — Apache-2.0, manifests, case studies, config model, CI, scrub guard
+2. `ab3c67d` preflight + its suite, decoupled from the host repo layout
+3. `85f3e59` skill + both agents; suite goes fully green
+4. `2ff68da` `init` — environment check, project config, verified token setup
+5. `885c6b1` spine split — 41.9k → 15.1k on-invoke
+6. `34471a2` CLAUDE.md + this file, as a session handoff
+7. `3dcb9c1` rename `qa-round` → `qa-cycle`; aliases dropped
 8. the forge seam (Phase 3) — see `git log` for the hash
 
 ---

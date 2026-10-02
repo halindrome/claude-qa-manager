@@ -2252,7 +2252,7 @@ out=$(run_preflight "$r" 73 mono)
 eq "review.lens_models flows through"        "$(jq -r '.lens_models."contract-security"' <<<"$out")" "opus"
 eq "  no unknown_lens_model_keys warning"    "$(jq -r '[.warnings[]|select(startswith("unknown_lens_model_keys"))]|length' <<<"$out")" "0"
 rm -rf "$r"
-# Unknown key (a lens_tag, not a lens name — the exact mix-up fe0d99a fixed for
+# Unknown key (a lens_tag, not a lens name — the exact mix-up 288c719 fixed for
 # lens_tags) warns, does not fail the round.
 r=$(mkfixture "feature/x" "main" '.review.lens_models = {"api":"opus"}'); commit_lines "$r/repo" 5 f.js
 out=$(run_preflight "$r" 73 mono); rc=$?
