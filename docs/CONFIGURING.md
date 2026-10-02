@@ -14,8 +14,8 @@ bash lib/init.sh token    # store + verify a QA agent token
 
 ## Resolution order
 
-Three layers, shallow-merged per top-level key, later winning. jq's recursive merge means
-a project can override one nested key without restating its block.
+Three layers, merged recursively, later winning: a project can override one nested key
+without restating its block.
 
 | Layer | Path | Holds |
 |---|---|---|
@@ -76,7 +76,8 @@ with a target's `schema` lens tag.
 ## `targets` — only for a monorepo
 
 Needed only when components are reviewed as independent MRs. `scope` is the
-commit-message token used for fix commits (`fix(<scope>): address QA round N`).
+commit-message token used for fix commits (`fix(<scope>): address QA round N`). There is
+no base-branch setting: every round uses the MR/PR's own target branch.
 
 ```json
 {
@@ -231,6 +232,35 @@ the flags stop with a message rather than skipping silently.
 
 A second opinion sees the diff, the changed files and the contract, with no tools —
 it cannot trace a caller or open an unchanged file. It is a cross-check, not a lens.
+
+## `flags` — defaults for `/qa-cycle` flags
+
+Flags apply to one invocation, so a second opinion you always want has to be retyped on
+every round, and forgetting it on round 2 quietly drops it. Set it once instead:
+
+```json
+{ "flags": { "double": true, "non_interactive": true } }
+```
+
+| key | same as | type |
+|---|---|---|
+| `double` | `--double` | boolean |
+| `triple` | `--triple` | boolean |
+| `reviewer` | `--reviewer=<name>` | a configured reviewer's `name` |
+| `non_interactive` | `--non-interactive` | boolean |
+
+- **The command line still wins.** `--single` turns a defaulted second opinion off for
+  one run; `--interactive` does the same for `non_interactive`. Each round says which
+  settings came from config.
+- **Two flags cannot be defaulted:** `--auto-approve` and `--skip-contract-verification`.
+  Approval and reviewing without a contract are each asked for by name, every time.
+  Putting either under `flags` gets a `flag_default_ignored` warning, not a silent
+  approval.
+- **A default that cannot work is dropped with a warning**, not obeyed and not hidden:
+  `double` with no `second_opinion.reviewers`, `triple` with fewer than two, a `reviewer`
+  that is not configured, or a value of the wrong type.
+- Put it in the **user** config to apply it everywhere you work, or in a **project**
+  config to apply it to everyone who reviews that repo.
 
 ## `verify` — how a fix is checked before it is committed
 

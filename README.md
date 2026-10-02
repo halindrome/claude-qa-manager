@@ -134,8 +134,11 @@ To keep reviewing while you work on something else, give the MR/PR its own workt
 | `--non-interactive` | Answers the mechanical questions for you and keeps going while rounds find and fix blocking issues (up to round 4). Never approves. |
 | `--auto-approve` | Skips only the final "approve?" confirmation. Every gate still applies. |
 | `--double` / `--triple` | Adds one or two second-opinion reviewers from other model providers. Needs `second_opinion.reviewers` configured. |
+| `--single` / `--interactive` | Turn off, for this run, a `--double` or `--non-interactive` that your config makes the default. |
 
-Flags apply to one invocation. Pass them again when you start the next round.
+Flags apply to one invocation, so pass them again when you start the next round, or make
+the ones you always want the default (see [Configure](#configure)). `--auto-approve`
+can never be made a default: approving is always something you ask for by name.
 
 ### A separate QA identity (optional)
 
@@ -189,10 +192,59 @@ Settings, including when the QA account may approve, are in
 
 ## Configure
 
-Zero configuration required for the common case: branches are derived at runtime from the
-MR/PR itself. Everything else is optional and lives in
-`.claude/skills/qa-cycle/config.json` in your project. See
-[docs/CONFIGURING.md](docs/CONFIGURING.md).
+Zero configuration required for the common case: the branch to sync against and diff
+against is the MR/PR's own target branch, read from the forge every round. There is no
+branch configuration to keep up to date.
+
+Everything else is optional, in two JSON files. Both are merged over the shipped
+defaults, and a later layer overrides single keys rather than whole blocks:
+
+| File | Applies to | Typically holds |
+|---|---|---|
+| `~/.config/claude-qa-manager/config.json` | every repository you review | your QA identity, second-opinion reviewers, flag defaults |
+| `<repo>/.claude/skills/qa-cycle/config.json` | one repository (commit it) | schema files, monorepo targets |
+
+A user config that names a QA account, adds one second-opinion reviewer, and runs it on
+every round without being asked
+([examples/user-config.json](examples/user-config.json)):
+
+```json
+{
+  "qa_agent": {
+    "expected_username": "qa-bot"
+  },
+  "second_opinion": {
+    "reviewers": [
+      { "name": "hosted",
+        "endpoint": "https://<provider>/v1/chat/completions",
+        "model": "<model-id>",
+        "api_key_env": "SECOND_OPINION_KEY" }
+    ]
+  },
+  "flags": {
+    "double": true
+  }
+}
+```
+
+The API key itself never goes in a config file: `api_key_env` names the environment
+variable that holds it, and the QA token is stored by `/qa-init`.
+
+A project config for a repository with a schema file
+([examples/single-repo.json](examples/single-repo.json)):
+
+```json
+{
+  "schema": {
+    "files": ["db/schema.sql"],
+    "runbook": "docs/runbooks/schema-change-rollout.md"
+  }
+}
+```
+
+For a monorepo whose parts are reviewed separately, see
+[examples/monorepo-submodules.json](examples/monorepo-submodules.json). Every setting,
+and what happens when one is wrong, is in [docs/CONFIGURING.md](docs/CONFIGURING.md).
 
 ## Contributing
 

@@ -2066,6 +2066,63 @@ rm -rf "$r"
 r=$(mkfixture "feature/x" "main")
 out=$(run_preflight "$r" 73 mono)
 eq "no reviewers by default (no provider baked in)" "$(jq -c '.second_opinion.reviewers' <<<"$out")" "[]"
+eq "flag defaults are all off when nothing is configured" \
+   "$(jq -c '.flag_defaults' <<<"$out")" '{"double":false,"triple":false,"reviewer":"","non_interactive":false}'
+eq "  and produce no warning" \
+   "$(jq '[.warnings[] | select(startswith("flag_default"))] | length' <<<"$out")" "0"
+rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+echo "[flags: config defaults for /qa-cycle flags]"
+# A default is emitted only when it can work; anything refused or unusable is a
+# warning naming it, never silently obeyed or silently dropped.
+_two_reviewers='.second_opinion.reviewers = [
+  {"name":"hosted","endpoint":"https://h.invalid/v1","model":"m1"},
+  {"name":"local","endpoint":"http://localhost:1/v1","model":"m2"}]'
+r=$(mkfixture "feature/x" "main" "$_two_reviewers | .flags = {\"triple\": true, \"reviewer\": \"local\", \"non_interactive\": true}")
+out=$(run_preflight "$r" 73 mono)
+eq "usable defaults are emitted" \
+   "$(jq -c '.flag_defaults' <<<"$out")" '{"double":false,"triple":true,"reviewer":"local","non_interactive":true}'
+eq "  with no warning" "$(jq '[.warnings[] | select(startswith("flag_default"))] | length' <<<"$out")" "0"
+rm -rf "$r"
+# auto_approve and skip_contract_verification are refused, by name.
+r=$(mkfixture "feature/x" "main" '.flags = {"auto_approve": true, "skip_contract_verification": true}')
+out=$(run_preflight "$r" 73 mono)
+eq "auto_approve cannot be defaulted (warned, not obeyed)" \
+   "$(jq -r '[.warnings[] | select(. == "flag_default_ignored:auto_approve:not-defaultable")] | length' <<<"$out")" "1"
+eq "  skip_contract_verification likewise" \
+   "$(jq -r '[.warnings[] | select(. == "flag_default_ignored:skip_contract_verification:not-defaultable")] | length' <<<"$out")" "1"
+eq "  and neither appears in flag_defaults" \
+   "$(jq -r '.flag_defaults | has("auto_approve") or has("skip_contract_verification")' <<<"$out")" "false"
+rm -rf "$r"
+# Defaults that cannot work are dropped with a warning.
+r=$(mkfixture "feature/x" "main" '.flags = {"double": true, "triple": true, "reviewer": "nope"}')
+out=$(run_preflight "$r" 73 mono)
+eq "double with no reviewer configured is dropped" "$(jq -r '.flag_defaults.double' <<<"$out")" "false"
+eq "  triple with fewer than two is dropped"       "$(jq -r '.flag_defaults.triple' <<<"$out")" "false"
+eq "  an unconfigured reviewer is dropped"         "$(jq -r '.flag_defaults.reviewer' <<<"$out")" ""
+eq "  each one is warned" \
+   "$(jq -r '[.warnings[] | select(startswith("flag_default_ignored:"))] | length' <<<"$out")" "3"
+rm -rf "$r"
+# A wrong type is not coerced: "true" as a string does not turn a flag on.
+r=$(mkfixture "feature/x" "main" "$_two_reviewers | .flags = {\"double\": \"true\", \"non_interactive\": 1}")
+out=$(run_preflight "$r" 73 mono)
+eq "a string \"true\" does not enable double" "$(jq -r '.flag_defaults.double' <<<"$out")" "false"
+eq "  wrong types are warned" \
+   "$(jq -r '[.warnings[] | select(endswith(":not-a-boolean"))] | length' <<<"$out")" "2"
+rm -rf "$r"
+
+# ---------------------------------------------------------------------------
+echo "[base branch: the MR's target branch, never a repo file]"
+# A .branchconfig.yaml naming a different base, and a stale targets.base_branch,
+# must change nothing: the diff is against the MR's own target branch.
+r=$(mkfixture "feature/x" "main" '.targets.mono.base_branch = "bogus-base"')
+printf 'base_branch: also-bogus\n' > "$r/repo/.branchconfig.yaml"
+out=$(run_preflight "$r" 73 mono); rc=$?
+eq "a .branchconfig.yaml and a stale base_branch do not break the round" "$rc" "0"
+eq "  the diff range is the MR target branch" \
+   "$(jq -r '.target_branch' <<<"$out")" "main"
+eq "  no base_branch field is reported" "$(jq -r 'has("base_branch")' <<<"$out")" "false"
 rm -rf "$r"
 
 echo "[llm-reviewer.sh — one OpenAI-compatible second opinion]"

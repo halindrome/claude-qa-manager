@@ -22,7 +22,7 @@ ARGUMENTS
                    guess, because a `default` entry exists even in a monorepo and
                    would silently review the repo root.
 
-FLAGS                                                    (all per-invocation)
+FLAGS                     (per invocation; the first four can be defaulted in config)
   --double                 Add one second-opinion reviewer alongside the panel:
                            the first under `second_opinion.reviewers` in config.
   --triple                 Add two (the first two configured). Implies --double.
@@ -30,6 +30,8 @@ FLAGS                                                    (all per-invocation)
                            `--reviewer <name>` works too; a bare --reviewer, an
                            unknown name, or no reviewers configured stops with
                            a message rather than skipping silently.
+  --single                 No second opinion this time, even if config defaults
+                           one.
 
   --skip-contract-verification
                            Review without verifying the contract. The reviewer
@@ -45,11 +47,14 @@ FLAGS                                                    (all per-invocation)
                            while the round is not clean, fixes were applied,
                            round < 4, and diminishing returns was not declared.
                            It never approves and never defers a finding.
+  --interactive            Ask every question this time, even if config defaults
+                           --non-interactive.
 
   --auto-approve           Skip ONLY the final "approve?" confirm on a round that
                            already passes every approval gate. Not implied by
                            --non-interactive; approval is a safety invariant, so
-                           it must be asked for by name.
+                           it must be asked for by name, and config cannot
+                           default it.
 
   --help, -h               Print this and stop.
 
@@ -71,7 +76,8 @@ EXAMPLES
                                     hands-free including approval, gates intact
 
 FLAGS DO NOT PERSIST between rounds. Pass them again on round N+1 or multi-model
-QA silently stops running.
+QA silently stops running -- or set the ones you always want under `flags` in
+config (double, triple, reviewer, non_interactive); see docs/CONFIGURING.md.
 
 SETUP
   /qa-init   detects the forge, checks tooling and auth, writes the optional

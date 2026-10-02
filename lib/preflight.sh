@@ -162,7 +162,6 @@ fi
 TARGET_PATH=$(jq -r --arg t "$TARGET" '.targets[$t].path'            "$BB")
 REMOTE=$(jq -r      --arg t "$TARGET" '.targets[$t].remote // "origin"' "$BB")
 SCOPE=$(jq -r       --arg t "$TARGET" '.targets[$t].scope // $t'      "$BB")
-BASE_FALLBACK=$(jq -r --arg t "$TARGET" '.targets[$t].base_branch'    "$BB")
 SECURITY_STAGE=$(jq -r --arg t "$TARGET" '.targets[$t].security_stage // false' "$BB")
 # Per-target lens tags, newline-separated (drives the lenses[] selection below).
 #
@@ -171,8 +170,8 @@ SECURITY_STAGE=$(jq -r --arg t "$TARGET" '.targets[$t].security_stage // false' 
 # indistinguishable from a legitimately absent key — and an unknown tag simply
 # never matches has_tag(). Either way the target quietly drops to the core three
 # while still emitting a VALID lenses array, so neither the shape assertion nor
-# the enum whitelist can catch it. Concretely: one typo in base-branches.json
-# silently drops rest-api from 6 lenses to 3 — losing schema-propagation, the
+# the enum whitelist can catch it. Concretely: one typo in a target's lens_tags
+# silently drops it from 6 lenses to 3 — losing schema-propagation, the
 # lens that exists for the code-only-dependency case (CASE-STUDIES #schema-drift). That is a
 # fail-OPEN on config, which is the wrong direction for a review harness.
 LENS_TAGS_TYPE=$(jq -r --arg t "$TARGET" '.targets[$t].lens_tags | type' "$BB" 2>/dev/null || echo "null")
@@ -406,38 +405,6 @@ case "$VERIFY_BASELINE" in ''|null) VERIFY_BASELINE='{}' ;; esac
 VERIFY_JSON=$(jq --argjson s "$VERIFY_TIMEOUT" --arg tp "$VERIFY_TIMINGS" \
   --argjson bl "$VERIFY_BASELINE" --arg ex "$VERIFY_EXPECT" \
   '. + {timeout_seconds:$s, timings_path:$tp, baseline:$bl, expect:$ex}' <<<"$VERIFY_JSON")
-
-# ---------------------------------------------------------------------------
-# Step 0 — base-branch resolution (.branchconfig.yaml authoritative, else fallback)
-# ---------------------------------------------------------------------------
-RESOLVED_BASE=""
-RESOLVED_SOURCE=""
-CONFIG="$REPO_ROOT/.branchconfig.yaml"
-if [ -f "$CONFIG" ]; then
-  if [ "$TARGET_PATH" = "." ]; then
-    RESOLVED_BASE=$(awk '/^base_branch:/ { sub(/^base_branch:[[:space:]]*/, ""); sub(/[[:space:]]*#.*$/, ""); gsub(/[" ]/, ""); print; exit }' "$CONFIG")
-  else
-    RESOLVED_BASE=$(awk -v t="$TARGET_PATH" '
-      /^submodule_branches:/ { in_sub = 1; next }
-      in_sub && /^[^[:space:]]/ { in_sub = 0; current = "" }
-      in_sub && /^  [^[:space:]:].*:[[:space:]]*(#.*)?$/ {
-        key = $0
-        sub(/^  /, "", key); sub(/:[[:space:]]*(#.*)?$/, "", key)
-        current = (key == t) ? t : ""
-        next
-      }
-      in_sub && current == t && /^    base_branch:/ {
-        sub(/^    base_branch:[[:space:]]*/, ""); sub(/[[:space:]]*#.*$/, ""); gsub(/[" ]/, "")
-        print; exit
-      }
-    ' "$CONFIG")
-  fi
-  [ -n "$RESOLVED_BASE" ] && RESOLVED_SOURCE=".branchconfig.yaml"
-fi
-if [ -z "$RESOLVED_BASE" ]; then
-  RESOLVED_BASE="$BASE_FALLBACK"
-  RESOLVED_SOURCE="base-branches.json fallback"
-fi
 
 # ---------------------------------------------------------------------------
 # Step 0.3 — resolve the forge and the project slug from the remote
@@ -981,7 +948,7 @@ if [ "$SECURITY_STAGE" != "true" ]; then
   cat > "$SAST_REPORT" <<EOF
 ## SAST review not applicable
 
-Target \`$TARGET\` has \`security_stage: false\` in \`base-branches.json\`. No CI
+Target \`$TARGET\` has \`security_stage: false\` in the qa-cycle config. No CI
 security stage is wired for this target, so no SAST/SCA delta is computed.
 EOF
   SAST_GATE_STATE="skipped:no-stage"
@@ -1335,6 +1302,44 @@ while IFS= read -r _r; do
 done < <(jq -c '.[]' <<<"$SO_VALID")
 jq -n --argjson r "$SO_RESOLVED" '{reviewers: $r}' > "$SO_FILE" || die_internal "could not write $SO_FILE"
 SO_SUMMARY=$(jq -c '[ .[] | {name, model, key_present} ]' <<<"$SO_RESOLVED")
+
+# ---------------------------------------------------------------------------
+# Flag defaults (`flags` in config), so a project that always wants --double does
+# not have to remember it on every round. The command line still wins (SKILL.md
+# Step 0). Only double, triple, reviewer and non_interactive may be defaulted:
+# --auto-approve and --skip-contract-verification must be asked for by name, every
+# time, because approval and an unverified contract are not things to inherit.
+# A refused key, a wrong type, or a default that cannot work (--double with no
+# reviewer configured) is a WARNING and the default is dropped — never silent.
+# ---------------------------------------------------------------------------
+_FLAGS_RAW=$(jq -c '.flags // {} | if type == "object" then . else {} end' "$BB" 2>/dev/null || echo '{}')
+_FLAGS_OUT=$(jq -c --argjson so "$SO_RESOLVED" '
+  . as $f
+  | ["double", "triple", "reviewer", "non_interactive"] as $allowed
+  | ($so | map(.name)) as $names
+  | { double: ($f.double == true), triple: ($f.triple == true),
+      reviewer: (if ($f.reviewer | type) == "string" then $f.reviewer else "" end),
+      non_interactive: ($f.non_interactive == true) } as $d
+  | [ ($f | keys[] | select(startswith("_") | not)
+          | select(. as $k | $allowed | index($k) | not) | "\(.):not-defaultable"),
+      (("double", "triple", "non_interactive") as $k
+          | select(($f | has($k)) and ($f[$k] | type) != "boolean") | "\($k):not-a-boolean"),
+      (select(($f | has("reviewer")) and ($f.reviewer | type) != "string") | "reviewer:not-a-string"),
+      (select($d.reviewer != "" and ($names | index($d.reviewer)) == null)
+          | "reviewer:\($d.reviewer)-is-not-a-configured-reviewer"),
+      (select($d.double and ($names | length) < 1) | "double:no-reviewer-configured"),
+      (select($d.triple and ($names | length) < 2) | "triple:needs-two-reviewers") ] as $p
+  | { problems: $p,
+      defaults: ($d
+        | if any($p[]; startswith("reviewer:")) then .reviewer = "" else . end
+        | if any($p[]; startswith("double:"))   then .double = false else . end
+        | if any($p[]; startswith("triple:"))   then .triple = false else . end) }
+' <<<"$_FLAGS_RAW" 2>/dev/null) \
+  || die_internal "could not resolve flag defaults from config .flags"
+FLAG_DEFAULTS=$(jq -c '.defaults' <<<"$_FLAGS_OUT")
+while IFS= read -r _p; do
+  [ -n "$_p" ] && WARNINGS+=("flag_default_ignored:${_p}")
+done < <(jq -r '.problems[]' <<<"$_FLAGS_OUT")
 
 # ---------------------------------------------------------------------------
 # Contract candidates. The tracker decides what a ticket reference looks like and who
@@ -1935,8 +1940,8 @@ fi
 # Deterministic LENS selection. The manager reads this array and spawns exactly
 # these qa-reviewer lenses — lens choice is data, not model judgment, the same
 # principle as review_mode. Three CORE lenses always run; conditional lenses are
-# added from the target's lens_tags plus the live schema signal. Rationale for
-# each rule is in base-branches.json's _lens_comment.
+# added from the target's lens_tags plus the live schema signal. Each lens's
+# purpose is in config/lens-catalog.json.
 #   - schema-propagation: whenever DDL is detected in THIS diff (so any target
 #     that actually touches schema gets it) OR the target is schema-capable
 #     (tag "schema" — where the documented outage was a CODE-ONLY schema
@@ -2136,7 +2141,6 @@ PREFLIGHT_JSON=$(jq -n \
   --argjson mr "$MR_NUMBER" \
   --arg target "$TARGET" --arg target_path "$TARGET_PATH" --arg target_abs "$TARGET_ABS" \
   --arg remote "$REMOTE" --arg scope "$SCOPE" \
-  --arg base_branch "$RESOLVED_BASE" --arg base_branch_source "$RESOLVED_SOURCE" \
   --argjson security_stage "$SECURITY_STAGE" \
   --arg forge "$FORGE" --arg forge_cli "$FORGE_CLI" \
   --arg project "$FORGE_PROJECT" --arg project_enc "$FORGE_PROJECT_ENC" \
@@ -2188,11 +2192,11 @@ PREFLIGHT_JSON=$(jq -n \
   --arg tracker "$TRACKER" --arg tracker_source "$TRACKER_SOURCE" \
   --arg tickets_path "$TICKETS_PATH" --argjson unfetched "$UNFETCHED_JSON" \
   --argjson so_reviewers "$SO_SUMMARY" --arg so_path "$SO_FILE" \
+  --argjson flag_defaults "$FLAG_DEFAULTS" \
   --argjson warnings "$WARNINGS_JSON" \
   '{
     mr: $mr, target: $target, target_path: $target_path, target_abs: $target_abs,
     remote: $remote, scope: $scope,
-    base_branch: $base_branch, base_branch_source: $base_branch_source,
     security_stage: $security_stage,
     forge: $forge, forge_cli: $forge_cli,
     project: $project, project_enc: $project_enc,
@@ -2223,6 +2227,7 @@ PREFLIGHT_JSON=$(jq -n \
                 tickets_path: $tickets_path, unfetched: $unfetched,
                 description_length: $desc_len, min_description_length: $min_desc },
     second_opinion: { reviewers: $so_reviewers, config_path: $so_path },
+    flag_defaults: $flag_defaults,
     docs_only: $docs_only,
     round: $round,
     proportionality_path: $proportionality_path,

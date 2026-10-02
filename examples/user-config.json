@@ -1,0 +1,29 @@
+{
+  "_comment": "User-level config: copy to ~/.config/claude-qa-manager/config.json. It applies to every repository you review; a project's .claude/skills/qa-cycle/config.json overrides it key by key. Every block is optional -- delete what you do not need.",
+
+  "qa_agent": {
+    "_comment": "The separate QA account that posts round notes and approves. Store its token with /qa-init; never put the token here.",
+    "expected_username": "qa-bot",
+    "approval": {
+      "min_clean_round": 2
+    }
+  },
+
+  "second_opinion": {
+    "_comment": "Extra reviewers from other model providers, used by --double/--triple/--reviewer. api_key_env names the environment variable that holds the key.",
+    "reviewers": [
+      {
+        "name": "hosted",
+        "endpoint": "https://<provider>/v1/chat/completions",
+        "model": "<model-id>",
+        "api_key_env": "SECOND_OPINION_KEY"
+      }
+    ]
+  },
+
+  "flags": {
+    "_comment": "Flags you would otherwise type on every /qa-cycle. The command line still wins: --single, --interactive. --auto-approve cannot be defaulted.",
+    "double": true,
+    "non_interactive": false
+  }
+}

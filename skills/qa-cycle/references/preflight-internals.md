@@ -51,10 +51,10 @@ load a description of work a shell script had already done.
 ## Step 0 — Parse arguments and inspect the MR
 
 > **Mechanics superseded by Step 0.0 preflight** — the resolution below is
-> performed by `preflight.sh`; read `base_branch`, `mr_*`, `is_own_branch`,
+> performed by `preflight.sh`; read `target_branch`, `mr_*`, `is_own_branch`,
 > etc. from `preflight.json`. The prose is retained as the authoritative
-> description of *what* is resolved and *why*. Still parse the reviewer flags
-> (`--double`/`--triple`/`--reviewer=`) from argv yourself.
+> description of *what* is resolved and *why*. Still parse the flags from argv
+> yourself, on top of `flag_defaults`.
 
 Extract `MR_NUMBER`, `TARGET`, and the optional reviewer flags from the
 invocation arguments. `MR_NUMBER` is required. `TARGET` is optional and resolves
@@ -62,6 +62,17 @@ to the sole configured target when the project defines exactly one; when it
 defines several, ask which one rather than guessing — the config layers merge, so
 a `default` entry exists even in a monorepo and would quietly select the repo
 root. Record:
+
+**Start from `preflight.json` `flag_defaults`** — `{double, triple, reviewer,
+non_interactive}`, resolved from the `flags` block of the merged config — then let
+argv override: a flag on the command line turns its setting on; `--single` sets
+`DOUBLE`, `TRIPLE` and `REVIEWER_OVERRIDE` back to off/empty; `--interactive` sets
+`NON_INTERACTIVE=false`. Tell the operator which settings came from config. Preflight
+has already validated the defaults: a refused key (`auto_approve`,
+`skip_contract_verification`), a wrong type, or a default that cannot work (`double`
+with no reviewer configured, an unknown `reviewer`) arrives as a
+`flag_default_ignored:` warning with that default already dropped. The rules below
+describe argv; "else false" means "else the config default".
 
 - `DOUBLE=true` if `--double` **or** `--triple` appears anywhere in the argv,
   else `DOUBLE=false`. (Triple implies double — a second reviewer always runs
@@ -88,9 +99,11 @@ manager's `decisions_needed` are resolved):
   confirm. Never implied by `--non-interactive` — approval is a safety invariant.
 
 Documented argument surface:
-`<MR_NUMBER> <TARGET> [--double | --triple] [--reviewer=<name>] [--non-interactive] [--auto-approve] [--skip-contract-verification] [--help]`. All flags
+`<MR_NUMBER> <TARGET> [--double | --triple | --single] [--reviewer=<name>] [--non-interactive | --interactive] [--auto-approve] [--skip-contract-verification] [--help]`. All flags
 are per-invocation — nothing is persisted between rounds; callers must pass the
-flags again on subsequent rounds to keep multi-model QA active.
+flags again on subsequent rounds to keep multi-model QA active, unless config
+defaults them under `flags`. `--auto-approve` and `--skip-contract-verification`
+are never defaulted.
 
 `--help` is handled at Step -1, before preflight runs. The user-facing wording of every
 flag above lives in `references/usage.md`; change a flag here and change it there in the
@@ -98,51 +111,10 @@ same commit, or the skill documents behaviour it no longer has.
 
 Load the merged config (shipped defaults → user → project, later winning) and look up `targets.<TARGET>`. Resolve `<target-path>`, `<remote>`, and `<scope>` from that entry. If the target is not present, ask the user for the path and offer to add the entry.
 
-Then resolve `<base-branch>` with this precedence:
-
-1. If `.branchconfig.yaml` exists at the repo root:
-   a. If `<target-path>` is `.` (the monorepo itself), use the top-level `base_branch:` field of `.branchconfig.yaml`.
-   b. Otherwise, look up `submodule_branches.<target-path>.base_branch`. If present, use that value.
-2. If neither produced a value, fall back to `targets.<TARGET>.base_branch` from the merged config.
-
-Implementation snippet (the resolver should behave equivalently to this):
-
-```bash
-RESOLVED_BASE=""
-RESOLVED_SOURCE=""
-CONFIG="$(git rev-parse --show-toplevel)/.branchconfig.yaml"
-if [[ -f "$CONFIG" ]]; then
-  if [[ "$TARGET_PATH" == "." ]]; then
-    RESOLVED_BASE=$(awk '/^base_branch:/ { sub(/^base_branch:[[:space:]]*/, ""); sub(/[[:space:]]*#.*$/, ""); gsub(/[" ]/, ""); print; exit }' "$CONFIG")
-  else
-    RESOLVED_BASE=$(awk -v t="$TARGET_PATH" '
-      /^submodule_branches:/ { in_sub = 1; next }
-      in_sub && /^[^[:space:]]/ { in_sub = 0; current = "" }
-      # Match any submodule key, then string-compare to t — this avoids
-      # treating regex meta-chars in target paths (e.g. ".") as wildcards.
-      in_sub && /^  [^[:space:]:].*:[[:space:]]*(#.*)?$/ {
-        key = $0
-        sub(/^  /, "", key); sub(/:[[:space:]]*(#.*)?$/, "", key)
-        current = (key == t) ? t : ""
-        next
-      }
-      in_sub && current == t && /^    base_branch:/ {
-        sub(/^    base_branch:[[:space:]]*/, ""); sub(/[[:space:]]*#.*$/, ""); gsub(/[" ]/, "")
-        print; exit
-      }
-    ' "$CONFIG")
-  fi
-  [[ -n "$RESOLVED_BASE" ]] && RESOLVED_SOURCE=".branchconfig.yaml"
-fi
-if [[ -z "$RESOLVED_BASE" ]]; then
-  # $MERGED_CONFIG is the three-layer merge, written to one temp file before any
-  # lookup runs; preflight.sh calls it $BB.
-  RESOLVED_BASE=$(jq -r --arg t "$TARGET" '.targets[$t].base_branch' "$MERGED_CONFIG")
-  RESOLVED_SOURCE="config fallback"
-fi
-```
-
-Report which source was used (one line, e.g. `base_branch = main (from .branchconfig.yaml)` or `base_branch = master (from config fallback)`) so the user can confirm the skill picked up the right context.
+The base branch is the MR/PR's own **target branch**, read from the forge. It is the
+only base the sync, the diff range and the panel ever use, so there is no separate
+configured base branch to resolve or reconcile. A `targets.<name>.base_branch` key or a
+`.branchconfig.yaml` file is ignored.
 
 Navigate into the target directory and fetch the MR details:
 
@@ -163,7 +135,7 @@ This `sed -nE` form is portable across BSD/macOS and GNU sed; the prior PCRE-`\K
 
 Compare the MR author to the logged-in user. Set `IS_OWN_BRANCH=true` if they match, `IS_OWN_BRANCH=false` otherwise. This controls whether fixes are applied automatically (see Step 3B).
 
-Also get the diff stat to assess scope. Use the MR's **actual target branch** (from `glab mr view`) — not necessarily the config's `base_branch` (report it to the user if they differ, since it may indicate the MR is targeting production patches while the config is set for dev trunk, or vice versa):
+Also get the diff stat to assess scope, against the MR's target branch:
 
 ```bash
 cd <target-path>

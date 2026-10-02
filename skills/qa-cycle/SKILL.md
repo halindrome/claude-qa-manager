@@ -1,6 +1,6 @@
 ---
 name: qa-cycle
-argument-hint: "<mr|pr-number> [target] [--double|--triple] [--reviewer=<name>] [--non-interactive] [--auto-approve] [--help]"
+argument-hint: "<mr|pr-number> [target] [--double|--triple|--single] [--reviewer=<name>] [--non-interactive|--interactive] [--auto-approve] [--help]"
 description: "Run a structured QA review cycle on a merge request or pull request: one round, then as many further rounds as the findings justify, up to approval. Takes the MR/PR number and an optional target name (e.g. /qa-cycle 123, or /qa-cycle 123 api in a monorepo). Each round runs a deterministic preflight (branch sync, ownership, round derivation, security-scan delta), fans out a 3-6 lens reviewer panel, posts a round note, and gates approval behind an explicit policy. Every finding is grounded in a linked ticket's acceptance criteria or a regression the diff introduces. Proportionality escalates with the round number and the panel can declare diminishing returns, so the cycle ends rather than looping forever. Branches derive from the MR/PR at runtime, so no configuration is required for a single repo; targets, schema paths, and QA-agent credentials come from optional layered config."
 ---
 
@@ -72,7 +72,6 @@ it:
 | JSON field | Skill variable(s) |
 |---|---|
 | `target_path`,`remote`,`scope`,`security_stage` | target registry values |
-| `base_branch`,`base_branch_source` | `<base-branch>` (report the source) |
 | `mr_title`,`mr_author`,`source_branch`,`target_branch`,`state`,`draft`,`changes_count`,`pipeline_status` | MR facts |
 | `dev_user`,`is_own_branch` | `IS_OWN_BRANCH` (Step 3B ownership gate) |
 | `qa_token_ok`,`qa_auth_user` | `QA_TOKEN_OK` (Steps 0.25/3C/3E) |
@@ -117,7 +116,6 @@ it:
 - **Step 0.5 — contract resolution.** Fetch `contract.candidate_tickets` per `contract.tracker` (`forge`: preflight already did), then synthesis / ambiguity AskUserQuestion; if `docs_only=true`, take the docs exemption; if `description_length < min_description_length` and no ticket, BLOCK.
 - The **round-1 skip-contract** AskUserQuestion + `--double` tip.
 - The **SAST wait-gate** prompt (only when `sast.running=true` AND the round is approval-eligible) — the poll loop stays one Bash call.
-- Argument flags (`--double`/`--triple`/`--reviewer=`) — parse from argv as in Step 0 (preflight does not consume them).
 
 The sections below (Steps 0–0.7, 2, 2.5, 3A.0.1) remain the authoritative
 **policy** — what each value means and how the gates behave — but their shell
@@ -133,6 +131,10 @@ the value from `preflight.json`.
 Everything mechanical is preflight's; read its fields. Yours to parse from argv:
 `--double`, `--triple`, `--reviewer=`, `--non-interactive`, `--auto-approve`,
 `--skip-contract-verification` (`--help` was already handled at Step -1).
+
+Start from `preflight.json` `flag_defaults`; argv wins (`--single`, `--interactive`
+undo a default). Say which came from config. `--auto-approve` and
+`--skip-contract-verification` are argv-only: both must be asked for by name.
 
 `skip_contract_verification` is `false` unless that flag was passed — never asked: a
 missing Contract Verification table is a failure signal, so skipping must be explicit.
@@ -259,9 +261,6 @@ On **round 1 only**, if `DOUBLE=false` AND `second_opinion.reviewers` in
    ◆ Tip: pass --double (or --reviewer=<name>) for a second-opinion review by
      <the configured reviewer names>, or --triple for two.
    ```
-
-   Suppress it when `DOUBLE=true`, when no reviewer is configured, or when the
-   current round is ≥ 2.
 
 
 ## Step 3A.0.1 — schema-change detection

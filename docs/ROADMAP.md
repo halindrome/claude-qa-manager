@@ -498,6 +498,23 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
 
 ### Smaller, independent items
 
+- **Flag defaults in config; `.branchconfig.yaml` dropped (2026-10-02).** A `flags`
+  block (`double`, `triple`, `reviewer`, `non_interactive`) defaults those flags;
+  `--single` / `--interactive` undo a default for one run. Preflight validates and emits
+  `flag_defaults`, warning `flag_default_ignored:<key>:<why>` for anything refused or
+  unusable. `auto_approve` and `skip_contract_verification` are refused by design:
+  approval must stay an explicit per-run act. `.branchconfig.yaml` was inherited from
+  the private predecessor (`/mr-qa`); preflight read it only to report a `base_branch`
+  that nothing used — sync, diff and panel all use the MR's target branch — so it and
+  `targets.<name>.base_branch` are now ignored and `base_branch` is gone from
+  `preflight.json`. Existing repos with the file keep working unchanged.
+
+- **A note posted without a QA identity is labelled automated (2026-10-02).**
+  `forge_post_note` puts an "Automated QA review" banner under the heading of any note it
+  posts with an empty token. Previously the only signal was a template-rule `⚠ Posted
+  with dev credentials` line at the bottom, gated on `QA_TOKEN_OK` — the flag that was
+  true on !14 while three notes posted as the developer.
+
 - **Second opinions are provider-neutral.** `--double`/`--triple`/`--reviewer=<name>`
   run `lib/llm-reviewer.sh` against reviewers configured in `second_opinion.reviewers`
   (any OpenAI-compatible endpoint; none by default). Preflight resolves the list into
