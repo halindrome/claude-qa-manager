@@ -70,11 +70,14 @@ what this section exists to establish, arrived at by doing what the section said
 
 ## Hard invariants
 
-**1. This repo is public and its history is permanent.** It was built locally and only
-pushed once clean, so no private identifier is in any commit. Keep it that way:
-`test/no-private-identifiers.sh` runs in CI and fails on org names, internal ticket ids, and
-secret-shaped literals. It is verified non-vacuous — it fails on a planted identifier and on
-a planted token.
+**1. This repo is public and its history is permanent.** Nothing private may reach a
+commit — not a file, a commit message, or the author/committer identity. A push publishes
+all of it, and only a history rewrite *before* the push can take any of it back.
+`test/no-private-identifiers.sh` enforces this across the tree, every historical diff,
+every message and every identity, and runs in CI with full history. Private words are
+listed only as SHA-256 hashes, so the guard does not publish what it protects; add a hash
+whenever you scrub a new one. Commits use the repo-local identity
+(`git config user.email`), never a work address.
 
 **2. Never let an absent check report as a pass.** The recurring theme. An unconfigured
 schema gate reports `schema.state=skipped:not-configured`, not clean. Only `sast.gate_state

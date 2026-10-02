@@ -1,6 +1,6 @@
 {
   "name": "claude-qa-manager",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Structured multi-round QA for merge and pull requests: deterministic preflight, a fan-out reviewer panel, proportionality control that knows when to stop, and a gated approval path.",
   "author": { "name": "Shane McCarron" },
   "homepage": "https://github.com/halindrome/claude-qa-manager#readme",

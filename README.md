@@ -37,7 +37,7 @@ plugin is designed to let it say so.
 
 ## Status
 
-**v0.2.0 — early.** Extracted from a private implementation that has run hundreds of real
+**v0.3.0 — early.** Extracted from a private implementation that has run hundreds of real
 review rounds, then generalised. The design is battle-tested; this packaging is new.
 
 ## Requirements
@@ -53,8 +53,10 @@ review rounds, then generalised. The design is battle-tested; this packaging is 
 
 ```bash
 claude plugin marketplace add halindrome/claude-qa-manager
-claude plugin install claude-qa-manager
+claude plugin install claude-qa-manager@halindrome
 ```
+
+Update with `claude plugin marketplace update halindrome && claude plugin update claude-qa-manager@halindrome`.
 
 To try it without installing:
 
