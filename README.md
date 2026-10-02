@@ -139,11 +139,52 @@ Flags apply to one invocation. Pass them again when you start the next round.
 
 ### A separate QA identity (optional)
 
-Without a token, round notes post under your own forge account and approval never
-happens. With one, notes and approvals come from a separate QA account, so they are not
-mistaken for the author's. Fix commits always use your own credentials. Run `/qa-init`
-to store one. It is checked against the forge
-before it is saved, and kept outside the repository with mode 600.
+By default everything the plugin does on the forge happens as **you**: its round notes
+are comments under your name, next to the comments you wrote yourself. On your own MR/PR
+that reads like the author reviewing their own work, and nobody can tell what you said
+from what the review panel said.
+
+A **QA identity** is a second forge account — a bot or service user such as `qa-bot` —
+whose token the plugin uses for review actions only:
+
+| Action | Without a QA identity | With one |
+|---|---|---|
+| Round notes (`## QA Round N` comments) | posted as you | posted as the QA account |
+| Approving the MR/PR | never done | done as the QA account, after every gate passes and you confirm |
+| Fix commits and pushes | you | **still you**. Code changes are always yours |
+
+What that buys:
+
+- **You can tell review from people.** Anyone reading the MR/PR sees which comments came
+  from the QA cycle and which from humans, and can filter by author.
+- **Author and reviewer are different accounts**, so an approval is never a
+  self-approval. On GitHub this is the difference between approving and not: the author
+  of a pull request cannot approve it.
+- **It falls back rather than pretends.** The token is checked against the forge when you
+  store it and again at the start of every round. If it is missing, invalid, or belongs
+  to someone other than `qa_agent.expected_username`, notes post as you, approval is
+  skipped, and the round warns. After approving, the plugin reads back who the forge
+  recorded as the approver. If it was not the QA account, it reports an error, does not
+  count the MR/PR as approved, and tells you to withdraw the approval.
+- **Schema changes still need a person.** A QA-account approval never satisfies the
+  schema gate. A change to a configured schema file also needs a human approval (anyone
+  but the QA account).
+
+**Setting one up:**
+
+1. Create the account on your forge (a separate user, or a bot/service account if your
+   organisation provides them) and give it access to the repository with permission to
+   comment on and approve MRs/PRs.
+2. Create a personal access token for it.
+3. Run `/qa-init` and choose to store the token. It is typed at a hidden prompt in a real
+   terminal, never pasted into the chat. It is verified against the forge before it is
+   saved, kept outside the repository with mode 600, and the account name it resolves to
+   is recorded. The `QA_AGENT_TOKEN` environment variable works instead of the file.
+
+Adding or removing a QA identity mid-cycle does not reset the round count. The next round
+number comes from the `## QA Round N` headings already on the MR/PR, whoever posted them.
+Settings, including when the QA account may approve, are in
+[docs/CONFIGURING.md](docs/CONFIGURING.md#qa_agent--optional-second-identity).
 
 ## Configure
 
