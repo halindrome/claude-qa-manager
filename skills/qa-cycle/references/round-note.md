@@ -44,8 +44,8 @@ being misled about what evidence exists.
 A skipped fix review is NEVER written as a clean one. `skipped:spawn-refused`
 means this round's fix went in unreviewed, and the note says so — invariant 2.>
 
-<for each reviewer that was attempted but failed (`do:deepseek-v4-pro`,
-`do:openai-gpt-5.3-codex`, or `qwen`): one line, inside the report body —
+<for each second-opinion reviewer that was attempted but failed (its configured
+name, e.g. `deepseek`): one line, inside the report body —
 ⚠ <tag> second-opinion review failed: <reason>. Proceeding without it.
 When TRIPLE=true and BOTH failed, the comment still posts: the Claude-only
 report plus two ⚠ lines. A failed reviewer is never a zero-finding reviewer.>
@@ -84,7 +84,7 @@ QA-Fix-Commit: <full SHA of any further fix commit this round>
 
 ---
 <if QA_TOKEN_OK=true:>
-*QA performed by <qa_auth_user from preflight.json when qa_token_ok, else the dev identity that posted> via Claude Code (<the model the LENSES actually ran as. On the driver path this is recorded, not remembered: `jq -r '[.[] | select(. != null) | .model] | unique | join(", ")' "$QA_SCRATCH/panel-models.json"` — the run record, taken from each lens's own `modelUsage`. The `select(. != null)` is load-bearing: a lens that dies before emitting anything is recorded as `null`, and without the guard the footer of the round note reads `null` as one of the models that reviewed the MR. On the sequential path, the model you are actually running as. Never a literal copied from this file; a hardcoded id rots and misattributes the review. If you cannot determine it, write "Claude Code" with no parenthetical>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` where tag is the reviewer's tag, e.g. ` + do:deepseek-v4-pro` or ` + do:openai-gpt-5.3-codex` or ` + qwen3-14b (LM Studio)`>
+*QA performed by <qa_auth_user from preflight.json when qa_token_ok, else the dev identity that posted> via Claude Code (<the model the LENSES actually ran as. On the driver path this is recorded, not remembered: `jq -r '[.[] | select(. != null) | .model] | unique | join(", ")' "$QA_SCRATCH/panel-models.json"` — the run record, taken from each lens's own `modelUsage`. The `select(. != null)` is load-bearing: a lens that dies before emitting anything is recorded as `null`, and without the guard the footer of the round note reads `null` as one of the models that reviewed the MR. On the sequential path, the model you are actually running as. Never a literal copied from this file; a hardcoded id rots and misattributes the review. If you cannot determine it, write "Claude Code" with no parenthetical>)*<for each second-opinion reviewer that succeeded: append ` + <name> (<model>)` from `second_opinion.reviewers`, e.g. ` + deepseek (deepseek-v4-pro)`>
 
 **Do not narrate a model downgrade from this file into the note body.** A round note
 once told an MR that one lens "ran on `<a smaller model>`" — it had not; the driver

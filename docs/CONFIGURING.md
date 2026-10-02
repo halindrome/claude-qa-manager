@@ -198,6 +198,40 @@ the sequential fallback, the fix-diff review).
 Widening it is a deliberate statement about which models may review — not a way to make
 a round start.
 
+## `second_opinion` — reviewers from other model providers
+
+`--double`, `--triple` and `--reviewer=<name>` add a review from a model outside the
+panel. Each reviewer is any OpenAI-compatible chat-completions endpoint — a hosted
+provider or a local server — and none are configured by default; with an empty list
+the flags stop with a message rather than skipping silently.
+
+```json
+{
+  "second_opinion": {
+    "reviewers": [
+      { "name": "hosted", "endpoint": "https://<provider>/v1/chat/completions",
+        "model": "<model-id>", "api_key_env": "SECOND_OPINION_KEY" },
+      { "name": "local", "endpoint": "http://localhost:1234/v1/chat/completions",
+        "model": "<local-model-id>", "max_tokens": 16000 }
+    ]
+  }
+}
+```
+
+- `--double` runs the first reviewer, `--triple` the first two, `--reviewer=<name>` that
+  one. Findings are tagged `[<name>]` and merged with the panel's.
+- `api_key_env` **names** the environment variable holding the key; the key itself never
+  goes in config. Omit it for an unauthenticated local server. Preflight reports
+  `key_present` per reviewer, and a selected reviewer without its key stops the round
+  before it starts.
+- Optional per reviewer: `max_tokens` (8192), `timeout_seconds` (600), and
+  `max_input_bytes` (400000). Changed-file contents beyond `max_input_bytes` are left
+  out and named in the review; the diff is always sent whole.
+- `name` is the tag in the round note: lowercase letters, digits, `.`, `_`, `-`.
+
+A second opinion sees the diff, the changed files and the contract, with no tools —
+it cannot trace a caller or open an unchanged file. It is a cross-check, not a lens.
+
 ## `verify` — how a fix is checked before it is committed
 
 Normally **empty**. The target's own test entry point is *discovered* (Makefile `test`,

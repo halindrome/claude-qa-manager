@@ -67,13 +67,12 @@ root. Record:
   else `DOUBLE=false`. (Triple implies double — a second reviewer always runs
   when a third is requested.)
 - `TRIPLE=true` if `--triple` appears anywhere in the argv, else `TRIPLE=false`.
-- `REVIEWER_OVERRIDE` captures any `--reviewer=<id>` argument value. Recognized
-  ids: `qwen-local` (route the second-opinion reviewer through the legacy local
-  LM Studio Qwen path instead of DO). Unrecognized ids must trigger a STOP with
-  a clear error.
-- Accept both the `=`-joined and space-separated CLI forms — `--reviewer=qwen-local`
-  and `--reviewer qwen-local` are equivalent. Reject lone `--reviewer` with no
-  value as a STOP: `"--reviewer requires an id (e.g. --reviewer=qwen-local)."`
+- `REVIEWER_OVERRIDE` captures any `--reviewer=<name>` argument value, and implies
+  `DOUBLE=true`. Valid names are those in `preflight.json` `second_opinion.reviewers`;
+  any other name must trigger a STOP that lists the configured ones.
+- Accept both the `=`-joined and space-separated CLI forms — `--reviewer=<name>`
+  and `--reviewer <name>` are equivalent. Reject lone `--reviewer` with no
+  value as a STOP: `"--reviewer requires a configured reviewer name."`
 
 Also parse two hands-free flags (see Step 3A.1 — they control how the QA
 manager's `decisions_needed` are resolved):
@@ -89,7 +88,7 @@ manager's `decisions_needed` are resolved):
   confirm. Never implied by `--non-interactive` — approval is a safety invariant.
 
 Documented argument surface:
-`<MR_NUMBER> <TARGET> [--double | --triple] [--reviewer=qwen-local] [--non-interactive] [--auto-approve] [--skip-contract-verification] [--help]`. All flags
+`<MR_NUMBER> <TARGET> [--double | --triple] [--reviewer=<name>] [--non-interactive] [--auto-approve] [--skip-contract-verification] [--help]`. All flags
 are per-invocation — nothing is persisted between rounds; callers must pass the
 flags again on subsequent rounds to keep multi-model QA active.
 

@@ -1993,6 +1993,96 @@ PATH="$gi/bin:$PATH" bash -c ". '$REPO_SRC/lib/forge-github.sh'; forge_view_issu
 eq "  a PR number fails, not an empty issue" "$?" "1"
 rm -rf "$gi"
 
+echo "[second_opinion: reviewers resolved by preflight]"
+r=$(mkfixture "feature/x" "main" '.second_opinion.reviewers = [
+  {"name":"hosted","endpoint":"https://h.invalid/v1/chat/completions","model":"m1","api_key_env":"SO_TEST_KEY"},
+  {"name":"local","endpoint":"http://localhost:1/v1/chat/completions","model":"m2"},
+  {"name":"Bad Name","endpoint":"x","model":"y"},
+  {"name":"nomodel","endpoint":"x"}]')
+out=$(run_preflight "$r" 73 mono)
+eq "valid reviewers listed in order" "$(jq -r '[.second_opinion.reviewers[].name]|join(",")' <<<"$out")" "hosted,local"
+eq "  key_present false when its env var is unset" "$(jq -r '.second_opinion.reviewers[0].key_present' <<<"$out")" "false"
+eq "  key_present true with no api_key_env (local server)" "$(jq -r '.second_opinion.reviewers[1].key_present' <<<"$out")" "true"
+eq "  invalid entries warned by name, not dropped silently" \
+   "$(jq -r '[.warnings[]|select(startswith("second_opinion_invalid"))][0] | test("Bad Name") and test("nomodel")' <<<"$out")" "true"
+eq "  the full entries reach second-opinion.json" \
+   "$(jq -r '.reviewers[0].endpoint' "$(jq -r '.second_opinion.config_path' <<<"$out")")" "https://h.invalid/v1/chat/completions"
+out=$(SO_TEST_KEY=secret-value run_preflight "$r" 73 mono)
+eq "  key_present true once the env var is set" "$(jq -r '.second_opinion.reviewers[0].key_present' <<<"$out")" "true"
+eq "  and the key VALUE is never written"       "$(grep -c 'secret-value' "$(jq -r '.second_opinion.config_path' <<<"$out")")" "0"
+rm -rf "$r"
+r=$(mkfixture "feature/x" "main")
+out=$(run_preflight "$r" 73 mono)
+eq "no reviewers by default (no provider baked in)" "$(jq -c '.second_opinion.reviewers' <<<"$out")" "[]"
+rm -rf "$r"
+
+echo "[llm-reviewer.sh — one OpenAI-compatible second opinion]"
+# Stubbed one layer down: a fake `curl` on PATH records the request body and headers
+# and answers in the OpenAI response shape, so the client's own request building,
+# auth handling and error mapping are what the assertions exercise.
+lr=$(mktemp -d); mkdir -p "$lr/bin" "$lr/s"
+git init -q -b main "$lr/repo"; git -C "$lr/repo" config user.email t@t.t; git -C "$lr/repo" config user.name t
+printf 'a\n' > "$lr/repo/a.sh"
+seq -f 'line %g of a large file, padded out' 1 200 > "$lr/repo/big.txt"
+git -C "$lr/repo" add -A; git -C "$lr/repo" commit -qm base; git -C "$lr/repo" branch base
+printf 'a\nb\n' > "$lr/repo/a.sh"
+awk 'NR==100{$0="line 100 changed"}1' "$lr/repo/big.txt" > "$lr/t" && mv "$lr/t" "$lr/repo/big.txt"
+git -C "$lr/repo" add -A; git -C "$lr/repo" commit -qm change
+printf 'target_abs=%s\ndiff_range=base..HEAD\nround=1\nmr=9\ntarget=t\n' "$lr/repo" > "$lr/s/manager-brief.txt"
+printf '# Contract\n- AC: b is appended\n' > "$lr/s/contract.md"
+# tiny fits the small diff and a.sh but not big.txt (~7KB); nano fits nothing.
+jq -n '{reviewers: [
+  {name: "hosted", endpoint: "https://h.invalid/v1", model: "m1", api_key_env: "LR_KEY"},
+  {name: "local",  endpoint: "http://l.invalid/v1",  model: "m2"},
+  {name: "tiny",   endpoint: "http://l.invalid/v1",  model: "m3", max_input_bytes: 6000},
+  {name: "nano",   endpoint: "http://l.invalid/v1",  model: "m4", max_input_bytes: 100}]}' > "$lr/s/second-opinion.json"
+cat > "$lr/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""; hdrs=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift 2 ;; -H) hdrs="$hdrs|$2"; shift 2 ;; *) shift ;; esac
+done
+cat > "$CURL_LOG.body"; printf '%s\n' "$hdrs" > "$CURL_LOG.hdrs"
+case "${CURL_MODE:-ok}" in
+  ok)        printf '%s' '{"choices":[{"message":{"content":"### Finding 1: b is never validated\n- **Area:** `a.sh` (lines 2-2)\n- **Relevance:** regression"}}]}' > "$out"; printf 200 ;;
+  http500)   printf '{}' > "$out"; printf 500 ;;
+  errbody)   printf '{"error":{"message":"quota exceeded"}}' > "$out"; printf 200 ;;
+  empty)     printf '{"choices":[{"message":{"content":""}}]}' > "$out"; printf 200 ;;
+  reasoning) printf '{"choices":[{"message":{"content":"","reasoning_content":"thinking hard"},"finish_reason":"length"}]}' > "$out"; printf 200 ;;
+esac
+STUB
+chmod +x "$lr/bin/curl"
+LR="$REPO_SRC/lib/llm-reviewer.sh"
+lrun() { PATH="$lr/bin:$PATH" CURL_LOG="$lr/req" bash "$LR" --scratch "$lr/s" --output "$lr/out.md" "$@" 2>"$lr/err"; }
+
+LR_KEY=k1 CURL_MODE=ok lrun --reviewer hosted; rc=$?
+eq "success -> exit 0" "$rc" "0"
+eq "  titles carry the reviewer's name as the merge tag" "$(grep -c '^### Finding 1: \[hosted\] b is never validated' "$lr/out.md")" "1"
+eq "  the key goes in a Bearer header" "$(grep -c 'Authorization: Bearer k1' "$lr/req.hdrs")" "1"
+eq "  the configured model is requested" "$(jq -r '.model' "$lr/req.body")" "m1"
+eq "  the prompt asks for the plugin's taxonomy (relevance)" \
+   "$(jq -r '.messages[0].content' "$lr/req.body" | grep -c 'Relevance:\*\* contract | regression | observation')" "1"
+eq "  the diff and the contract are sent" \
+   "$(jq -r '.messages[1].content' "$lr/req.body" | grep -cE '^\+b$|AC: b is appended')" "2"
+CURL_MODE=ok lrun --reviewer local
+eq "no api_key_env -> no Authorization header" "$(grep -c Authorization "$lr/req.hdrs")" "0"
+CURL_MODE=ok lrun --reviewer hosted
+eq "configured key not set -> exit 4, not an unauthenticated call" "$?" "4"
+LR_KEY=k CURL_MODE=http500 lrun --reviewer hosted;   eq "HTTP 500 -> exit 1"        "$?" "1"
+LR_KEY=k CURL_MODE=errbody lrun --reviewer hosted;   eq "error body -> exit 3"      "$?" "3"
+LR_KEY=k CURL_MODE=empty   lrun --reviewer hosted;   eq "empty content -> exit 2"   "$?" "2"
+LR_KEY=k CURL_MODE=reasoning lrun --reviewer hosted; rc=$?
+eq "reasoning-only response -> kept (exit 0)" "$rc" "0"
+eq "  under a banner saying it is not findings" "$(grep -c 'Reasoning-content fallback' "$lr/out.md")" "1"
+CURL_MODE=ok lrun --reviewer tiny; rc=$?
+eq "files over budget -> still exit 0" "$rc" "0"
+eq "  the omitted file is NAMED in the output" "$(grep -c 'WARNING: file contents omitted.*big.txt' "$lr/out.md")" "1"
+eq "  its content was not sent, the small one was" \
+   "$(jq -r '.messages[1].content' "$lr/req.body" | grep -cE '^===== FILE: (a.sh|big.txt) =====$')" "1"
+CURL_MODE=ok lrun --reviewer nano;   eq "diff alone over budget -> exit 5" "$?" "5"
+CURL_MODE=ok lrun --reviewer nobody; eq "unknown reviewer -> exit 64"      "$?" "64"
+rm -rf "$lr"
+
 # ---------------------------------------------------------------------------
 echo "[lens selection — deterministic lenses[] array]"
 # The core three always run; conditional lenses come from lens_tags + the live

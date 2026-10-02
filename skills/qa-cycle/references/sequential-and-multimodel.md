@@ -266,82 +266,40 @@ whichever path preflight selected.
 > This step's sequential invocation applies only on the trivial-diff / no-nesting
 > fallback where main runs the reviewers directly.
 
-When `DOUBLE=true`, after the Claude reviewer returns, invoke one or two
-additional reviewers. The contract file was produced in Step 0.5 and is
-referenced by all reviewers.
+When `DOUBLE=true`, after the Claude reviewer returns, run one or two second-opinion
+reviewers. Each is an OpenAI-compatible endpoint the operator configured under
+`second_opinion.reviewers` (docs/CONFIGURING.md); none ship by default. Preflight lists
+them, with `key_present`, under `second_opinion.reviewers` in `preflight.json`.
 
 **Reviewer selection (resolved from Step 0 flags):**
 
-| Flag combination | Reviewer 2 | Reviewer 3 |
-|---|---|---|
-| `--double` (default) | `do-reviewer.sh` model `deepseek-v4-pro` | — |
-| `--triple` | `do-reviewer.sh` model `deepseek-v4-pro` | `do-reviewer.sh` model `openai-gpt-5.3-codex` |
-| `--double --reviewer=qwen-local` | `qwen-reviewer.sh` (local LM Studio) | — |
-| `--triple --reviewer=qwen-local` | `qwen-reviewer.sh` (local LM Studio) | `do-reviewer.sh` model `openai-gpt-5.3-codex` |
+| Flags | Reviewers run |
+|---|---|
+| `--double` | the first configured |
+| `--triple` | the first two configured |
+| `--reviewer=<name>` (implies `--double`) | `<name>` |
+| `--triple --reviewer=<name>` | `<name>`, then the first other configured |
 
-**Reviewer 2 — DigitalOcean DeepSeek (default for `--double`):**
+**STOP before the round** — naming the configured reviewers — when no reviewer is
+configured, `<name>` is not one of them, `--triple` finds fewer than two, or a selected
+reviewer has `key_present: false` (name its `api_key_env`). These are all known from
+preflight, so none of them may surface as a mid-round failure.
 
-`do-reviewer.sh` requires `DO_LLM_API_KEY` in the environment; if unset, the
-shim exits 64 and Step 3C treats this as a non-blocking failure.
-
-The shim reviews the range `origin/<target>..origin/<source>` — it reads the
-diff AND each changed file's contents from the MR's **source branch ref**, not
-from the local working-tree `HEAD`. Always pass `MR_SOURCE_BRANCH=<feature-branch>`
-(as shown below) so the review matches the MR even when the submodule working
-tree is checked out on another branch. If omitted, the shim resolves the source
-branch via the forge seam's `forge_view_mr`, falling back to local `HEAD` with
-a warning. (This
-guards the historical failure mode where a stray working-tree checkout caused
-the second-opinion reviewer to review an unrelated changeset.)
+Run each selected reviewer (in parallel when two):
 
 ```bash
-CONTRACT_FILE="$QA_SCRATCH/contract.md"
-R2_OUT="$QA_SCRATCH/r2-round<N>.md"
-
-cd <target-path>
-MR_TARGET_BRANCH=<target-branch> \
-MR_SOURCE_BRANCH=<feature-branch> \
-${CLAUDE_PLUGIN_ROOT}/lib/do-reviewer.sh \
-  --mr <MR_NUMBER> \
-  --target <TARGET> \
-  --round <N> \
-  --contract-file "$CONTRACT_FILE" \
-  --model "deepseek-v4-pro" \
+${CLAUDE_PLUGIN_ROOT}/lib/llm-reviewer.sh \
+  --scratch "$QA_SCRATCH" --reviewer <name> \
   $( [ "<skip_contract_verification>" = "true" ] && echo --skip-contract ) \
-  --output "$R2_OUT"
+  --output "$QA_SCRATCH/r<2|3>-round<N>.md"
 ```
 
-**Reviewer 2 alternative — local Qwen (when `REVIEWER_OVERRIDE=qwen-local`):**
-
-```bash
-MR_TARGET_BRANCH=<target-branch> \
-MR_SOURCE_BRANCH=<feature-branch> \
-${CLAUDE_PLUGIN_ROOT}/lib/qwen-reviewer.sh \
-  --mr <MR_NUMBER> \
-  --target <TARGET> \
-  --round <N> \
-  --contract-file "$CONTRACT_FILE" \
-  $( [ "<skip_contract_verification>" = "true" ] && echo --skip-contract ) \
-  --output "$R2_OUT"
-```
-
-**Reviewer 3 — DigitalOcean GPT-5.3-Codex (only when `TRIPLE=true`):**
-
-```bash
-R3_OUT="$QA_SCRATCH/r3-round<N>.md"
-
-cd <target-path>
-MR_TARGET_BRANCH=<target-branch> \
-MR_SOURCE_BRANCH=<feature-branch> \
-${CLAUDE_PLUGIN_ROOT}/lib/do-reviewer.sh \
-  --mr <MR_NUMBER> \
-  --target <TARGET> \
-  --round <N> \
-  --contract-file "$CONTRACT_FILE" \
-  --model "openai-gpt-5.3-codex" \
-  $( [ "<skip_contract_verification>" = "true" ] && echo --skip-contract ) \
-  --output "$R3_OUT"
-```
+It reviews `diff_range` from the brief, the changed files at HEAD (the working tree is
+the MR head after preflight's sync) and `contract.md`, with no tools. File contents
+that do not fit the reviewer's `max_input_bytes` are named in a `WARNING` line at the
+top of its output — carry that line into the round note; the diff itself is never
+truncated (exit 5 if it alone does not fit). Exit codes: 1 network/HTTP, 2 empty
+response, 3 error body from the endpoint, 4 key not set, 5 over budget, 64 usage.
 
 **Failure handling (per reviewer, applied independently):**
 
@@ -356,9 +314,9 @@ succeeded.
 
 When the Claude report plus one or more successful second-opinion outputs
 are available, produce a unified report via this merge procedure. The
-output of each second-opinion shim already carries its own tag prefix
-(`[do:deepseek-v4-pro]`, `[do:openai-gpt-5.3-codex]`, `[qwen]`, etc.); the
-merge logic treats every non-Claude reviewer symmetrically.
+output of each second-opinion reviewer already carries its configured name as its
+tag prefix (e.g. `[deepseek]`, `[local-qwen]`); the merge logic treats every
+non-Claude reviewer symmetrically.
 
 Let `R` = set of successful reviewer outputs other than Claude (1 or 2
 entries). Each `r ∈ R` has a tag prefix `[<tag-r>]` already applied.
@@ -373,19 +331,19 @@ entries). Each `r ∈ R` has a tag prefix `[<tag-r>]` already applied.
      OR
    - their titles are identical after stripping the leading reviewer-tag
      prefix (the regex `^\[[^]]+\]\s*`, which matches any bracketed tag
-     including merged forms like `[claude|do:deepseek-v4-pro]`) and
+     including merged forms like `[claude|deepseek]`) and
      lowercasing.
    Apply pairwise between Claude and each `r ∈ R`, and also between every pair
    of second-opinion reviewers when `TRIPLE=true`.
 4. **Merge** overlapping groups: keep the most detailed body (default to
    Claude's when present, else the longest non-Claude body). Rewrite the
    prefix to a `|`-joined list of every tag that flagged it, e.g.
-   `[claude|do:deepseek-v4-pro|do:openai-gpt-5.3-codex]`. For each concurring
+   `[claude|deepseek|local-qwen]`. For each concurring
    non-primary reviewer whose wording differed, append a short
    `_<tag> concurred:_` line with that reviewer's finding title.
 5. **Unmatched** findings keep their single tag. Group unmatched
    second-opinion findings by tag and append under sub-headings like
-   `### <tag>-only findings` (e.g. `### do:deepseek-v4-pro-only findings`),
+   `### <tag>-only findings` (e.g. `### deepseek-only findings`),
    after the merged/Claude list.
 6. **Contract verification tables.** If multiple reports contain a contract
    table AND they agree row-by-row, keep Claude's table. If any disagree,

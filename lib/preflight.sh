@@ -1311,6 +1311,32 @@ CMM_AVAILABLE=false; _probe_registered "codebase-memory-mcp" && CMM_AVAILABLE=tr
 CTX_AVAILABLE=false; _probe_registered "context-mode"        && CTX_AVAILABLE=true
 
 # ---------------------------------------------------------------------------
+# Second-opinion reviewers (--double / --triple / --reviewer=<name>). Each is an
+# OpenAI-compatible endpoint from `second_opinion.reviewers`; none ship by default, so
+# a flag with nothing configured is a STOP in SKILL.md, not a silent skip. The resolved
+# list goes to second-opinion.json for lib/llm-reviewer.sh, and `key_present` is
+# decided HERE so a missing key is a preflight fact, not a mid-round surprise. Keys
+# are referenced by env var name only and never written anywhere.
+# ---------------------------------------------------------------------------
+SO_FILE="$QA_SCRATCH/second-opinion.json"
+SO_RAW=$(jq -c '.second_opinion.reviewers // [] | if type == "array" then . else [] end' "$BB" 2>/dev/null || echo '[]')
+SO_VALID=$(jq -c '[ .[] | select(type == "object"
+                     and ((.name // "") | test("^[a-z0-9][a-z0-9._-]*$"))
+                     and (.endpoint // "") != "" and (.model // "") != "") ]
+                   | unique_by(.name)' <<<"$SO_RAW")
+_so_bad=$(jq -r --argjson ok "$SO_VALID" '[ .[] | (.name? // "<unnamed>") | tostring ] - [ $ok[].name ] | join(",")' <<<"$SO_RAW")
+[ -n "$_so_bad" ] && WARNINGS+=("second_opinion_invalid:${_so_bad} (each reviewer needs a name matching [a-z0-9._-], an endpoint and a model; skipped)")
+SO_RESOLVED='[]'
+while IFS= read -r _r; do
+  [ -n "$_r" ] || continue
+  _env=$(jq -r '.api_key_env // ""' <<<"$_r")
+  if [ -z "$_env" ] || [ -n "$(printenv "$_env" 2>/dev/null)" ]; then _kp=true; else _kp=false; fi
+  SO_RESOLVED=$(jq -c --argjson r "$_r" --argjson kp "$_kp" '. + [$r + {key_present: $kp}]' <<<"$SO_RESOLVED")
+done < <(jq -c '.[]' <<<"$SO_VALID")
+jq -n --argjson r "$SO_RESOLVED" '{reviewers: $r}' > "$SO_FILE" || die_internal "could not write $SO_FILE"
+SO_SUMMARY=$(jq -c '[ .[] | {name, model, key_present} ]' <<<"$SO_RESOLVED")
+
+# ---------------------------------------------------------------------------
 # Contract candidates. The tracker decides what a ticket reference looks like and who
 # fetches it (SKILL.md Step 0.5; references/contract-trackers.md):
 #   jira   `contract.ticket_pattern` ids; the orchestrator fetches them via the Jira MCP
@@ -2163,6 +2189,7 @@ PREFLIGHT_JSON=$(jq -n \
   --argjson desc_len "$DESC_LEN" --argjson min_desc "$MIN_DESC" \
   --arg tracker "$TRACKER" --arg tracker_source "$TRACKER_SOURCE" \
   --arg tickets_path "$TICKETS_PATH" --argjson unfetched "$UNFETCHED_JSON" \
+  --argjson so_reviewers "$SO_SUMMARY" --arg so_path "$SO_FILE" \
   --argjson warnings "$WARNINGS_JSON" \
   '{
     mr: $mr, target: $target, target_path: $target_path, target_abs: $target_abs,
@@ -2197,6 +2224,7 @@ PREFLIGHT_JSON=$(jq -n \
                 title_ticket: $title_ticket, candidate_tickets: $candidate_tickets,
                 tickets_path: $tickets_path, unfetched: $unfetched,
                 description_length: $desc_len, min_description_length: $min_desc },
+    second_opinion: { reviewers: $so_reviewers, config_path: $so_path },
     docs_only: $docs_only,
     round: $round,
     proportionality_path: $proportionality_path,

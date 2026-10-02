@@ -27,6 +27,11 @@
     "min_description_length": 200
   },
 
+  "second_opinion": {
+    "_comment": "Extra reviewers for --double (the first), --triple (the first two) and --reviewer=<name>. Each is any OpenAI-compatible chat-completions endpoint: {name, endpoint, model, api_key_env?, max_tokens?, timeout_seconds?, max_input_bytes?}. api_key_env NAMES the environment variable holding the key; omit it for an unauthenticated local server. None configured by default: the flags then stop with a message instead of silently skipping. See docs/CONFIGURING.md.",
+    "reviewers": []
+  },
+
   "qa_agent": {
     "_comment": "Optional separate identity for QA-attributed actions (round notes, approvals). Fix commits and pushes always use the developer's own credentials. When unresolvable, the plugin degrades gracefully: notes post under the dev identity and approval is skipped entirely.",
     "token_env": "QA_AGENT_TOKEN",

@@ -1,6 +1,6 @@
 ---
 name: qa-cycle
-argument-hint: "<mr|pr-number> [target] [--double|--triple] [--reviewer=qwen-local] [--non-interactive] [--auto-approve] [--help]"
+argument-hint: "<mr|pr-number> [target] [--double|--triple] [--reviewer=<name>] [--non-interactive] [--auto-approve] [--help]"
 description: "Run a structured QA review cycle on a merge request or pull request: one round, then as many further rounds as the findings justify, up to approval. Takes the MR/PR number and an optional target name (e.g. /qa-cycle 123, or /qa-cycle 123 api in a monorepo). Each round runs a deterministic preflight (branch sync, ownership, round derivation, security-scan delta), fans out a 3-6 lens reviewer panel, posts a round note, and gates approval behind an explicit policy. Every finding is grounded in a linked ticket's acceptance criteria or a regression the diff introduces. Proportionality escalates with the round number and the panel can declare diminishing returns, so the cycle ends rather than looping forever. Branches derive from the MR/PR at runtime, so no configuration is required for a single repo; targets, schema paths, and QA-agent credentials come from optional layered config."
 ---
 
@@ -188,8 +188,8 @@ Summary: <MR title or ticket summary>
 ```
 
 This file is passed to both the Claude reviewer (via the `## Contract` section
-of the Step 3A prompt) and to every second-opinion shim
-(`do-reviewer.sh` / `qwen-reviewer.sh`) via `--contract-file`.
+of the Step 3A prompt) and to every second-opinion reviewer (`lib/llm-reviewer.sh`
+reads it from the scratch dir).
 
 ---
 
@@ -252,16 +252,16 @@ next derivation return N+1.
 
 ### Pre-round-1 only — `--double` reminder
 
-On **round 1 only**, if `DOUBLE=false`, emit this one-line notice (not a question):
+On **round 1 only**, if `DOUBLE=false` AND `second_opinion.reviewers` in
+`preflight.json` is non-empty, emit this one-line notice (not a question):
 
    ```
-   ◆ Tip: pass --double for a second-opinion review via DigitalOcean
-     serverless inference (deepseek-v4-pro, ~$0.12/round), or --triple to
-     add a third openai-gpt-5.3-codex review (~$0.30/round total). Requires
-     DO_LLM_API_KEY env var. See ${CLAUDE_PLUGIN_ROOT}/lib/do-reviewer.sh.
+   ◆ Tip: pass --double (or --reviewer=<name>) for a second-opinion review by
+     <the configured reviewer names>, or --triple for two.
    ```
 
-   Suppress this notice when `DOUBLE=true` or when the current round is ≥ 2.
+   Suppress it when `DOUBLE=true`, when no reviewer is configured, or when the
+   current round is ≥ 2.
 
 
 ## Step 3A.0.1 — schema-change detection
@@ -313,7 +313,7 @@ it. Stay silent: no progress reply, no SendMessage; only a verdict needs action.
 brief_path=<preflight.json .manager_brief_path>
 post_note=<true|false>        # true = the manager posts the round note itself (hands-free)
 non_interactive=<true|false>  # from --non-interactive; it still returns decisions_needed
-DOUBLE=<t|f>  TRIPLE=<t|f>  reviewer_override=<qwen-local|"">
+DOUBLE=<t|f>  TRIPLE=<t|f>  reviewer_override=<a configured reviewer name|"">
 skip_contract_verification=<true|false>
 ```
 

@@ -72,7 +72,7 @@ and a confirmed one is either a regression (blocking) or an observation (already
 ```
 
 - **Dedupe on the tag-stripped title** — the same key the Step 3A.3 merge already uses, so
-  a `[claude|do:deepseek-v4-pro]` prefix does not make one finding look like two. A
+  a `[claude|deepseek]` prefix does not make one finding look like two. A
   pre-existing bug is re-found by every round that runs while it survives; without the
   dedupe a five-round cycle reports the same bug five times and the reader stops reading.
 - **Keep the round tag of the round that FIRST saw it.** It dates the finding. Re-finding

@@ -23,12 +23,13 @@ ARGUMENTS
                    would silently review the repo root.
 
 FLAGS                                                    (all per-invocation)
-  --double                 Add one second-opinion reviewer alongside the panel.
-  --triple                 Add two. Implies --double.
-  --reviewer=<id>          Route the second opinion elsewhere. Recognized id:
-                           `qwen-local` (local LM Studio Qwen instead of DO).
-                           `--reviewer qwen-local` works too; a bare --reviewer
-                           with no id is an error, not a default.
+  --double                 Add one second-opinion reviewer alongside the panel:
+                           the first under `second_opinion.reviewers` in config.
+  --triple                 Add two (the first two configured). Implies --double.
+  --reviewer=<name>        Use this configured reviewer (implies --double).
+                           `--reviewer <name>` works too; a bare --reviewer, an
+                           unknown name, or no reviewers configured stops with
+                           a message rather than skipping silently.
 
   --skip-contract-verification
                            Review without verifying the contract. The reviewer

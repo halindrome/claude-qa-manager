@@ -498,6 +498,19 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
 
 ### Smaller, independent items
 
+- **Second opinions are provider-neutral.** `--double`/`--triple`/`--reviewer=<name>`
+  run `lib/llm-reviewer.sh` against reviewers configured in `second_opinion.reviewers`
+  (any OpenAI-compatible endpoint; none by default). Preflight resolves the list into
+  `second-opinion.json` with `key_present`; keys are named by env var, never written.
+  Replaces `do-reviewer.sh` / `qwen-reviewer.sh`, which never worked from the plugin:
+  both called a `gemma-reviewer.sh` that was never committed, with an argument it
+  rejects (`--mr` for `--pr`), and its bash-4 syntax and `quality` axis would have
+  failed on macOS bash and misfiled findings in the merge. Not built: chunking a diff
+  larger than a reviewer's `max_input_bytes` (it exits 5, named); tool use. A
+  stronger direction is a mixed panel — individual lenses run by another provider's
+  agent CLI behind a runner seam in `run-panel.sh`; spike it against a `claude -p`
+  lens on a real round before building.
+
 - **The contract no longer assumes Jira.** `contract.tracker` (`auto` | `jira` | `forge` |
   `none`; `auto` = jira when a `jira` MCP is registered, else forge) decides which
   references count and who fetches them. `forge` covers GitHub/GitLab issues (`#N`,

@@ -232,9 +232,10 @@ driver records failures as `failed-<name>.json`, deliberately outside that glob.
 
 ### 2. Second opinions (only when DOUBLE/TRIPLE)
 
-If `DOUBLE=true`, launch the second-opinion shim(s) as background Bash exactly as
-Step 3A.2 of the skill specifies (`do-reviewer.sh` / `qwen-reviewer.sh`, argv
-unchanged, `MR_SOURCE_BRANCH=<feature_branch>`), writing
+If `DOUBLE=true`, launch the second-opinion reviewer(s) as background Bash exactly as
+Step 3A.2 of the skill specifies (`lib/llm-reviewer.sh --scratch <qa_scratch>
+--reviewer <name>`, the names resolved from `reviewer_override` and the configured
+list), writing
 `$qa_scratch/r2-round<round>.md` (+ `r3-` for TRIPLE). Per-reviewer non-blocking
 failure: non-zero exit OR missing/empty output → record and continue; never read
 a failed shim as a zero-finding success.
