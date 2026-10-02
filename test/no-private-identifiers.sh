@@ -34,6 +34,7 @@ private_word_hashes=(
   9e861941ad8bf5bcb649e5fde92d712528200a216018c2437371498e6ab7683d
   e96412e047578448bb5c587029bfa0d403798de32ec3016c7a1ef3424de2d6e0
   3d26e3080fbeb2a16514b549273d393020b8afeed9eeac3821b1095b2cc407ec
+  d0fcea866e90d49f90c417a233721a759aabd955833ea502ccbd678706090c68
 )
 # Not private, but must not appear: the author's own domain, kept out of the repo.
 private_patterns=('halindrome\.com')
@@ -101,11 +102,13 @@ for p in "${private_patterns[@]}" "${secret_shapes[@]}"; do
 done
 
 # A hardcoded home path is not a private identifier, so every scan above ships it
-# green -- but it is dead for every installer who is not the author. Scoped to the
-# SHIPPED surface: CLAUDE.md documents where this checkout lives on purpose. A line
+# green -- but it is dead for every installer who is not the author, and it names the
+# author's account. Scanned in everything a reader sees; tests are left out because
+# their fixtures build `$root/home/.config/...` trees the pattern cannot tell apart.
+# Use `~`, `$(git rev-parse --show-toplevel)` or ${CLAUDE_PLUGIN_ROOT} instead. A line
 # genuinely about the SHAPE of a home path marks itself `scrub-ok: <why>`, per line and
 # visible, rather than trusting a cleverer regex to tell illustrative from hardcoded.
-shipped_surface=(agents skills lib config examples .claude-plugin)
+shipped_surface=(agents skills lib config examples .claude-plugin docs CLAUDE.md README.md)
 home_paths=('/Users/[A-Za-z0-9._-]+/' '/home/[A-Za-z0-9._-]+/')
 for p in "${home_paths[@]}"; do
   report "hardcoded home path: $p" \

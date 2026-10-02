@@ -21,7 +21,7 @@ claude --plugin-dir . plugin details claude-qa-manager   # inventory + token cos
 
 **The plugin is ALSO installed at user scope, and it runs from this working tree.** The
 `halindrome` marketplace is a `directory` source whose `installLocation` is this repo, so
-`CLAUDE_PLUGIN_ROOT` resolves to `~/Sources/claude-qa-manager/` and every real
+`CLAUDE_PLUGIN_ROOT` resolves to this working tree (the `installLocation`) and every real
 `/qa-cycle` sources `lib/preflight.sh`, `lib/forge.sh` and the rest from **here** —
 verified across three sessions' transcripts, none of which reference the plugin cache at
 all. Practical consequence: a live run picks up uncommitted edits immediately. There is no
@@ -113,7 +113,7 @@ against the copy. An earlier version of the suite did exactly that and was 41/41
 >
 > ```bash
 > ISO=$(mktemp -d)/iso; mkdir -p "$ISO"
-> tar -C ~/Sources/claude-qa-manager --exclude=.git -cf - . | tar -C "$ISO" -xf -   # scrub-ok: this file documents the checkout
+> tar -C "$(git rev-parse --show-toplevel)" --exclude=.git -cf - . | tar -C "$ISO" -xf -
 > cd "$ISO" && <mutate the copy> && bash test/preflight.test.sh
 > ```
 >

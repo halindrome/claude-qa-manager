@@ -212,7 +212,7 @@ hook required.
 
 **Correction to the plan's Phase 2: `config/lens-mcp.json` cannot be a shipped static
 file.** `--mcp-config` takes server *launch commands*, and those are machine-local — on this
-machine CMM is `{"codebase-memory-mcp":{"command":"~/.local/bin/codebase-memory-mcp"}}`  <!-- scrub-ok: local install path -->
+machine CMM is `{"codebase-memory-mcp":{"command":"~/.local/bin/codebase-memory-mcp"}}`
 in `~/.config/claude-code/.mcp.json`, and context-mode is a plugin with no entry there at
 all. A file shipped in `config/` would name a path that exists on one machine. Preflight
 must **generate** the lens MCP config into `$QA_SCRATCH` from the operator's own
