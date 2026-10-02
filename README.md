@@ -140,16 +140,17 @@ Flags apply to one invocation. Pass them again when you start the next round.
 ### A separate QA identity (optional)
 
 By default everything the plugin does on the forge happens as **you**: its round notes
-are comments under your name, next to the comments you wrote yourself. On your own MR/PR
-that reads like the author reviewing their own work, and nobody can tell what you said
-from what the review panel said.
+are comments under your name, next to the comments you wrote yourself. Each one starts
+with a banner saying an independent QA agent wrote it, not the account it is posted
+from. That keeps the record honest, but the comments still carry your name, so they
+cannot be filtered out by author, and you cannot approve your own work.
 
 A **QA identity** is a second forge account — a bot or service user such as `qa-bot` —
 whose token the plugin uses for review actions only:
 
 | Action | Without a QA identity | With one |
 |---|---|---|
-| Round notes (`## QA Round N` comments) | posted as you | posted as the QA account |
+| Round notes (`## QA Round N` comments) | posted as you, with an "Automated QA review" banner | posted as the QA account |
 | Approving the MR/PR | never done | done as the QA account, after every gate passes and you confirm |
 | Fix commits and pushes | you | **still you**. Code changes are always yours |
 
@@ -162,8 +163,8 @@ What that buys:
   of a pull request cannot approve it.
 - **It falls back rather than pretends.** The token is checked against the forge when you
   store it and again at the start of every round. If it is missing, invalid, or belongs
-  to someone other than `qa_agent.expected_username`, notes post as you, approval is
-  skipped, and the round warns. After approving, the plugin reads back who the forge
+  to someone other than `qa_agent.expected_username`, notes post as you with the
+  banner, approval is skipped, and the round warns. After approving, the plugin reads back who the forge
   recorded as the approver. If it was not the QA account, it reports an error, does not
   count the MR/PR as approved, and tells you to withdraw the approval.
 - **Schema changes still need a person.** A QA-account approval never satisfies the

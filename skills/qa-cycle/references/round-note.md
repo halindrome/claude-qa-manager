@@ -97,10 +97,15 @@ files, there is nothing to report beyond the footer line above.
 <else (QA_TOKEN_OK=false): omit the "<username> via " prefix:>
 *QA performed by Claude Code (<the model you are actually running as — see the note above>)*<for each second-opinion reviewer that succeeded: append ` + <tag>` as above>
 
-<if QA_TOKEN_OK=false, also include this warning line inside the comment body (above the footer):>
-> ⚠ Posted with dev credentials — QA agent token unavailable.
 EOF
 ```
+
+**Do not write an identity warning into the note yourself.** `forge_post_note` puts an
+"Automated QA review" banner under the `## QA Round <N>` heading of any note it posts
+with an empty token — i.e. under the operator's own account — so a reader never takes
+the panel's findings for the operator's. It decides from the token it is actually sent,
+which a template rule cannot: the template is filled in by a session that may hold an
+empty token while believing it holds the QA one.
 
 ## Resolving the QA token, then posting
 
@@ -138,7 +143,7 @@ cd <target-path>
 forge_init "$(git remote get-url "$REMOTE")" "${CLAUDE_PLUGIN_ROOT}/lib"
 
 # Pass the QA token when it verified, an empty token to fall back to the dev
-# identity. The warning line above already explains the fallback in the comment.
+# identity. With an empty token the seam adds the automated-review banner.
 if forge_post_note "$PROJECT" <MR_NUMBER> "$QA_SCRATCH/note-round<N>.md" \
      "$([ "$QA_TOKEN_OK" = "true" ] && printf '%s' "$QA_TOKEN")"; then
   echo "round note posted"

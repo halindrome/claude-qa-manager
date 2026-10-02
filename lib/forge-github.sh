@@ -187,7 +187,7 @@ forge_notes() {
 
 # stdout is NOT swallowed: `gh pr comment` prints the new comment's URL there,
 # and the deferred-findings approval path must link that note.
-forge_post_note() { _gh "${4:-}" pr comment "$2" -R "$1" --body-file "$3"; }
+forge_post_note() { _gh "${4:-}" pr comment "$2" -R "$1" --body "$(_forge_note_body "$3" "${4:-}")"; }
 # Empty token REFUSED here but tolerated by forge_post_note — see
 # _forge_require_token in forge.sh for why the asymmetry is deliberate.
 forge_approve()   { _forge_require_token forge_approve "${3:-}" || return 3

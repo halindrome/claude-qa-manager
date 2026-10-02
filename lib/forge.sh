@@ -110,8 +110,8 @@ forge_project_slug() {
 # An empty token makes `glab`/`gh` fall back to the DEFAULT (developer)
 # identity. For forge_post_note that degradation is deliberate and documented:
 # losing a round note entirely is worse than posting it under the developer's
-# name, and SKILL.md requires a "⚠ Posted with dev credentials" line when it
-# happens. Degrading a note mislabels evidence; it still preserves it.
+# name, and _forge_note_body labels such a note as automated review. Degrading
+# a note mislabels evidence; it still preserves it.
 #
 # For forge_approve / forge_unapprove the same fallback is NOT equivalent. On a
 # self-authored MR it converts "QA has not approved" into "the author approved"
@@ -128,6 +128,33 @@ _forge_require_token() {
   [ -n "${2:-}" ] && return 0
   echo "error: $1 refused — no QA agent token. Approving with an empty token would act as the DEFAULT (developer) identity, which on a self-authored MR manufactures a self-approval that reads as review. Not calling the forge." >&2
   return 1
+}
+
+# --------------------------------------------------------------------------
+# _forge_note_body <file> <token> -> the note body to post
+#
+# With a token, the file unchanged. With an EMPTY token the note posts under
+# the operator's own account, where a reader would take it for something the
+# operator wrote — so it gets a banner saying an automated QA agent wrote it,
+# directly under the leading heading (or at the top if there is none).
+#
+# Decided here, from the token actually being sent, because this is the one
+# place every note passes through. A rule in the note template is applied by a
+# model that may hold an empty token while believing it has the QA one; this
+# cannot be. Idempotent: a body that already carries the banner is unchanged.
+# --------------------------------------------------------------------------
+FORGE_NO_IDENTITY_BANNER='> 🤖 **Automated QA review.** An independent QA agent ([claude-qa-manager](https://github.com/halindrome/claude-qa-manager)) wrote this, not the account it is posted from. No separate QA identity is configured, so it was posted with the credentials of the person who ran the review.'
+_forge_note_body() {
+  if [ -n "${2:-}" ] || grep -qF -- '**Automated QA review.**' "$1" 2>/dev/null; then
+    cat "$1"; return
+  fi
+  awk -v b="$FORGE_NO_IDENTITY_BANNER" '
+    !done && /^[[:space:]]*$/ { print; next }
+    !done && /^#/ { print; print ""; print b; done = 1; next }
+    !done { print b; print ""; done = 1 }
+    { print }
+    END { if (!done) print b }
+  ' "$1"
 }
 
 # --------------------------------------------------------------------------

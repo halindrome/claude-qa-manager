@@ -1567,14 +1567,66 @@ forge_guard_case() { # $1 forge, $2 cli, $3 remote url
   # No approve/revoke/review ever reached the CLI; only the note did.
   # `grep -c` PRINTS 0 and RETURNS 1 on no match, so a `|| echo 0` fallback here
   # emits "0\n0" and the comparison fails on a passing case. Let it print alone.
+  # Anchored on the SUBCOMMAND: the logged argv includes the note body, whose
+  # automated-review banner contains the word "review".
   eq "$forge: no approval call reached $cli" \
-    "$(grep -cE 'approve|revoke|review|dismissal' "$log"; true)" "0"
+    "$(grep -cE '^(mr (approve|revoke)|pr review)|dismissals' "$log"; true)" "0"
   eq "$forge: the note DID reach $cli" \
-    "$(grep -cE 'note|comment' "$log"; true)" "1"
+    "$(grep -cE '^(mr note|pr comment)' "$log"; true)" "1"
   rm -rf "$d"
 }
 forge_guard_case gitlab glab 'git@gitlab.com:grp/proj.git'
 forge_guard_case github gh   'git@github.com:grp/proj.git'
+
+# ---------------------------------------------------------------------------
+echo "[a note posted without a QA identity says an automated agent wrote it]"
+# With an empty token the note posts under the operator's own account, where a
+# reader would take the panel's findings for the operator's. The seam labels it,
+# from the token it is actually sent. Drives the REAL forge_post_note; the stub
+# records the body the CLI received.
+note_banner_case() { # $1 forge, $2 cli, $3 remote url
+  local forge="$1" cli="$2" url="$3"
+  local d; d=$(mktemp -d)
+  # Each call's body goes to its own file: body.1, body.2, ...
+  cat > "$d/$cli" <<'STUB'
+#!/bin/bash
+n=$(( $(ls "$STUB_DIR" | grep -c '^body\.') + 1 ))
+while [ $# -gt 0 ]; do
+  case "$1" in --message|--body) printf '%s' "$2" > "$STUB_DIR/body.$n"; shift ;; esac
+  shift
+done
+STUB
+  chmod +x "$d/$cli"
+  printf '## QA Round 2\n\nFinding text.\n' > "$d/note.md"
+  printf 'No heading here.\n' > "$d/plain.md"
+  QA_FORGE="$forge" STUB_DIR="$d" PATH="$d:$PATH" bash -c '
+    set -u
+    . "$1/lib/forge.sh"
+    forge_init "$2" "$1/lib" || exit 90
+    forge_post_note grp/proj 73 "$3/note.md"  ""          # 1: no identity
+    forge_post_note grp/proj 73 "$3/note.md"  "qa-token"  # 2: QA identity
+    forge_post_note grp/proj 73 "$3/plain.md" ""          # 3: no heading
+  ' _ "$REPO_SRC" "$url" "$d" >/dev/null 2>&1
+  eq "$forge: heading stays the first line (round derivation reads it)" \
+    "$(sed -n 1p "$d/body.1" 2>/dev/null)" "## QA Round 2"
+  eq "$forge: banner follows the heading" \
+    "$(sed -n 3p "$d/body.1" 2>/dev/null | grep -c 'Automated QA review'; true)" "1"
+  eq "$forge: the note itself is still there" \
+    "$(grep -c '^Finding text\.$' "$d/body.1" 2>/dev/null; true)" "1"
+  eq "$forge: a QA-identity note gets no banner" \
+    "$(grep -c 'Automated QA review' "$d/body.2" 2>/dev/null; true)" "0"
+  eq "$forge: a note with no heading gets the banner first" \
+    "$(sed -n 1p "$d/body.3" 2>/dev/null | grep -c 'Automated QA review'; true)" "1"
+  rm -rf "$d"
+}
+note_banner_case gitlab glab 'git@gitlab.com:grp/proj.git'
+note_banner_case github gh   'git@github.com:grp/proj.git'
+# Idempotent: a body that already carries the banner is not labelled twice.
+d=$(mktemp -d)
+printf '## QA Round 1\n\n> 🤖 **Automated QA review.** x\n' > "$d/n.md"
+eq "banner is not added twice" \
+  "$(bash -c '. "$1/lib/forge.sh"; _forge_note_body "$2" ""' _ "$REPO_SRC" "$d/n.md" | grep -c 'Automated QA review'; true)" "1"
+rm -rf "$d"
 
 # ---------------------------------------------------------------------------
 echo "[forge_head_ci — the CI gate Step 3E approves behind]"

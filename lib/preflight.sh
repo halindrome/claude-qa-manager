@@ -2116,14 +2116,12 @@ MANAGER_BRIEF="$QA_SCRATCH/manager-brief.txt"
 #
 # STILL OPEN after this emission is committed — the emission alone does not close it:
 #
-#  1. The `⚠ Posted with dev credentials` guard keys off QA_TOKEN_OK, which reports
-#     that PREFLIGHT resolved a token, not that the CALLER is holding one. On !14 it
-#     was true while the main loop held an empty string, so the guard never fired in
-#     the one case it exists for. A guard must test the value about to be used.
-#  2. The seam should verify the token resolves to `expected_qa_user` before any
+#  1. The seam should verify the token resolves to `expected_qa_user` before any
 #     write. An empty token silently meaning "act as the developer" is what converts
-#     each of these slips from an error into a misattribution.
-#  3. Note-posting needs the same after-the-fact identity check that
+#     each of these slips from an error into a misattribution. (An empty token is at
+#     least LABELLED: forge_post_note marks such a note as automated review,
+#     decided from the token it is sent rather than from QA_TOKEN_OK.)
+#  2. Note-posting needs the same after-the-fact identity check that
 #     references/approval.md prescribes for approvals: the API returns the created
 #     note's `author.username`, so it is free. A footer asserting the identity is
 #     written by the same session that got it wrong, and proves nothing.

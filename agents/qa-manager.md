@@ -342,7 +342,9 @@ sloppy fix) is not something you can determine from the attribution alone.
 
 The QA footer is
 `*QA performed by <expected_qa_user> via Claude Code (<model>), manager + <N>-lens panel*`
-(where `<N>` is the number of entries in `lenses`)
+(where `<N>` is the number of entries in `lenses`) when `qa_token_ok=true`, and the same
+without `<expected_qa_user> via ` when it is false: the caller then posts the note under
+the operator's account, and a footer naming the QA user would misattribute it.
 — where `<model>` is the model **you are actually running as**, not a literal
 copied from this file. A hardcoded id rots silently and then misattributes the
 review to a model that never ran it. If you cannot determine your own model id,
