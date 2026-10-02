@@ -2760,10 +2760,67 @@ eq "  summary sums Claude Code's own call durations" \
 # A zero is only readable next to the tool surface the lens actually had.
 eq "  summary carries lens_mcp_state from the brief" \
    "$(jq -r '.lens_mcp_state' <<<"$summ")" "ok"
+eq "  and says the panel is what it measured" "$(jq -r '.review_path' <<<"$summ")" "panel"
 # Invariant 2: a lens with no log did not report zero tools -- it reported nothing.
 eq "  summary: a lens with no log is not-recorded, not zero calls" \
    "$(jq -c '.lenses."test-quality"' <<<"$summ")" '{"state":"not-recorded"}'
 rm -rf "$p"
+
+# --- the sequential path: the log is derived from the reviewer's transcript ---------
+# The sequential reviewer is an Agent subagent, which no --settings hook reaches. Its
+# transcript is found through the MAIN session's Agent call (whose id the subagent's
+# .meta.json records) inside this round's fanout..tree-after window. Fixture records
+# use the shapes real transcripts have: ISO timestamps with milliseconds, tool_use in
+# assistant content, tool_result (with is_error) in user content.
+sq=$(mktemp -d); now=$(date +%s)
+iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+S="$sq/tmp/qa-cycle-abc123-77"; mkdir -p "$S"
+printf 'lenses=["contract-security","regression-edges"]\nlens_mcp_state=ok\n' > "$S/manager-brief.txt"
+printf '%s\n' "$((now - 600))" > "$S/fanout"
+touch -t "$(date -r $((now - 600)) +%Y%m%d%H%M.%S)" "$S/fanout"
+printf 'snap\n' > "$S/tree-after.txt"
+proj="$sq/home/.config/claude-code/projects/-repo"; mkdir -p "$proj/sid1/subagents"
+{
+  # an earlier round's reviewer: outside the window, must be ignored
+  jq -nc --arg t "$(iso $((now - 5000)))" '{type:"assistant",timestamp:$t,message:{content:[{type:"tool_use",id:"old",name:"Agent",input:{subagent_type:"claude-qa-manager:qa-reviewer"}}]}}'
+  # a manager call in the window: not a reviewer, must be ignored
+  jq -nc --arg t "$(iso $((now - 550)))" '{type:"assistant",timestamp:$t,message:{content:[{type:"tool_use",id:"mgr",name:"Agent",input:{subagent_type:"claude-qa-manager:qa-manager"}}]}}'
+  # THIS round's reviewer
+  jq -nc --arg t "$(iso $((now - 500)))" '{type:"assistant",timestamp:$t,message:{content:[{type:"tool_use",id:"this",name:"Agent",input:{subagent_type:"claude-qa-manager:qa-reviewer"}}]}}'
+  echo "{\"type\":\"user\",\"message\":{\"content\":\"scratch is /tmp/qa-cycle-abc123-77\"}}"
+} > "$proj/sid1.jsonl"
+for id in old this; do
+  printf '{"agentType":"claude-qa-manager:qa-reviewer","toolUseId":"%s"}\n' "$id" > "$proj/sid1/subagents/agent-$id.meta.json"
+done
+a() { jq -nc --arg t "$(iso "$1")" --arg id "$2" --arg n "$3" --argjson i "$4" '{type:"assistant",timestamp:$t,message:{content:[{type:"tool_use",id:$id,name:$n,input:$i}]}}'; }
+u() { jq -nc --arg t "$(iso "$1")" --arg id "$2" --argjson e "$3" --arg c "$4" '{type:"user",timestamp:$t,message:{content:[{type:"tool_result",tool_use_id:$id,is_error:$e,content:$c}]}}'; }
+{
+  a $((now-490)) t1 ToolSearch '{"query":"select:x"}';                       u $((now-489)) t1 false ok
+  a $((now-480)) t2 mcp__codebase-memory-mcp__search_code '{"pattern":"foo"}'; u $((now-478)) t2 false hits
+  a $((now-470)) t3 Bash '{"command":"grep -n foo a.ts"}';                    u $((now-469)) t3 true "Exit code 1"
+  a $((now-460)) t4 Bash '{"command":"cat a.ts"}';                            u $((now-460)) t4 true "PreToolUse:Bash hook error: [x]: BLOCKED: nope"
+} > "$proj/sid1/subagents/agent-this.jsonl"
+a $((now-4990)) z1 Bash '{"command":"echo earlier round"}' > "$proj/sid1/subagents/agent-old.jsonl"
+
+sum=$(env -u CLAUDE_CONFIG_DIR HOME="$sq/home" bash "$REPO_SRC/lib/lens-tools-summary.sh" "$S")
+eq "sequential round: review_path is sequential" "$(jq -r '.review_path' <<<"$sum")" "sequential"
+eq "  ONE reviewer log, from this round's Agent call only" "$(jq -r '.lenses | keys | join(",")' <<<"$sum")" "sequential"
+eq "  its calls, classified like a panel lens" \
+   "$(jq -r '.lenses.sequential | "\(.calls) cmm=\(.by_class.cmm) raw=\(.by_class.raw) other=\(.by_class.other)"' <<<"$sum")" \
+   "4 cmm=1 raw=2 other=1"
+eq "  a failed call is failed"                   "$(jq -r '.lenses.sequential.failed' <<<"$sum")" "1"
+eq "  a hook-blocked call is no_result, as on the panel" "$(jq -r '.lenses.sequential.no_result' <<<"$sum")" "1"
+eq "  the earlier round's reviewer is not in it" "$(grep -c 'earlier round' "$S/tools-sequential.jsonl")" "0"
+
+# Derived data is regenerated: a log left by an earlier round must not be read as this
+# one's when this round's reviewer cannot be found.
+printf '{"ev":"PreToolUse","tool":"STALE","id":"s"}\n' > "$S/tools-sequential.jsonl"
+sum=$(env -u CLAUDE_CONFIG_DIR HOME="$sq/empty" bash "$REPO_SRC/lib/lens-tools-summary.sh" "$S")
+eq "no transcript found -> review_path unknown" "$(jq -r '.review_path' <<<"$sum")" "unknown"
+eq "  and the stale log is gone, not reported" "$( [ -f "$S/tools-sequential.jsonl" ] && echo present || echo gone)" "gone"
+eq "  the brief's lenses report not-recorded" \
+   "$(jq -r '.lenses."contract-security".state' <<<"$sum")" "not-recorded"
+rm -rf "$sq"
 
 # The hook exits 0 and writes no stdout in every case: stdout from a PreToolUse
 # hook can be read as a decision, and a telemetry failure must never fail a lens.

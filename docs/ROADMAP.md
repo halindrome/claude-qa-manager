@@ -498,6 +498,19 @@ zero `printf … > …/status`. Until then the claim is "scripts heal it", not
 
 ### Smaller, independent items
 
+- **Sequential rounds are measured from the reviewer's transcript.** Rounds of
+  `review_mode.sequential_max_lines_changed` (falling back to `tiny_mr_max_lines_changed`,
+  50) changed lines or fewer run one Agent reviewer instead of a panel — 16 of the 41
+  rounds over 2026-09-29..10-01, every one at or under 50 lines, so the split is the size
+  rule working, not a fallback. No `--settings` hook reaches an Agent subagent, so
+  `lib/sequential-tools-log.sh` derives `tools-sequential.jsonl` from its transcript:
+  main transcript naming the scratch dir → qa-reviewer Agent call inside this round's
+  fanout..tree-after window → the subagent whose `.meta.json` `toolUseId` matches.
+  `lens-tools-summary.sh` runs it when no panel lens has a log and reports
+  `review_path: panel|sequential|unknown`. First read (14 of 18 rounds linked): no
+  `git show HEAD:`; line-range reads mostly in pre-routing rounds; most rounds have 1–2
+  calls blocked by the target repo's own gates (the reviewer runs in the operator's
+  session), almost all `sed -n`/`grep` on source.
 - **Live lenses never got context-mode. FIXED 2026-09-30.**
   Every brief for a month read `lens_mcp_state=partial:context-mode`. Cause: context-mode
   was installed from a `directory`-source marketplace, which Claude Code runs from its

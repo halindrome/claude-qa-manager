@@ -3,8 +3,9 @@
 # lib/lens-tool-log.sh wrote during the panel.
 #
 # Usage:  lens-tools-summary.sh <scratch-dir>
-# Output: {"lens_mcp_state": <from the brief>, "lenses": {<lens>: ...}}, one entry per
-# lens in the brief's `lenses` array, each either
+# Output: {"review_path": panel|sequential|unknown, "lens_mcp_state": <from the brief>,
+# "lenses": {<lens>: ...}}, one entry per lens in the brief's `lenses` array -- or, on
+# the sequential path, per reviewer log lib/sequential-tools-log.sh derived -- each either
 #   {"state":"not-recorded"}                         no tools-<lens>.jsonl exists
 #   {"state":"recorded", "calls", "by_class":{cmm,ctx,raw,other}, "failed",
 #    "no_result", "denied", "toolsearch", "tool_ms", "span_s"}
@@ -33,9 +34,26 @@ S="${1:-}"
 
 LENSES_JSON=$(sed -n 's/^lenses=//p' "$S/manager-brief.txt" | tail -1)
 MCP_STATE=$(sed -n 's/^lens_mcp_state=//p' "$S/manager-brief.txt" | tail -1)
+LENSES=$(printf '%s' "$LENSES_JSON" | jq -r '.[]' 2>/dev/null)
+
+# No panel lens wrote a log: the round ran on the sequential path (one Agent reviewer,
+# which no --settings hook reaches), so derive its log from that reviewer's transcript.
+# The "lenses" are then the reviewer logs found, and review_path says which this was.
+REVIEW_PATH=panel
+_any=""
+for lens in $LENSES; do [ -f "$S/tools-$lens.jsonl" ] && _any=1; done
+if [ -z "$_any" ]; then
+  REVIEW_PATH=sequential
+  seq_logs=$(bash "$(dirname "$0")/sequential-tools-log.sh" "$S" 2>/dev/null)
+  if [ -n "$seq_logs" ]; then
+    LENSES=$(printf '%s\n' "$seq_logs" | sed 's/^tools-//; s/\.jsonl$//')
+  else
+    REVIEW_PATH=unknown   # neither a panel log nor a reviewer transcript was found
+  fi
+fi
 
 out='{}'
-for lens in $(printf '%s' "$LENSES_JSON" | jq -r '.[]' 2>/dev/null); do
+for lens in $LENSES; do
   log="$S/tools-$lens.jsonl"
   if [ ! -f "$log" ]; then
     out=$(jq -c --arg l "$lens" '.[$l] = {state: "not-recorded"}' <<<"$out")
@@ -67,4 +85,5 @@ for lens in $(printf '%s' "$LENSES_JSON" | jq -r '.[]' 2>/dev/null); do
   out=$(jq -c --arg l "$lens" --argjson r "$row" '.[$l] = $r' <<<"$out")
 done
 
-jq --arg m "${MCP_STATE:-unknown}" '{lens_mcp_state: $m, lenses: .}' <<<"$out"
+jq --arg m "${MCP_STATE:-unknown}" --arg p "$REVIEW_PATH" \
+  '{review_path: $p, lens_mcp_state: $m, lenses: .}' <<<"$out"
